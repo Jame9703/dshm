@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>沉浸光感·网页菜单演示页</title>
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; font-size: 14px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 18px 0 6px; }
+  p.hint { font-size: 12px; color: #888; margin: 0 0 12px; }
+  .box { border: 1px dashed #bbb; border-radius: 8px; padding: 12px; margin-bottom: 6px; }
+  a { color: #0A59F7; }
+  img.demo-img { width: 200px; height: 150px; display: block; }
+  input[type="text"] { width: 92%; padding: 8px; font-size: 14px; box-sizing: border-box; }
+  .selectable { line-height: 1.7; user-select: text; -webkit-user-select: text; }
+  .blank { height: 110px; }
+</style>
+</head>
+<body>
+<h1>沉浸光感·网页菜单演示</h1>
+<p class="hint">长按或右键下方五类对象，应用侧接管弹出原生玻璃语境菜单（THIN 材质、锚定触点）。菜单项空集时回退 ArkWeb 系统默认菜单。</p>
+
+<h2>1. 链接（IANA 保留示例域）</h2>
+<div class="box">
+  <a href="https://example.com">example.com 示例链接</a>
+  <p class="hint">菜单应出「打开链接 / 复制链接」；点「打开链接」拉起系统浏览器。</p>
+</div>
+
+<h2>2. 图片（内嵌 data URI，无外部资源）</h2>
+<div class="box">
+  <img class="demo-img" alt="演示图片" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAAC0CAIAAAAl/ja/AAADzElEQVR42u3SWW5VBxRE0fvNDDNakkAaQhcgGNz3fQOGBJLwg4VBsrCxeRcE59VZ0h5B1RqOXr6RYhoOX/wvxQS0gJYKg/5PigloAS3VBX38rxQT0AJaKgv64Pi1FBPQAlqqC/r5KykmoAW0VBj0P1JMQAtoqSzo/Wd/SzEBLaClwqBfSjEBLaCluqCPXkgxAS2gpbKg946OpZiAFtBSXdCHz6WYgBbQUmHQz6SYgBbQUlnQuwdHUkxAC2hd1LUfXn9JBvxaoA81ui9E/Gncth0Z0IUckw10LGWsx4LeP9CVfRfHF8j2xVUBPR2UsQY6kDLWV4Pe2d/X+YprPs1N5wN6KiljDXSmZqbPgd7b02lTqvm9aQ++C+ipp4w10JmamT4Fvdu5MM0fTPc9dKCZaaBpZroq6O3dnYbFaz6t4bMDzUwDTTPTdUFvt6ol6Eb/DjQzDTTNTJcFvbPVoeaa35tucDTQQANNM9NlQW/tbGYH8Udl3w000EDTzHRd0NsbwbF7MejcxweamQYaaKDrgl5PjdpLQWeePtDMNNBAA10V9ObWWl6wfmZ51wMNNNBAA10Y9GpYmE5oOup9oIEGGmig64LeXAmL0clAZ70/0CyggQa6KuiNzeWk6BxREgCgBTTQQNcFvbGUFJ1jQAcBAFpAAw10YdCLSdE5CnQOAKAFNNBAlwW9vr6QFJ0jSgIAtIAGGujCoOeTonMU6BwAQAtooIGuC3ptLik6x4AOAgC0gAYa6LKg19Zmk6JzREkA0kAz3Vkz0MoDvfo0LEYnA531PtBAA800zYVBP8mL1M8GnXY90EADzTTNZUGvrsxExuuVRf4eC5rphpqBBjoQ9OPUqL0UdObpyaCZ7qYZaKDzQC//lR2+H2uOvhtooIFmmuayoFeWH3UI5ZM6HA000EAzTXNd0EsP+9RXc5uLe4HuabrVv0ADnQb6Qbeaae51bkfQfUw3fLYp6A6me946LC/+2bZgzW0/bQ061XTnQ7uDzjPd/M0T0PcVpLn7lUCHsHYf0DmmHXcG9MI9nW36NHvtTEBPMWs3AZ1j2kEXg15auKtLKkjZKZcE9DSxdgTQCbLNPgno+TuatG9H2doTBnRF2YYFeupxG/Brgb4txQS0gJbKgl6c+0OKCWgBLRUGfUuKCWgBLdUFPfu7FBPQAloqC3ph9jcpJqAFtFQX9NNfpZiAFtBSYdC/SDEBLaClsqDnn9yUYgJaQEuFQd+QYgJaQEt1Qc/8LMUEtICWyoKem/lJigloAS3VBf34RykmoAW0VBj0dSkmoBXVW3H9Eh4RlmpQAAAAAElFTkSuQmCC">
+  <p class="hint">菜单应出「复制图片」；「保存图片」按 API 存在性出现（API>=24）。</p>
+</div>
+
+<h2>3. 可编辑输入框</h2>
+<div class="box">
+  <input type="text" value="点进来聚焦后长按试试" placeholder="可编辑输入框">
+  <p class="hint">菜单按可编辑位掩码出「剪切 / 复制 / 粘贴 / 全选」子集。</p>
+</div>
+
+<h2>4. 可选中文本段</h2>
+<div class="box selectable" id="sel-text">
+  这是一段可以选择的文字。长按选中部分文字后松开，菜单应出「复制 / 全选」。语境菜单项由 ArkWeb 的选区状态（getSelectionText / getEditStateFlags）驱动生成。
+</div>
+
+<h2>5. 空白区（菜单项空集，回退系统菜单）</h2>
+<div class="box blank"></div>
+<p class="hint">长按此处不带任何语境（非链接、非图片、不可编辑、无选区），应用侧回退 return false，由 ArkWeb 弹系统默认菜单。</p>
+</body>
+</html>

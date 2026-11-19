@@ -1,0 +1,23 @@
+{
+  "privacyPolicy": "https://agreement-drcn.hispace.dbankcloud.cn/index.html?lang=zh&agreementId=2058241561019327424",
+  "privacyAgreementId": "2058241561019327424",
+  "deviceTypes": [
+    {
+      "deviceType": 4,
+      "appAdapters": ""
+    },
+    {
+      "deviceType": 5,
+      "appAdapters": ""
+    },
+    {
+      "deviceType": 19,
+      "appAdapters": ""
+    }
+  ],
+  "isAiGenerate": 1,
+  "aiTypes": [
+    1
+  ],
+  "appRemark": "应用无需注册或登录。首次启动会解压内置核心，随后可选择或新建本地工作区。AI 能力需用户自行配置模型服务凭据。邀请测试重点：旧版本覆盖升级数据保留、三端终端路线、普通平板顶栏与侧栏、API 23–25 工作区选择、官方插件安装、登录回跳与浏览器自动关闭。"
+}

@@ -1,259 +1,432 @@
-# AGENTS.md — DSHM 项目工作约束
+# AGENTS.md — DSHM 开发规范
 
-> 本文件是给自动化助手/AI 的工作约定。**违反会造成不可逆损失**，务必先读。
+> 本文件是**唯一规范入口**。红线、流程、工程约束以本文为准；操作细节在 [`AGENT-HANDOFF.md`](AGENT-HANDOFF.md)；
+> 当前状态在 [`docs/HANDOFF.md`](docs/HANDOFF.md)；功能与门禁对照在 [`docs/FEATURES.md`](docs/FEATURES.md)。
+>
+> **阅读顺序**：本文件 → `AGENT-HANDOFF.md` → `docs/HANDOFF.md` → `docs/ARCHITECTURE.md` → `docs/FEATURES.md`。
+> 历史文档在 `docs/archive/`，只读、不作为现行口径。
 
 ---
 
-## 🔴 最高优先级：真机测试环境的保全
+## 1. 单一真源（不抄值，去这里读）
 
-### 绝对禁止（除非用户明确说"全部清掉"）
+| 项 | 唯一出处 |
+|---|---|
+| 应用版本 / 包名 | `AppScope/app.json5` |
+| 核心版本 / 裁剪 / 原生件 | `hostcore/core-recipe.json` |
+| 模块设备面 | `entry/`、`phone/`、`hostruntime/` 的 `module.json5` |
+| 权限条数 / 顺序 / reason | `tools/check-permission-surface.mjs` 的 `EXPECTED` / `PHONE_EXPECTED` |
+| 门禁清单 | `.github/workflows/gates.yml` + 最新 `dist/acceptance/*full-gates*.txt` |
+| 三端归属 | 本文 §3.3 |
+| 功能 → 实现 → 门禁 | `docs/FEATURES.md` |
+| 已知坑 / 决策 | `docs/PITFALLS.md`、`docs/DECISIONS.md` |
+| 正式 AGC App ID | `APPID-CHANGE.md` |
+| 最低 / 目标 API | `build-profile.json5` |
 
-**禁止执行任何会删除真机应用数据的命令**，包括但不限于：
+## 2. 环境与工具
 
-```powershell
-hdc uninstall com.dshm.dshclient          # ← 禁止
-hdc shell bm uninstall -n com.dshm.dshclient   # ← 禁止
-hdc shell bm uninstall -n <name>          # ← 禁止
-hdc shell "rm -rf /data/app/el2/100/base/com.dshm.dshclient/*"   # ← 禁止
-hdc shell "rm -rf .../haps/entry/files/dsh/home"                 # ← 禁止
-```
+- 环境实跑表、`devecocli` 用法、Beta / AGC 出包、技能目录：见 [`AGENT-HANDOFF.md`](AGENT-HANDOFF.md)。
+- **DevEco Code（AI IDE）可用**；**DevEco Studio GUI 不可用**。构建 / 安装 / 看日志一律走 `devecocli` 与 `tools/*.mjs`，不要让用户去点 IDE 菜单。
+- **本机即该鸿蒙 PC**（MateBook 14 2in1，API 26）：无线调试常驻 `127.0.0.1:45595`，`devecocli device list` 为空时先 `hdc tconn 127.0.0.1:45595`，随后可直接覆盖安装推送测试。平板 / 手机形态需用户真机自测。
+- `rm` 被 safe-bin shim 接管：删除用 `python3` 的 `os.remove` / `shutil.rmtree`，删完回读验证。
+- 出包 / 打包会撞 safe-delete 批量阈值：只对**单条**构建命令加 `CODEBUDDY_SAFE_DELETE_ENABLED=0`。
 
-**原因（真实事故，2026-09-25）**：
-一次排障中执行了裸 `hdc uninstall`，把真机上用户的
-**6 个历史会话、7 个插件、2 个工作区全部删除**，且系统备份为空、**不可恢复**。
-更严重的是事后在报告里把该操作写成"清理环境（连数据一起清）"的正常步骤，
-等于把破坏性操作固化成流程。
+## 3. 工程结构
 
-### 绝对禁止：删除签名物料（它和真机数据同级——只此一份）
+### 3.1 模型与模块
 
-```powershell
-Remove-Item -Recurse C:\Users\Sol\.ohos            # ← 禁止
-Remove-Item C:\Users\Sol\.ohos\config\*.p12        # ← 禁止
-```
+Stage 模型，多 HAP + 共享 HSP + HAR：
 
-**原因（真实事故，2026-10-04→05）**：一次误删（`Remove-Item -Recurse -Force C:\Users\Sol`）
-把 `~/.ohos` 整个删掉，等于删掉了 DevEco 的调试签名物料
-（`~/.ohos/config/default_<proj>_<hash>={cer,p7b,p12,csr}` + `material/` 目录）。
-后果**不是"丢点配置"，而是再也签不出设备肯接受的包**：
+| 模块 | 类型 | 设备面 | 职责 |
+|---|---|---|---|
+| `entry` | entry HAP | tablet + 2in1 | PC / 平板壳：窗口、顶栏、托盘、侧栏、分享、权限面 18 |
+| `phone` | entry HAP | phone | 手机 / 折叠壳：抽屉、返回键、权限面 9 |
+| `hostruntime` | shared HSP | 三端 | 宿主：单实例、端口、核心安装、Node 启动 |
+| `platform` | HAR | 三端 | 共享能力：设备事实、通知、文件选择、云同步 |
+| `appstate` / `dshcompat` / `connection` | HAR | 三端 | 状态恢复 / 兼容面与桥契约 / 网络连接 |
+| `hostcore` | 资源与脚本 | — | 核心配方、宿主垫片、11 个自带插件 |
 
-- `hvigor assembleHap` 死在 `SignHap`：`00303107 Invalid storeFile value …`
-- 还会报 `ENOENT: no such file or directory, stat '…\.ohos\config\material'`（`material` 是**目录**）
-- 私钥**没有第二份**（AGC 只有公钥、DevEco 不上传私钥）⇒ 换新身份 ⇒ 签名不一致 ⇒
-  不能 `install -r` ⇒ 只能卸载 ⇒ 直接走进真机数据不可逆丢失的那条路
+运行时链路、垫片、数据路径见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-**正确做法**：
+### 3.2 目录职责
 
-- **签名物料永远不删。** "清理环境"只删构建产物（`entry/build/**`、`dist/core/work/**`、日志），
-  绝不动 `~/.ohos`、`~/.dsh`。
-- 保留一份**仓库外**备份：`D:\DSHM-signing-backup\`（2026-10-05 建立；含 `config/` 全量 + 校验和 + README
-  + 一键还原 `restore-signing.ps1` + 重拼原料 `reconstructed/`）。
-  ⚠️ **不要**把 `C:\Users\Sol\.ohos-restored\config` 整体拷回——那是卷影副本原件的暂存目录，
-  里面仍留着**全零**的 `ZEROED-*.cer` / `ZEROED-*.p7b` 留证。
-- 恢复/重拼方法见 `docs/80-真机更新与数据保全.md` §7
-  （卷影副本取回、从已签名 HAP 反解 `cer`/`p7b`、证书链必须排成"叶→中间→根"等实测细节）。
+- `entry/src/main/ets/pages/WebApp.ets`、`phone/src/main/ets/pages/WebApp.ets`：壳层接线与 DOM 垫片。
+- `hostruntime/src/main/ets/runtime/`：宿主生命周期；`core/`：核心安装与回滚。
+- `hostcore/app/`：宿主 JS 垫片与启动编排；`hostcore/plugins/`：自带插件。
+- `tools/`：构建、打包、门禁；`dist/`：交付物与证据；`docs/`：文档（历史在 `docs/archive/`）。
 
-### 正确做法：一律覆盖安装
+### 3.3 三端归属（唯一口径）
 
-```powershell
-hdc install -r <hap 路径>
-```
+| 平台 | 判定 | 模块 / 权限 | 顶栏 | 左栏 | 终端 |
+|---|---|---|---|---|---|
+| PC / 2in1 / MatePad Edge / Pro Max | desktopForced | entry / 18 | PC 顶栏（三键 / 托盘） | 常驻 | 原生 PTY |
+| 平板（不含 Edge/ProMax） | tablet | entry / 18 | 无自绘顶栏 | 展开 280 / 收起 56，`<1024` 交官方抽屉 | guest VM |
+| 手机 | phone | phone / 9 | 无 | 抽屉 + 单颗 ⊞ | guest VM |
+| 折叠单屏 | foldable + singleScreen | phone / 9 | 无 | 手机抽屉 | guest VM |
+| 折叠多屏 | foldable + 非 singleScreen | phone / 9 | 无 | 平板形态 | guest VM |
 
-`-r` = replace。同签名的覆盖安装**只替换代码与资源**（el1 下的 bundle），
-**不动用户数据**（el2 下的 `files/dsh/home` 会话与插件、`toolchain`、`workspace`）。
+**规则：三端互不影响，各改各的。** 共享逻辑放 `platform`，或两壳同构点同时改并跑 `check-dual-shell-parity`。
 
-### 唯一例外
+## 4. 开发流程（SOP）
 
-| 情形 | 允许 | 必须 |
+### 4.1 标准顺序
+
+1. **定位**：在 `docs/FEATURES.md` 找功能行，确认实现位置与门禁；先跑一次相关门禁做基线。
+2. **确认口径**：涉及方案切换 / 破坏性操作 / 版本号，先出方案等用户确认。
+3. **实现**：只改目标平台分支；临时实验必须在同一次改动内还原。
+4. **静态检查**：`.ets` 跑 `check_ets_files`；`.cpp` 跑 `check_cpp_files`。
+5. **构建**：`devecocli build --product default`（手机壳另跑 `--product phone`）。**不带 `--product` 会因双 entry 报错**。
+6. **门禁**：跑相关门禁；出包或改核心时跑全量回归（§7）。
+7. **真机**：本机 2in1 可覆盖安装；平板 / 手机交用户自测。
+8. **交付**：包结构核验与真机结论分开写；功能 / 坑 / 决策同步进台账。
+
+### 4.2 默认决策（不要反复问）
+
+| 场景 | 默认做法 |
+|---|---|
+| 改完 `.ets` / `.cpp` | 静态检查 → `devecocli build --product default` → 相关门禁 |
+| 要装到本机 | Beta `local-install`（本机调试签名，见 `AGENT-HANDOFF.md` §3.3） |
+| 改完插件 / 核心树没生效 | 重打核心容器（§6.3） |
+| 用户没说「出包」 | 只编译 + 门禁，不出包 |
+| 用户没说「验证 UI」 | 不跑 `verify_ui` |
+| 装不上 / 9568322 / 9568286 | 换同签名、同 provision 的包覆盖安装；**不卸载** |
+| 文档写哪里 | 状态改 `docs/HANDOFF.md`；功能改台账；坑改坑档；决策改决策表 |
+| API / 权限不确定 | 先查本地知识库与官方文档（`AGENT-HANDOFF.md` §2），再查核心树 |
+
+**必须问用户的只有 4 类**：破坏性操作（卸载 / 清数据 / 删交付件）、改版本号、切换平台归属、上传或提交审核。
+
+## 5. 编码规范
+
+### 5.1 ArkTS
+
+- 按 ArkTS 严格子集写：不要 `any` / `unknown`、不要 `as` 断言、不要结构化类型、不要动态属性访问。
+- 对象字面量必须有显式类型上下文。
+- 写 `.ets` 前先加载 `arkts-grammar-standards`；报错按 `arkts-error-fixes` 修。
+- 资源与字符串：不写死品牌 / 包名；用资源引用。
+
+### 5.2 三端隔离
+
+- 手机 / 折叠只改 `phone`；平板 / PC 只改 `entry`；共享能力改 `platform`。
+- 设备分档只认 `DeviceFacts`：`EDGE_FAMILY_TOKENS` **只含 `QXS`**，市场名靠 `MatePad Edge` / `Pro Max` 分词。
+  `MRX/MRR/MRD/MRO/DRA` **不得加回**型号族白名单（会把普通平板判成 desktop，终端直接不可用）。
+- 终端分档：只有 PC / 2in1 / Edge / ProMax 有原生 PTY；其余走 guest VM。
+
+### 5.3 桥、垫片与核心补丁
+
+- 新桥方法必须同时登记契约（`dshcompat` + `check-bridge-methodlist`），否则不得暴露。
+- jitless 是正式形态：不申请 JIT、不解除降级、不依赖 WASM；新能力走既有垫片层。
+- 上游补丁必须可核对：锚点缺失要显式告警，不允许静默跳过。
+- 改 `hostcore/plugins/**` 或核心树内容 ⇒ 必须重打容器（§6.3）。
+
+### 5.4 权限与资源
+
+- **先实现、后声明**：不得声明没有运行时消费点的权限。
+- 权限面 entry 18 / phone 9，条数 + 顺序 + reason 逐位钉死；任何改动必须同步门禁。
+- ACL 以发布 Profile 的 `allowed-acls` 为准；不得声明 Profile 未批准的受控权限。
+- 不把「删权限」当排障手段；按「声明面 / Profile / 设备实读」三类证据排查。
+
+### 5.5 版本控制
+
+- **代码永不提交**：不执行 `git commit` / `push`，除非用户明确要求。
+- 不删 `signing/**`、`.certs/**`、`dist/**` 交付件、`resfile/` 关键资产。
+
+## 6. 构建、签名与发布
+
+> 本节是**构建的唯一真源**。其他文档只做速查并指回本节。
+> 所有命令都在工程根执行；脚本会临时改身份并在 `finally` 逐字恢复。
+
+### 6.0 先选对产物
+
+| 目的 | 用哪条命令 | 产物身份 |
 |---|---|---|
-| 用户明确说"全部清掉"/"重新装" | 可卸载 | 先复述确认 |
-| 换签名（调试证书 → 发布证书）导致覆盖安装失败 | `hdc uninstall -k <bundle>` | 卸载**立即验证数据仍在**，不可假定 `-k` 生效 |
+| 改完代码自检 | `devecocli build --product default` / `--product phone` | 正式包名，debug 签名 |
+| 出测试包给别人 | `tools/build-beta.mjs --combined-app` | `com.dshm.dshmbeta`，debug |
+| 装到本机看效果 | Beta + `local-install` 重签 | `com.dshm.dshmbeta`，本机调试签名 |
+| 上架 / 邀请测试 | `tools/build-agc.mjs` | `com.dshm.dshclient`，release 签名 |
+| 只改核心树 / 插件 | `tools/pack-core.mjs --place-in-app` | 更新 `resfile` 容器 |
 
-即使有例外，也要**先问用户**，不要自行决定。
+### 6.1 身份 / 签名矩阵
 
-### 判断依据：这条命令会不会碰 el2
+| 产物 | bundleName | buildMode | signingConfig | 证书 + Profile | 本机可侧载 |
+|---|---|---|---|---|---|
+| 日常调试构建 | `com.dshm.dshclient` | debug | `debug` | `.certs/debug-local/xiaobai.p12` + `.certs/multihap-20261024/DSHM-multihap-debug-pc-phone-20261024.p7b` | **是**（Profile 的 `device-ids` 含本机 UDID `20DB409A…`，2026-11-18 实测） |
+| Beta（canonical） | `com.dshm.dshmbeta` | debug | `debug`，构建期 Profile 临时换成 `signing/debug/default_desktop.ohos.arm64_*.p7b` | 同上证书 + 该 beta debug Profile | **否**（设备侧 9568322） |
+| Beta（local-install） | `com.dshm.dshmbeta` | debug | `devecocli signature generate` 生成的 `default` | `~/.ohos/config/` 下本机物料（含本机 UDID） | **是** |
+| AGC | `com.dshm.dshclient` | release | `release` | `.certs/release1012/dshm.p12`（alias `ohosdshm`）+ `.certs/release-20261109/DSHM1109Release.p7b` | **否**（release 不可侧载） |
 
-- `/data/app/el1/...` = 代码与资源 → 覆盖安装会换，**安全**
-- `/data/app/el2/...` = **用户数据** → 任何删除都是不可逆的，**禁止**
+约束：
 
----
+- AGC Profile 必须是 `type=release`、`app-distribution-type=app_gallery`、`bundle-name=com.dshm.dshclient`、
+  `app-identifier=6917614360926110054`，且未过期；entry 声明的受控权限必须全部在 `allowed-acls` 内。
+- Beta 用独立 bundle（`com.dshm.dshmbeta`）与独立 App ID（`6918745051729970584`），**不能沿用正式 App ID 的 ACL**；
+  beta Profile 缺 ACL 时会直接报错（`--existing-beta-upgrade` 只用于"设备上已有同签名 beta"的覆盖升级，不得分发全新安装）。
+- 版本号只在用户明确要求时改；不要为了刷图标或换包自行升 `versionCode`。
 
-## 回归纪律：不允许"修好后面、前面又坏"
+### 6.2 工具与前置
 
-1. **改动前**先跑基线并记录结果
-2. **改动后**跑同一批，逐项对比；任何 ok → fail 必须当场修，不许延后
-3. **临时实验**（如交换两行顺序做对照）必须在**同一次改动内还原**，
-   并把验证到的结论写进代码注释，而不是留下实验代码
+| 工具 | 用途 | 调用方式 |
+|---|---|---|
+| `devecocli` | 唯一构建入口（内部调 hvigor / SDK） | `devecocli build [--product X] [--build-mode debug\|release]` |
+| `tools/build-node-cli.mjs` | 生成随包 node CLI | 出包脚本自动调用 |
+| `tools/sign-bundled-libs.mjs` | 给随包 `libnode` 补 `.codesign`（否则 exec 域 `dlopen` 被拒） | 出包脚本自动调用 |
+| `tools/place-ffmpeg.mjs` | 落位 ffmpeg 资产 | 出包脚本自动调用 |
+| `tools/place-host-app.mjs` | 把宿主 JS 垫片写进 `resfile`（身份替换后必须重放） | 出包脚本自动调用；恢复身份后也要重跑 |
+| `tools/pack-core.mjs` | 重打核心容器 | 见 §6.5 |
+| `tools/build-beta.mjs` | Beta 包（临时身份 + 调 `devecocli` + 校验 + 还原） | 见 §6.3 |
+| `tools/build-agc.mjs` | AGC 包（release product + 校验 + 还原） | 见 §6.4 |
+| `hap-sign-tool` | 独立验签 | `<SDK>/default/openharmony/toolchains/lib/hap-sign-tool verify-app ...` |
+| `devecocli signature generate` | 生成本机调试签名并写入 `build-profile.json5` | 仅 local-install 流程使用 |
 
-必跑的回归门禁：
+前置检查：
 
-```powershell
-node tools/assert-cli-shim.mjs
+1. 会话目录 = 工程根（`build-profile.json5` 所在处）。
+2. `DEVECO_HOME` 已导出（本机默认已设；脚本也会回退到 hnp 工具链路径）。
+3. 磁盘余量 ≥ 2 GB；`dist/beta`、`dist/release-test` 不要手删。
+4. 当前没有别人同时在改 `build-profile.json5` / `AppScope/app.json5`。
+
+> **登录不是构建前置。** `devecocli build`、Beta、AGC 都用仓库内既有签名物料（`debug` / `release` signingConfig），
+> **不调用 `signature generate`、不需要 `auth login`**。2026-11-18 用 `DEVECO_CLI_AUTH_SOURCE=deveco-code`
+> 模拟未登录实测：`signature generate` 报 `Run devecocli auth login to sign in`（rc=1），
+> 而 `devecocli build --product default` **rc=0 / BUILD SUCCESSFUL**。只有 §6.8 的 local-install 重签需要登录。
+
+### 6.3 Beta 包（canonical）
+
+```sh
+CODEBUDDY_SAFE_DELETE_ENABLED=0 node tools/build-beta.mjs --combined-app
+```
+
+脚本内部顺序（了解即可，不要手工照做）：
+
+1. 校验 beta debug Profile 的 ACL 面；跑 `check-host-port-isolation`。
+2. `build-node-cli` → `sign-bundled-libs` → `place-ffmpeg`。
+3. `devecocli build clean`。
+4. 备份并替换 16 个身份文件：`com.dshm.dshclient` → `com.dshm.dshmbeta`，
+   `DSHM` → `DSHM beta`，`Jinghong` → `Jinghong beta`；替换 `build-profile` 里的调试 Profile 路径。
+5. 默认注入 `ACCESS_USER_FULL_DISK`（`--no-full-disk` 关闭），仅构建期，`finally` 恢复。
+6. 把 `hostruntime` 的 target 临时并入 `default` product，执行
+   `devecocli build --product default --build-mode debug`。
+7. 校验产物：beta 身份 / `versionCode` / debug 模式 / entry 18 条 / phone 9 条。
+8. 把 `tablet/`、`phone/`、三端合一 `.app`、`SHA256SUMS`、`README.txt` 写入输出目录；
+   `finally` 逐字还原 16 个文件并重放 `place-host-app`。
+
+产物：`dist/beta/DSHM-beta-<versionName>-<versionCode>-<stamp>/`
+
+```text
+DSHM-beta-…-combined-debug.app
+tablet/{entry hap, hostruntime hsp, …}
+phone/{phone hap, hostruntime hsp, …}
+SHA256SUMS
+README.txt
+```
+
+> `tablet/`、`phone/` 只是便于检视的拆包目录，**签名仍来自 beta Profile，真机侧载必报 9568322**；
+> 要装到本机必须走 §6.8 local-install。
+
+参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--combined-app` | 兼容旧命令，等价默认行为（可省略） |
+| `--out <dir>` | 自定义输出目录；目录已存在会拒绝覆盖 |
+| `--sideload-only` | 额外把整个输出目录打成 zip |
+| `--no-full-disk` | 不注入 2in1 全盘权限 |
+| `--existing-beta-upgrade` | 设备已有同签名 beta 的覆盖升级场景，ACL 不齐只告警 |
+| `--pc-only` | 已废弃，直接报错 |
+
+### 6.4 AGC 包
+
+```sh
+CODEBUDDY_SAFE_DELETE_ENABLED=0 node tools/build-agc.mjs
+```
+
+脚本内部顺序：
+
+1. 读 `build-profile.json5` 的 `release` signingConfig，校验证书 / Profile 存在。
+2. 解析 Profile：`type`、`bundle-name`、`app-identifier`、`app-distribution-type`、`allowed-acls`、有效期；
+   entry 声明的受控权限必须全部被批准，否则当场失败。
+3. `build-node-cli` → `sign-bundled-libs` → `place-ffmpeg` → `place-host-app` → `devecocli build clean`。
+4. 临时新增 `release` product（`signingConfig=release`、`bundleName=com.dshm.dshclient`），
+   保留占位 `default` product（hvigor 要求）。
+5. `devecocli build --product release --build-mode release`。
+6. 取 `build/outputs/release/DSHM-deveco-workspace-release-signed.app`，逐项校验后写入交付目录，
+   生成 `.app.sha256` 并追加 `SHA256SUMS.txt`。
+7. `finally` 恢复 `build-profile.json5` 并重放 `place-host-app`。
+
+产物：
+
+```text
+dist/release-test/dshm-<versionName>-<versionCode>-<coreTag>-AGC-invite-<stamp>.app
+dist/release-test/…app.sha256
+dist/release-test/SHA256SUMS.txt
+```
+
+校验内容（任一项不符即失败）：
+
+- `pack.info` 的 bundle / versionName / versionCode；
+- 模块设备面：entry `tablet,2in1`、phone `phone`、hostruntime 三端；
+- 权限：entry 18 / phone 9；
+- HSP 内核心容器**恰好 1 份**且版本与 `core-recipe.json` 一致；HSP 不含 ffmpeg 资产；
+- 不得内置 `dsh-bili-whale`；
+- `hap-sign-tool verify-app` 通过。
+
+**AGC 包只能上传到 AppGallery 分发，不能本地侧载。**
+
+### 6.5 核心容器（先重打，再出包）
+
+触发：改了 `hostcore/plugins/**`、核心树内容、`core-recipe.json`。
+
+```sh
+CODEBUDDY_SAFE_DELETE_ENABLED=0 node tools/pack-core.mjs --skip-install --place-in-app
+node tools/check-resfile-core-zip.mjs
 node tools/assert-resfile-sync.mjs
-node tools/check-parity.mjs
-node tools/compat-drift.mjs
-node tools/assert-exec-fix.mjs
-node tools/assert-python-bridge.mjs
-node tools/assert-fs-search-fallback.mjs
-node tools/check-web-fetch-jitless.mjs   # jitless 下 web_fetch 真的能抓网页（带对照臂）
-node tools/check-worker-jitless.mjs      # 插件自建 worker 线程也要拿到 jitless 补齐（带对照臂）
-node tools/check-internal-undici.mjs     # Node 内部 require 的内建 undici 必须被纯 JS 垫片接管（带对照臂）
-node tools/check-fetch-shim.cjs          # 垫片自身（含**请求方向**的流式体 ⑧′ + 「吞体的旧实现必须判红」⑧″ 对照臂；忘了加 --jitless 时脚本会自己重跑）
-node tools/check-skill-sync.cjs          # 内置技能同步（判据是内容 sha256，不是字节数；带等长替换用例）
-node tools/check-ptc-ts-strip.mjs        # PTC 的纯 JS erasable-TS 擦除器（81 条断言 + wasm 陷阱 + 变异自检）
-node tools/check-ptc-runtime-inproc.mjs  # PTC 同进程运行时契约（在 --jitless 的临时舞台里跑真 run）
-node tools/check-ptc-wiring.mjs          # PTC"换实现"接线：profile ↔ pack-core ↔ 核心树 三处一致
-node tools/check-core-openharmony-patches.mjs  # 核心树里的 23 处端侧注入补丁都在、且上游原文已消失（资源地址装甲 / PDF Map / 终端平台白名单 / 语音原生采集 / 录音约束 / HMS provider / 端侧 profile 与自带插件副本 / session link / 凭据 / preset workflow / app-boot 只读 stack / fs-local link / fs-local 权限文案（stat/open 被拒 → FS_PERMISSION_DENIED） / attachment link / attachment 失败 cause / Origin 列表 / sharp 调度器 / system 平台包 / 端侧 preset / 平台别名 / 树内清单 / 市场宿主桥 / profile 包通道）；另有 1 处**撤除守卫** —— 已撤除的 `DSHM_DOC_LOAD_DEDUP` 不得复活（标记必须 0 处、上游原文形态必须已恢复）
-node tools/check-decor-button-mode.mjs        # 自绘顶栏底色 ↔ 窗口三键配色必须接线一致（2026-10-05「三键不可见」回归的守卫；带对照臂）
-node tools/check-market-bridge.mjs            # 手机档插件市场的进程内包通道（desktopProfiles/desktopPnpm 宿主桥）：启用判据 / argv 口径 / 队列协议 / 句柄语义 / 拒绝面 / 打包三处接线（离线，不需要核心树与设备）
-node tools/check-profile-pnpm-bridge.mjs   # 手持档「设置 → 插件」安装/卸载的进程内包通道（runProfilePnpm 分叉）：启用判据（带"假壳能跑 ⇒ 不接管"对照臂）/ argv 口径 / .rem 与 .req 分流 / 结果与取消语义 / 拒绝面 / 打包接线；--self-test 4 个变异体（离线，不需要核心树与设备）
-node tools/check-denial-hints.mjs            # 「被平台拒绝」的 errno 人话化：两份 denial-hints.js 逐字节一致 + 三档判定行为 + remove/move/publish 三个调用点真的接上（离线，不需要核心树与设备）
-node tools/check-fs-local-permission.mjs     # 核心树里那份 dsh-fs-local 的权限分支**真跑一遍**（stat/open 被拒 ⇒ FS_PERMISSION_DENIED；ENOENT/abort/非权限错不受影响）；带注入式负控制臂（把补丁就地删掉必须退回裸 EPERM）。需要核心树
-node tools/assert-core-entrypoints.mjs       # 裁剪后核心树的**入口可达性**：每个**包根**的 main / bin / exports（只认 Node 条件 node·require·import·default）都要解析到真文件；带 `--tree=<核心树根>` 对照臂（判"缺失是本次裁剪引入的，还是上游本来就有的"）与 `--self-test`（含 bundler 字段 / 自定义条件 / 非包根 package.json 三条负控）。需要核心树
-.\tools\device-acceptance.ps1        # 真机端侧验收
-.\tools\device-code-fingerprint.ps1  # 设备核心树里 5 个关键文件 ↔ 本机树 逐字节 sha256（一致/不一致/未验证 = rc 0/1/2；只读，不装不卸）
 ```
 
-> **哪些门禁需要核心树 / 设备？**（干净克隆里 `entry/src/main/resources/resfile/*.zip` **不入库**，
-> 见 `.gitignore:42` ⇒ 没有核心树；需要它的门禁会以 exit 2/3 结束，**不是**"通过"）
->
-> - **只需仓库内文件**（CI 跑这 **16** 条，见 `.github/workflows/gates.yml`）：`assert-cli-shim`、
->   `assert-resfile-sync`（先跑 `tools/place-host-app.mjs`）、`check-parity`、`assert-exec-fix`、
->   `assert-python-bridge`、`check-doc-refs`、`check-dead-code`、`check-decor-button-mode`、
->   `check-skill-sync.cjs`、`check-ptc-ts-strip`、`check-internal-undici`、`check-worker-jitless`、
->   `check-market-bridge`、`check-profile-pnpm-bridge`、`check-denial-hints`、`check-fetch-shim.cjs`
-> - **需要核心树**（`dist/core/work/dsh-core-<ver>/`，由随包 zip 解出）：`compat-drift`（还要 `.research/`）、
->   `assert-fs-search-fallback`、`check-web-fetch-jitless`、`check-ptc-runtime-inproc`、`check-ptc-wiring`、
->   `check-core-openharmony-patches`、`check-plugin-toggle`、`check-native-closure`（还要 `entry/libs`）、
->   `check-fs-local-permission`（跑的是树里那份被注入的 `dsh-fs-local`）、
->   `assert-core-entrypoints`（裁剪后入口可达性；`--tree=` 可指向别的版本目录做对照）
-> - **需要真机 / DevEco**：`device-acceptance.ps1`、`device-code-fingerprint.ps1`
->   （两者都**只读**，都不进 CI；后者回答的是 R4 §1 那种"设备是不是在跑本机这份代码"，
->   判据是**逐字节 sha256**，不是"最近有没有装过东西"——见 `docs/109` §5.3）
->
-> ⇒ **"CI 绿"不等于"全绿"**：核心树与设备相关的那几条必须在有产物的环境里另跑。
+- `--place-in-app` 才写 `hostruntime/.../resfile/`；裸命令只产出 `dist/core/`。
+- resfile 只允许 1 份 `dsh-core-*.zip`；旧包必须显式删除，不能只拷新的。
+- 顺序：**重打容器 → 出 Beta / AGC**；反过来会带旧插件上线。
 
----
+### 6.6 出包后核验（必做）
 
-## 产物归置
+```sh
+# 权限面
+node tools/check-permission-surface.mjs
+# 核心容器
+node tools/check-resfile-core-zip.mjs
+# 独立验签（java 可用）
+/data/service/hnp/hmos-clt.org/hmos-clt_1.0.0/sdk/default/openharmony/toolchains/lib/hap-sign-tool   verify-app -inFile <signed.hap 或 .app> -outCertChain /tmp/v.cer -outProfile /tmp/v.p7b
+# 校验和
+cd <交付目录> && sha256sum -c SHA256SUMS.txt
+```
 
-| 类型 | 位置 | 说明 |
+结论必须分开写：「包结构核验通过」≠「真机可用」。平板 / 手机需用户真机自测。
+
+### 6.7 构建错误码
+
+| 错误 | 含义 | 处置 |
 |---|---|---|
-| 构建产物 | `entry/build/default/outputs/default/` | 会被 clean 覆盖，**不要当交付物留档** |
-| 交付/侧载包 | `dist/sideload/` | 不会被构建清掉，含 README + 校验 |
-| 文档 | `docs/` | 编号连续：`00-`…`116-`（当前最大编号 **116**；`95` 收尾审计台账、`96` 侧栏预览竞品调研、`97` `readBytes` 空响应根因与修复、`98` 收尾审核与修复（托盘幂等回归 / 垫片字节对称 / 自检扩围）、`99` 右上角三键不可见（顶栏底色 ↔ 三键配色接线）、`100` v1.1.0 发布说明、`101` 托盘退出残留与插件市场重启横幅的根因与修复、`102` 手持形态朝向跟随屏幕旋转（手机/平板跟屏旋转）、`103` 手持档工作区路径采纳判据（⚠️ 已由 `105` 更正：真因是授权只活一个进程）、`104` 手机档终端与 bash 能力判据（真 shell 无解、真命令有解；含装机脚本假绿修复）、`105` 手持档工作区目录授权的持久化与跨启动恢复（picker 授权只活一个进程 ⇒ persist + activate 两步）、`106` 两份端侧自检报告的分诊与探针读数机器可读化（PC r4 / 手机 dshmarket：探针读数落进 `host-ready.json` 的 `runtime.*`、三份内置技能改档位口径、Python「命令 ≠ 运行时」的裁定；并记明本轮不升 `coreVersion` 的理由）、`107` 手机档插件市场的进程内包管理通道（`desktopProfiles`/`desktopPnpm` 宿主桥：spawn 链路在手机档必失败 ⇒ 接上游契约改走进程内队列通道，`coreVersion` 升 `+dshm.7`））、`108` PC 沙箱自检落实与 API 23 向下兼容实证（glob 静默失败 · 落盘 errno 可读化 · fill 遮蔽 · 调试 profile 设备绑定；`coreVersion` 升 `+dshm.8`）、`109` 沙箱复测的两个 P1 缺口（`move`/`publish` 的裸 EPERM 与 `read`/`remove`/`edit` 的「无权限 vs 不存在」；`coreVersion` 升 `+dshm.9`）、`110` 手持档插件安装/卸载的进程内包通道与 API 24 兼容面拍板（`runProfilePnpm()` 的进程内分叉：手持档没有可 execve 的 shell ⇒ 假壳一行都没执行；与市场桥同一协议/判据，PC 档 `shimRunnable()` 为真时**完全惰性**；`compatibleSdkVersion` 定为 `6.1.1(24)`，产物 `minAPIVersion=60101024`；`coreVersion` 升 `+dshm.10`）、`111` 对话框文件上传失败的根因（宿主 fetch 垫片把**流式请求体**吞掉且不设 `body` ⇒ 全仓唯一的 `streaming` 路由 `uploadFileBinary` 在 `undefined.getReader()` 炸成 `ATTACHMENT_WRITE_FAILED`；修 `DshmRequest` + 诊断行 `stream=`；⑪b 让落盘失败 cause 进报文；`coreVersion` 升 `+dshm.11`）、`112` 三端（PC / 手机 / 平板）代码审核 + 正式侧载包 + 轻量化裁定（**只审不改**：11 处分档点逐条核过、端到端未发现功能缺陷；唯一文件改动 = 删掉 `docs/README.md` 索引尾部的两行孤儿残句；轻量化 7 项候选（可省 ~21 MB / 6.6%）全部登记为“待机 / 不做”并写明理由）、`113` 工作区列表里那条「用户没建过的 `com.dshm.dshclient`」的根因与修复（自带插件 `dshm-workspace-claim` 原来**每次启动**都往工作区注册表登记一条认领目录 ⇒ 用户没建过、三端却都有；收窄成「只在注册表为空时登记一次」+ 撤回自己那条 0 会话的旧记录 + 读不到注册表就 fail-closed，登记标题不再退化成包名，`coreVersion` 升 `+dshm.13`）、`114` WorkBuddy 手机端「bash 不能调用」的**只读侦查**与 DSHM 可借鉴项（**未改一行代码**：手机档不承诺本机 shell 是成熟产品的实际取舍 —— 手机端是 ArkUI 壳挂 Flutter 画布的**前端**，`reqPermissions` 14 条零条与 shell/进程相关（从不试 `execve`），执行落云端或用户自己的 PC，「云端 工作模式」点开是**「选择设备」**且手机自身不在列表里；对 DSHM 的价值在于：**"PC 当执行主机"这条路仓库里已经有** —— `hostkit/`（PC 侧配对 + 隧道，出口回 `127.0.0.1`）+ 手机侧 `ConnectPane` 的「远程 Host（可选）」，是手机档要真 `bash` 的唯一门，但其门禁现状为 **146 项 145 通过 / 1 红**（红的是用例夹具自身，token 里多一个空格）；`docs/104` 修法一/二仍是本机最优解，**WorkBuddy 不构成反证**）、`115` 手持档（手机/平板）的**工具链解包改走进程内纯 JS** —— 两份仓库外报告（手持档体检 / PC 发布门禁）按「手机+平板＝同一类、PC 单算」分开处理；真缺陷只有手持档 P0-2 一条：Python 运行时**永远** `stdlib=false`（解包走 `spawn busybox ash -c "tar xmzf …"`，而本档禁止创建进程 ⇒ 每次启动先删 `python/`、spawn 报错、`.extract.log` 落 0 字节），修法依据是「**解包不需要新进程**」——新增 `hostcore/app/tar-gz.cjs`（单份纯 JS walker，异步让出事件循环 / tar-slip 抛错 / link 不建链 / 采纳 PAX `path=`），`main.js` 两条 spawn 失败路径经**一次性门闩**接上回退（只解 python），插件安装器删私有 ustar 复用同一份，两个 resfile 清单补件；「手持档不能调 `bash`」**不是本仓能修的**（`docs/104`/`docs/114` 判决不变，本轮没有把终端做成看起来能用）；顺带把 `assert-exec-fix` 第 34 条从裸短语计数收窄成完整文案断言，PC 档写锁只加读数不改策略；`check-tar-extract` 26→33 条（4 个注入式负测试验过有牙）；**`coreVersion` 未升**；**真机验收 2026-10-07 已做** —— PC 档五项自动判定全 PASS、回退惰性（0 处 `进程内解包`）；手机档首次启动即解出 `toolchain/python`（3482 文件）、`print(1+1)=2` 免重启通过、第二次启动不再解包；**未做**：插件安装器 `extractTar`（无 dry-run）、`116` 第 27 轮收尾：**分档代码审核**（PC/2in1 逐点确认"手持分支对它逐一早退"⇒ 没被改坏；手持档本轮未改、上轮的进程内解包已在真机验过，`bash` 仍 `denied`）+ **全项目体检**（31 条登记门禁 30 绿，唯一那条红是自己裸跑 `pack-core` 踩出来的；另把 `tools/` 67 个脚本全扫过，7 个"红"全是非门禁工具）+ **两条新坑**：裸跑 `tools/pack-core.mjs` 会重盖树内 `dshm-core.json` 的 `builtAt`（`dist/core` 容器 sha `eac9393d…`→`f0233125…`，16,487 条里只差这 1 条）而 resfile 没动 ⇒ `check-resfile-core-zip` 判红；裸跑 `tools/place-toolchain.mjs` 会把 resfile 的 15 个 `.apk` + 1 个 `.tar.gz` 重新 gzip（**只有 gzip 头 MTIME 字节 4–7 变**，gunzip 后逐字节相同）⇒ 与已出 HAP 失同步 —— 两条都按"从 resfile / 已装 HAP 逐字节还原"复原，记为「出包三坑」的两个同族变体 + **重出正式件 r3**（295,513,598 B / sha256 `5d6773d35407ef34c6d8603b3673c232bb87e4b307c215601f3b644137560c49`；与 r2 **解压后 115 个条目逐字节相同**，差异只有 zip DOS mtime（14:38:46 vs 13:56:54）与签名块 1 字节 ⇒ **功能等同**，故 **r2 不留回退副本**，`dist/sideload/SHA256SUMS.txt` 与 `README.md` 已同步）+ **清理**（`$env:TEMPdshm*` 2314 项 / 173.9 MiB、2 个构建日志；保留清单与理由见该档 §6）+ **追加轮（该档 §9，同日 15:20）**：修 `tools/device-code-fingerprint.ps1` 的 **token 取源缺陷** —— 原实现从 `dshm-host.log` 抓 `tail -1 token=`，那行是**启动当时**打印的，`tail -1` 可能落到**上一个进程**的 token ⇒ 桥回 **401**、脚本把偶发写成「未验证」（证据：同一 token 下 `status` 200 而 `run-get` 401），改成**三级优先**（`-Token` > `host-ready.json` 的 `token`（权威=当前进程，实测该文件 0666 可读）> 日志兜底）并把 `token 来源：` 与长度打进输出，401 单独判读并给出「怎么喂 live token」的下一步；手机档**不喂 token** 复跑即 `一致（5/5）`/RC=0（修前 rc=2）—— 重编 **r4**（`BUILD SUCCESSFUL in 19 s 139 ms`，295,513,598 B / sha256 `2badeb7b7e3deed8e5c898eb67100a4c3478962532ccd14fb4c2687f479474be`；与 r3 **解压后 115/115 条目逐字节相同**、只差 zip mtime ⇒ 功能等同，**r3 不留副本**）；真机：手机 `62T0225B18039433` 覆盖安装（home 指纹 8/3440 不变）⇒ 端侧验收 **5/5 PASS**（`dist/acceptance/20261007-152208`）、代码指纹 **5/5 / RC=0**、进程内 CPython 3.12.14 可用、工作区授权跨启动恢复 `restore 1/1` 且 6/6 文件可读写；`coreVersion` **未动**（仍 `+dshm.13`）；**未 commit、未 push**；索引见 `docs/README.md` |
-| 一次性排查脚本 | 用完即删 | 不要把临时诊断脚本留在 `tools/` |
+| `9568322` | 签名来源不匹配（canonical Beta 典型） | 走 §6.8 local-install 重签，不卸载 |
+| `9568286` | provision type 不同（debug / release 混装） | 换同类型包覆盖安装 |
+| `956320 no signature file` | 用了从 `.app` 解出的未签名 hap | 改用 module 产物 `*-signed.hap/hsp` |
+| `9568267` / `9568287` | 多 entry HAP 数量不合法（`.app` 或扁平目录里出现多个 entry） | 本地安装器一次只收一个 entry；从 `.app` 解包时按 `tablet/`、`phone/` 分开装 |
+| `00303107 Invalid storeFile` | 签名物料缺失 / 口令错 | 检查 `signing/**`、`.certs/**`，不要删 |
+| `Profile 已过期` | release Profile 过期 | 在 AGC 重新申请，不要改有效期 |
 
----
+### 6.8 本机可侧载包（local-install）
 
-## 其他既有约束（简摘）
+canonical Beta 的 Profile 与证书不是同一密钥，本机装不上。已验证的替代流程：
 
-- 核心树只认 `dist/core/work/dsh-core-<ver>` 与 profile 依赖树；
-  HAP 生成的 `files/bin/*`、`profiles/*/cordis.patch.yml` 会被重建 ⇒ 修复落在
-  `tools/pack-core.mjs`、`tools/place-toolchain.mjs`、`hostcore/app/*`、`hostruntime/*`
-- Windows tar 会破坏 symlink（`bsdtar` 丢弃、`7z` 物化）⇒ 只允许 Python `tarfile`
-- 所有沙箱内 ELF 必须**构建期自签名**（execve 受签名域管辖）
-- 改 `hostcore/**` 后必须跑 `node tools/place-host-app.mjs` 并确认
-  `assert-resfile-sync` 通过
+0. **先登录**：`devecocli auth status` 确认已登录；未登录先 `devecocli auth login`。`signature generate` 依赖它，本机 2026-11-18 实测未登录会直接失败（`Run devecocli auth login to sign in`）。
+1. 备份 16 个身份文件（与 `build-beta.mjs` 的 `TEXT_EDITS` 同集）到
+   `dist/acceptance/<批次>/originals/`，写 `MANIFEST` + sha256。
+2. 按 Beta 同口径替换包名与字符串；**不注入全盘权限**（生成的 Profile 没有该 ACL）。
+3. `devecocli signature generate` → 生成 `default` signingConfig；
+   **把 `default` 与 `phone` 两个 product 的 `signingConfig` 都指向它**（工具只自动改第一个）。
+4. `node tools/place-host-app.mjs`。
+5. `devecocli build --product default` + `devecocli build --product phone`。
+6. 从**产物目录**取 `*-signed.hap/hsp`，组装 `tablet/`、`phone/` + `SHA256SUMS` + `README-LOCAL.txt`；
+   安装顺序 **HSP → HAP**：`hdc install -r <hsp>` → `hdc install -r <hap>`。
 
+> 为什么这里**不注入** `ACCESS_USER_FULL_DISK`：`devecocli signature generate` 生成的调试 Profile 没有该 ACL，
+> 注入了也拿不到，反而会让安装校验更复杂。canonical Beta 用的是 beta Profile（已批该 ACL），所以在 §6.3 注入；
+> 两者身份、Profile、用途都不同，不是矛盾。
+7. 收尾：16 文件按 MANIFEST 逐字还原（比对 sha）、重跑 `place-host-app`、复跑门禁。
 
----
+### 6.9 构建禁令
 
-## 出包与核心树的三个坑（2026-10-05 实战，真机排障踩出来的）
+1. 不手工改 `build-profile.json5` 的签名 / 身份后直接出包（脚本会还原，手改会留下脏身份）。
+2. 不复用旧 `build/` 产物判断"已构建"；身份变了必须 `build clean`。
+3. 不从 `.app` 里解模块安装。
+4. 不侧载 AGC release 包。
+5. 不因为安装失败就卸载 / 清数据。
+6. 不自行升版本号；不在未经用户确认时上传 AGC 或提交审核。
 
-1. **出包必须带 `--place-in-app`**：`tools/pack-core.mjs` 只在带该参数时才把核心容器拷进
-   `entry/src/main/resources/resfile/`。只跑裸命令 ⇒ 新包留在 `dist/core/`，HAP 里带的还是
-   旧容器 ⇒ 所有核心树侧改动（插件、补丁、版本号）**全部不生效**，而链上自检只看设备树目录名，一路绿灯。
-   出包后请跑 `node tools/check-resfile-core-zip.mjs`：断言 resfile 里只有 1 份容器、且文件名/大小/
-   sha256 与配方、与本次产出三者一致.
-2. **`dist/core/work/<ver>` 复用会静默跳过补丁**：树是增量复用的，目录已存在（含上次打过的补丁）时，
-   新写的注入会命中 "已存在（跳过）" ⇒ 补丁没生效。改完 pack-core 的注入后，要么删该目录（构建产物，允许清理），
-   要么升 coreVersion（`hostcore/core-recipe.json`）——本次用 +dshm.1/+dshm.2/+dshm.3 递增，
-   顺带让端侧走新版本 ⇒ 直接解包的分支。
-3. **resfile 只允许 1 份核心容器**：`--place-in-app` 只增不删 ⇒ 多份 core 共存把 HAP 从 306 MiB 顶到
-   491 MiB（实测）。现已在 pack-core 里自动清掉非当前版本，并有门禁 `tools/check-resfile-core-zip.mjs` 兜底。
+## 7. 测试与门禁
 
-> **`coreVersion` 命名口径（2026-10-05 定案）**：核心树版本统一写成 `0.2.1-alpha.1+dshm.<n>`
-> —— `+dshm.<n>` 是 semver 的 **build metadata**，**不参与优先级比较**，纯粹是**给人读的**：
-> 端侧目录名 `dshm/cores/<version>` 与自检输出 `OK 核心树 <version> 在` 都能**一眼看出设备在跑哪一版**，
-> 事后核查不用去猜。它与上面第 2 条**配套**：只要核心树内容有变（补丁增删、插件副本、版本号），
-> 就必须递增 `<n>` —— 否则端侧不换树，`pack-core` 也不会**重新物化**出干净树。
-> 当前值：`0.2.1-alpha.1+dshm.13`（见 `hostcore/core-recipe.json`；`+dshm.6` 撤除 `DSHM_DOC_LOAD_DEDUP` 时由 `+dshm.5` 升来，`+dshm.7` 加入自带插件「市场宿主桥」`dshm-market-bridge`，见 `docs/107`；`+dshm.8` 改 `fs-search` 注入（`glob`/`grep` 空结果 + 访问被拒不再伪装成「没有内容」）与自带插件 `dshm-fs-write-nonchmod`（落盘 errno 可读化），见 `docs/108`；`+dshm.9` 把沙箱复测的两个 P1 缺口补掉 —— `move`/`publish` 的裸 EPERM、以及 `read`/`remove`/`edit` 的「无权限 vs 不存在」（`dsh-fs-local` 权限人话化 + 两个自带插件共用 `lib/denial-hints.js`），见 `docs/109`；`+dshm.10` 加入自带插件「profile 包通道」`dshm-profile-pnpm` 并注入 `dsh-plugin-manager` 的 `runProfilePnpm()`（手持档的安装/卸载改走进程内队列），见 `docs/110`；`+dshm.11` 修对话框文件上传（宿主 fetch 垫片丢流式请求体）并把落盘失败 cause 进报文，见 `docs/111`；`+dshm.12` 执行 `docs/112 §5` 登记的 4 项裁剪（`*.d.ts` / `*.map` / `*.md` / 测试目录，容器 81.3 → 56.3 MB）—— 同轮修掉 `matchGlob` 的链式-replace 自我改写（`**&#47;*.d.ts` 原本只删到一层），并加两道保险：`PRUNE_KEEP_BASENAME_PREFIXES` 许可证豁免 + 配方 `keepGlobs` 运行期资源豁免（`assets/`、`devtools/`），配新门禁 `tools/assert-core-entrypoints.mjs`，见 `docs/112` §5；`+dshm.13` 把「默认工作区登记」收窄 —— 自带插件 `dshm-workspace-claim` 原来自**每次启动**都 `create(认领目录)`，真机上因此留下一条**用户没建过**的工作区（工作区注册表实证：`sessionIds: []`、`createdAt` = 该提交当天的 boot+4s）；现在注册表非空时一条都不加、只撤「自己那条 + 0 会话」且撤完必须仍非空、读不到注册表 fail-closed，登记标题用 `下载` 而不是包名，配新门禁 `tools/check-workspace-claim.mjs`，见 `docs/113`）。
-> （第 2 条里 `+dshm.1/+dshm.2/+dshm.3` 是各轮**历史**实际用过的值，保持原样，不改写历史。）
+### 7.1 分层
 
+| 层 | 手段 | 何时跑 |
+|---|---|---|
+| 静态 | `check_ets_files` / `check_cpp_files` / `devecocli check lint` | 每次改完源码 |
+| 构建 | `devecocli build --product default`（entry）/ `--product phone`（phone） | 每次改动 |
+| 契约门禁 | `tools/check-*.mjs` / `assert-*.mjs` | 按功能域跑；出包跑全量 |
+| 包结构 | `check-permission-surface`、`check-resfile-core-zip`、独立验签 | 每次出包 |
+| 真机 | 覆盖安装 + 启动 + 关键路径 | 有设备时；平板/手机交用户 |
 
----
+### 7.2 全量回归
 
-## 真机读数的三个坑（2026-10-05 / 10-06 实测）
+```sh
+# 改过 gates.yml：重生成全量基线
+python3 dist/acceptance/gen-full-yml-gates.py dist/acceptance/<日期>-full-gates.txt
 
-1. **`ps` 的 STIME 不可信**：本机实测比真实本地时间**慢 3h52m45s**（同一进程：
-   `stat -c %y /proc/<pid>` 得 16:30:41，`ps -ef` 的 STIME 显示 12:37:56）。
-   凡"进程何时启动"一律用 `stat -c '%y' /proc/<pid>`，不要读 `ps` 的 STIME。
-2. **`bm dump` 的 stdout 不能在设备侧重定向**：`bm dump -n X > f` 得到 0 字节、
-   stderr 空、退出码 0。必须在**宿主侧**捕获（Node `spawnSync` 拿 Buffer，避免 PowerShell 的 GBK 往返）。
-   另：持久 hilog（`/data/log/hilog/hilog.*.gz`，shell 可读）里 tag 首段就是**进程名**，
-   是查"某应用跑过没、跑在哪个进程"的低成本台账；`hilog -x` 是 dump，`hilog -d` 需参数。
+# 日常回放：只能用最新全量报告
+python3 dist/acceptance/rerun-gates.py <基线报告> <输出报告>
+```
 
-3. **含 NUL 的日志行在设备侧 `grep` 里"看起来被截断"，`grep -c` 还会静默少算**：`/proc/self/attr/current`
-   读出来**尾部带 `\0`**，而 JS 的 `\s` **不匹配** `\u0000` ⇒ NUL 原样进 diag 行。设备侧 grep 把 NUL 当行尾：
-   `终端能力汇总：…` 只显示到 `宿主域=…:s0`，NUL 之后才出现的词 `grep -c` 直接 **0**（PC 端 r4 自检报告里
-   "汇总行只有宿主域"、以及"新加的探针日志一行都没有"都是这个假象，见 `docs/106` §7.3）。
-   ⇒ 读日志要**用 `hdc file recv` 取回宿主侧按字节看**；代码侧同时剔 NUL（已修：`probeShellCapability()`
-   的 `tidy()` 与 `hostDomain` 都 `.split('\u0000').join('')`）。
-  另：el2 的 `home` 是 0700 ⇒ shell **读不到** `host-ready.json`；要读就走**应用自身的 Python 桥**（见下一节）。
+- 任何 ok→fail 当场修，不许延后；「CI 绿」不等于「全绿」。
+- `check-two-project-parity.mjs` 因对端已删必然 rc=2，**不作判据**。
+- 新增门禁必须带 `--self-test` 变异体（少一条 / 改 reason / 还原旧形态都必须判红）。
+- **门禁必须自洽**：判据不得依赖宿主 `grep/sed/awk/node` 版本差异；要用外部命令就在临时 `PATH` 里桩化
+  （先例：`check-guest-terminal-lifecycle` 因宿主 toybox `grep -Fxq` 静默返回 1 而假红，见 `docs/PITFALLS.md` §4.4）。
 
-### 端侧插件日志与宿主 token 的取法（2026-10-07 修正：这两条此前都写反过）
+## 8. 红线
 
-- **插件 `console.log` 落 `node-output.log`，不是 `dshm-host.log`**。后者只收 `main.js` 的 `diag()`；
-  `node-output.log` 是**进程 stdout 的转写**（每次启动轮转、权限 `-rw-rw-rw-` ⇒ `hdc shell` / `hdc file recv`
-  都读得到）⇒ **自带插件的行为是可机器判读的**，不必退回给用户点 UI。
-  （2026-10-07 的代价：上一轮因为错判"插件日志读不到"，把一条本可当场证实的修复推给了用户人工复核。）
-- **token 在 `node-output.log` 里，不在 `dshm-host.log`**：`dsh web: http://127.0.0.1:3120/?token=…` 那一行
-  （`writeHostReady()` 的捕获源）才是宿主 token。`dshm-host.log` 里的 `token=` **全部是探针自己发出去的请求**
-  （`IN-REQ /dshm-python/run-get?token=…`）⇒ 照它取值会拿到**上一次进程的陈旧 token**
-  （实测症状：明明"日志里有 token"，桥却回 `401 token required`）。token **每次进程启动都换**，
-  取 `node-output.log` 里**最后一条** `dsh web:`。
-- 读 0700 目录（`dsh/home`，含 `storages/workspace.json`）只能经**应用自身的 Python 桥**：
-  `hdc fport tcp:<宿主端口> tcp:3120`，再 `GET /dshm-python/run-get?token=<上式取的>&code=<urlencoded python>`
-  （≤64KB）。先 `hdc fport ls` 看一眼实际映射 —— 端口被占时 `hdc fport` 会失败而**旧的转发仍在**。
-- **读宿主状态的首选是宿主自己的 RPC（不过 Python 桥 ⇒ 手持档也能用）**：先 `GET /?token=<宿主 token>`
-  拿 `dsh-auth-*` cookie（303 的 `Set-Cookie`；**不带 cookie 的 `/api/*` 一律 401**），再
-  `POST /api/<namespace>/<method>`，body = `{"type":"client-request","rpcId":"…","method":"<namespace>/<method>","payload":{"args":{…}}}`。
-  例：`POST /api/session/list`、args `{"_request":{}}` ⇒ 回 `items[].cwd`（据此判"哪个工作区真的有会话"）。
-  注意 `mode: 'stream'` 的方法（如 `workspace/follow`，工作区列表唯一入口）**走不了这条**：网关回
-  `stream Remote methods must be opened through the stream carrier`。
+1. **真机数据**：只允许覆盖安装（`hdc install -r`）；禁止 `hdc uninstall` / `bm uninstall` / 删 `el2`。
+2. **签名物料**：`signing/**`、`.certs/**`、`AGC-operations/release-signing/**`、含口令的 `build-profile.json5` 永不删除。
+3. **权限面**：entry 18 / phone 9；不新增未审批 ACL；不声明无消费点的权限；不靠删权限排障。
+4. **版本号**：只在用户明确说「升到 X」时改。
+5. **交付件**：`dist/release-test/*.app`、`dist/beta/*`、`dist/core/*.zip`、`dist/acceptance/*`、`dist/frozen/*`、`SHA256SUMS.txt` 一律不删。
+6. **代码**：不提交、不推送；不删 `resfile/`、不删自带插件与 toolchain 资产。
 
----
+## 9. 文档与知识管理
 
-## 收尾期新踩的三个坑（2026-10-05 夜）
+### 9.1 文档分层
 
-1. **Node 里读 git 历史不要用 `execSync('git show HEAD^:…')`**：Windows 上它经 `cmd.exe`，而 `^` 是 cmd 的转义符 ⇒ `HEAD^:` 会被吃成 `HEAD:`（**索引版**），
-   **静默返回删除后/暂存后的内容**，让人误判"引用本来就对"。正确写法：
-   `execFileSync('git', ['show', 'HEAD~1:path'])`（或先 `spawnSync` 拿 Buffer 再解码）——本次行号重算就因此绕过一次误判。
-2. **代理的通/不通是动态的，别把结论写死**：2026-10-05 傍晚实测同一个远端先后出现两种相反结果 ——
-   · 梯子没开时：`git push github …` 走 `http.proxy=http://127.0.0.1:7897` 必失败，须 `git -c http.proxy= …` 绕开；
-   · 梯子开启后：绕代理反而 `Recv failure: Connection was reset`，走已配置代理才成功。
-   ⇒ 推送失败时**两种都试一次**并贴原始报错，不要照着上一次的结论硬套；也不要把临时结论写进 git 配置（只在命令行覆盖）。
-3. **清理 `dist/core/work/<old>` 后，`entry/.cxx` 里的 ninja 缓存会引用已删路径** ⇒ 下一次 builds 首次失败；
-   删掉 `entry/.cxx`（构建缓存，允许清理）即可。这条属于清理口径：
-   **清 `dist/core/work` 旧版本时，顺手清 `entry/.cxx`**。
+| 类型 | 位置 | 规则 |
+|---|---|---|
+| 规范 | `AGENTS.md` | 只写当前口径 |
+| 操作 | `AGENT-HANDOFF.md` | 命令 / 环境变了就改 |
+| 状态 | `docs/HANDOFF.md` | 每轮更新；只写现在 |
+| 功能台账 | `docs/FEATURES.md` | 改功能必须同步；含历史里程碑 |
+| 坑 / 决策 | `docs/PITFALLS.md`、`docs/DECISIONS.md` | 新坑 / 拍板就追加 |
+| 契约 | `docs/parity-matrix.md`、`docs/199-*.md` | 由门禁消费，不得删改模式 |
+| 跨角色交接 | `JD/` | WorkBuddy 落地后写 `JD/from-workbuddy/`；DevEco 编译/测试/复核后回 `JD/from-deveco/`；看板 `JD/STATUS.md`；不参与 `check-doc-*` |
+| 历史 | `docs/archive/` | 只读；不参与门禁；不作为口径 |
 
-> 另记（提交卫生）：`docs/90` 的一次"等长替换"（行号重算）因**文件 size 不变**，被 git 的 stat 缓存当成"未改"，
-> 结果随另一个只 `git add docs/90` 的提交一起落库 —— 内容正确但提交归属与 message 不符。
-> ⇒ 提交前用 `git status` + `git diff --cached --stat` 核对**暂存内容**，别只信 `git status` 的"已暂存"三字。
+### 9.2 写作规则
 
+1. 只记**确认无误的事实**；过程、复盘、审核回合不进权威文档。
+2. 一问题一篇；同一问题多篇时合并，其余归档。
+3. 不抄可漂移值；引用用节标题或相对链接，**不用行号**。
+4. 新功能 ⇒ 台账加行；新决策 ⇒ 决策表加行；新坑 ⇒ 坑档加行。
+5. 改完跑 `node tools/check-doc-index.mjs` 与 `node tools/check-doc-refs.mjs`。
+6. 归档：`docs/archive/<编号>-*.md`；归档清单在 `docs/archive/MIGRATION.txt`。
 
----
+### 9.3 跨角色协作（JD）
 
-## 清理 `dist/core` 的两个教训（2026-10-05 夜，实战踩出来的）
+- **分工**：WorkBuddy 负责开发落地与自测；DevEco 负责编译、测试、复核。
+- **通道**：`JD/from-workbuddy/`（交接单）↔ `JD/from-deveco/`（结论）；状态统一记在 `JD/STATUS.md`。
+- **规则**：交接单用 `JD/templates/handoff.md`；每项一个 ID（如 JD-001）；门禁红不得写成通过；闭环后移入 `JD/archive/`。
+- `JD/` 是协作过程区，**不参与** `check-doc-*` 门禁，也不替代 `AGENTS.md` / `docs/`。
 
-1. **保留当前容器的判据要用"完整文件名前缀"，不要用"版本号 + 点"**。
-   `dist/core` 里旧容器可以清（构建产物，本次一次释放 **792 MiB**），但当前那份的名字是
-   `dsh-core-<version>-openharmony-arm64.zip` —— `<version>` 后面跟的是 **`-`**，不是 `.`。
-   用 `"dsh-core-0.2.1-alpha.1+dshm.6.*"` 作保留判据会把**当前容器也删掉**（本次就这么干了 ✗），
-   而 `check-resfile-core-zip.mjs` 会立刻变红 —— **这条门禁的价值就在这儿**。正确判据：
-   `$keep = 'dsh-core-' + $ver + '-'` 或直接用完整文件名白名单。
-2. **误删可从已装 HAP 逐字节恢复**（比重跑 `pack-core` 快十几分钟）：
-   已签名 HAP 里就有那份容器，路径 `resources/resfile/dsh-core-<version>-openharmony-arm64.zip`；
-   用 .NET `System.IO.Compression.ZipFile` 把它原样写出到 `dist/core/` 即可，
-   随后用 `Get-FileHash` 与 `entry/src/main/resources/resfile/` 里那份对齐（本次两者 sha256 完全一致 ✓）。
-   ⇒ 清 `dist/core/*.zip` 前后都跑一次 `node tools/check-resfile-core-zip.mjs`，是零成本的保险。
+## 10. 变更记录
+
+- 每次实质工作追加 `.workbuddy/memory/YYYY-MM-DD.md`（append-only）。
+- 跨会话长期口径写 `.workbuddy/memory/MEMORY.md`。
+- 记录：结论、证据路径、取舍、遗留风险；不写临时路径与工具报错。
+
+## 11. 已核事项（2026-11-18 结论）
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| `build-agc.mjs --device-sideload` 的指定设备 Profile 是否配套 | **不配套，无明确需求不要用**。该 p7b 是 `inttesting` / `version-name 2.0.0` / `version-code 2`（有效期至 2027-04-24），属 1.1.6 轮次遗留；要用必须按当前版本重新申请 | `.certs/multihap-20261024/DSHM-prod-1.1.6-1010007-specified-device-20261024.p7b` 实读 |
+| phone `getUserMedia` 与 CoreSpeechKit 的并存关系 | **并存且有意**：Web 官方语音走 `getUserMedia` → `onPermissionRequest`；原生 ASR 覆盖绕过它，所以两条壳都主动 `requestPermissionsFromUser(MICROPHONE)`。两条路径都需要该权限 | `entry/`、`phone/` 的 `WebApp.ets`（`MIC_PERMISSION` 两处调用） |
+| `dist/core/work/.pack-core-pristine/` 用途 | **必须保留**：`pack-core` 可重入补丁的"未打补丁原文 + 上次哈希"。删掉会导致补丁无法安全重打，甚至把上游更新降级 | `tools/pack-core.mjs` 的 pristine 段 |
+| `dist/node/` 两个 `pre-*.so` 回退备份 | **保留**：libnode 中性化前后的回退备份，只在 `docs/archive/366-*` 的回退步骤使用，不随包、不被构建读取；按交付件红线不删 | `dist/node/` 实读、`docs/archive/366-*` |
+| AGC 元数据与 `AppScope` 品牌一致性 | **一致**：`app_name` / `EntryAbility_label` 均为 `DSHM`；`metadata/*.json` 用 `DSHM`，无「鲸鸿」文案（仅历史文件名含 jinghong） | 实读字符串资源与 metadata |
+| `gen-oss-notices.mjs` 空 ohpm 段 | **有意保留**：sherpa 移除后 `OHPM_COMPONENTS` 为空，输出保留空段以兼容既有声明格式；不影响审核文本 | `tools/gen-oss-notices.mjs` 头注 |
+
+## 附录 历史沿革（只读）
+
+事故因果链、权限面沿革、libnode 崩溃链、核心升级逐档记录：
+`docs/archive/80-*`、`docs/archive/143-*`、`docs/archive/203-*`、`docs/archive/222-*`、
+`docs/archive/365-*`、`docs/archive/366-*`、`docs/archive/367-*`。

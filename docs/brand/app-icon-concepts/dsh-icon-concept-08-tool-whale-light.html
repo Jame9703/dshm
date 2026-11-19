@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><style>html,body{margin:0;width:1024px;height:1024px;overflow:hidden;background:transparent}svg{display:block}</style><svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef8ff"/>
+      <stop offset="1" stop-color="#bdddf0"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="48%" cy="42%" r="64%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.56" stop-color="#ffffff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb" cx="37%" cy="27%" r="76%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.5" stop-color="#82dcff"/>
+      <stop offset="1" stop-color="#147cc4"/>
+    </radialGradient>
+    <linearGradient id="whale" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c1c2a"/>
+      <stop offset="1" stop-color="#263d52"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1287d5" stop-opacity="0"/>
+      <stop offset="0.26" stop-color="#1287d5" stop-opacity="0.95"/>
+      <stop offset="0.74" stop-color="#1287d5" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#1287d5" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="32" stdDeviation="34" flood-color="#02040a" flood-opacity="0.4"/>
+    </filter>
+    <clipPath id="innerClip">
+      <circle cx="540" cy="505" r="196"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#halo)"/>
+
+  <g filter="url(#shadow)">
+    <circle cx="540" cy="505" r="204" fill="url(#orb)"/>
+    <g clip-path="url(#innerClip)" opacity="0.48">
+      <path d="M342 526C428 461 509 464 600 518C676 564 737 564 802 516" fill="none" stroke="#ffffff" stroke-width="17" stroke-linecap="round" opacity="0.56"/>
+      <path d="M365 603C448 554 521 561 608 604C665 632 719 632 771 605" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" opacity="0.42"/>
+      <circle cx="429" cy="348" r="66" fill="#ffffff" opacity="0.27"/>
+    </g>
+
+    <path d="M281 497C319 345 459 247 612 264C727 277 819 350 862 451" fill="none" stroke="url(#accent)" stroke-width="19" stroke-linecap="round"/>
+    <path d="M806 618C739 727 617 783 485 758" fill="none" stroke="url(#accent)" stroke-width="16" stroke-linecap="round" opacity="0.72"/>
+
+    <g transform="rotate(-7 550 512)">
+      <path d="M754 348C765 274 807 214 872 185C891 264 870 346 816 403C851 398 887 412 912 439C874 486 805 503 746 477C710 462 686 432 678 396C709 396 737 379 754 348Z" fill="url(#whale)"/>
+      <path d="M245 519C245 399 325 296 438 259C551 222 681 258 763 348C796 384 818 428 827 475C846 483 858 501 858 522C858 541 847 558 830 566C811 630 760 681 690 711C599 750 489 735 403 672C325 614 245 593 245 519ZM407 449C388 449 373 464 373 483C373 502 388 517 407 517C426 517 441 502 441 483C441 464 426 449 407 449Z" fill="url(#whale)" fill-rule="evenodd"/>
+      <path d="M316 405C360 333 441 292 531 297C633 303 717 371 748 463" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="21" stroke-linecap="round"/>
+      <path d="M344 631C403 705 500 734 595 709C658 693 710 655 744 603" fill="none" stroke="#000000" stroke-opacity="0.15" stroke-width="22" stroke-linecap="round"/>
+      <rect x="550" y="598" width="54" height="18" rx="9" fill="#1287d5" opacity="0.78"/>
+    </g>
+  </g>
+
+  <g opacity="0.84">
+    <rect x="442" y="790" width="40" height="16" rx="8" fill="#ffffff"/>
+    <rect x="494" y="790" width="90" height="16" rx="8" fill="#ffffff"/>
+    <rect x="596" y="790" width="26" height="16" rx="8" fill="#ffffff"/>
+  </g>
+
+  <metadata>dsh-icon-concept-08-tool-whale-light.png: original DSH concept, no third-party marks</metadata>
+</svg>

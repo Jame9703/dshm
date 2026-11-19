@@ -1,0 +1,29 @@
+{
+  "_note": "待人工核对后填写/推送；控制台生成 versionId 与 shareLink 后回填。",
+  "versionNumber": "1.1.8",
+  "versionCode": 1010017,
+  "versionId": "<上传 APP 后由控制台生成>",
+  "testType": "invite",
+  "testDesc": "1.1.8（1010017）：启动链路并行化、手机/平板 guest 终端 pnpm 修复、权限说明中文化、工具链清理与稳定性修复",
+  "startTime": 1794758400000,
+  "startTimeReadable": "2026-11-16T00:00:00+08:00",
+  "endTime": 1795968000000,
+  "endTimeReadable": "2026-11-30T00:00:00+08:00",
+  "expiredTimeLength": 14,
+  "needShareLink": 1,
+  "needNotify": 1,
+  "groups": [
+    {
+      "groupId": "f5993f5837524ff381d91a52ce3e915d",
+      "groupName": "DSHM邀请测试",
+      "bind": 1
+    }
+  ],
+  "testerPromptFile": "metadata/AGC-1.1.8-1010017-邀请测试提示词.md",
+  "reviewContact": {
+    "name": "王志豪",
+    "email": "1185128119@qq.com",
+    "phone": "13087838358"
+  },
+  "shareLink": "<创建测试任务后由控制台生成>"
+}

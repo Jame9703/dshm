@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef8ff"/>
+      <stop offset="1" stop-color="#bdddf0"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="48%" cy="42%" r="62%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.58"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb" cx="36%" cy="27%" r="74%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.48" stop-color="#82dcff"/>
+      <stop offset="1" stop-color="#147cc4"/>
+    </radialGradient>
+    <linearGradient id="whale" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1d2c"/>
+      <stop offset="1" stop-color="#263d52"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1387d6" stop-opacity="0"/>
+      <stop offset="0.28" stop-color="#1387d6" stop-opacity="0.9"/>
+      <stop offset="0.74" stop-color="#1387d6" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#1387d6" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="30" stdDeviation="34" flood-color="#02040a" flood-opacity="0.38"/>
+    </filter>
+    <clipPath id="innerClip">
+      <circle cx="532" cy="506" r="202"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#halo)"/>
+
+  <g filter="url(#shadow)">
+    <circle cx="532" cy="506" r="214" fill="url(#orb)"/>
+    <g clip-path="url(#innerClip)" opacity="0.5">
+      <path d="M330 529C423 458 505 463 604 522C678 566 743 565 812 512" fill="none" stroke="#ffffff" stroke-width="19" stroke-linecap="round" opacity="0.58"/>
+      <path d="M360 607C454 553 528 562 618 608C675 637 733 636 787 605" fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round" opacity="0.42"/>
+      <circle cx="420" cy="342" r="74" fill="#ffffff" opacity="0.28"/>
+    </g>
+
+    <path d="M270 502C299 341 442 231 606 244C734 254 836 335 882 450" fill="none" stroke="url(#accent)" stroke-width="20" stroke-linecap="round"/>
+    <path d="M812 619C746 737 616 800 474 773" fill="none" stroke="url(#accent)" stroke-width="17" stroke-linecap="round" opacity="0.72"/>
+
+    <g transform="rotate(-8 548 512)">
+      <path d="M777 382C792 317 838 267 900 247C906 323 873 394 812 435C850 437 884 459 903 492C854 527 787 525 739 487C711 464 696 432 696 398C727 407 756 403 777 382Z" fill="url(#whale)"/>
+      <path d="M247 510C247 382 339 276 465 250C591 224 721 279 783 385C802 417 815 452 821 488C837 493 849 508 852 526C855 548 842 568 822 577C801 642 750 696 682 727C593 768 483 758 397 702C313 648 247 585 247 510ZM406 445C386 445 370 461 370 481C370 501 386 517 406 517C426 517 442 501 442 481C442 461 426 445 406 445ZM585 628C539 628 497 606 470 570C462 560 448 558 439 566C430 574 429 588 437 597C473 641 526 667 585 667C609 667 632 662 654 653C666 648 671 634 666 623C661 612 647 607 636 612C620 620 603 628 585 628Z" fill="url(#whale)" fill-rule="evenodd"/>
+      <path d="M310 409C357 331 443 287 539 293C646 300 735 374 766 472" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="22" stroke-linecap="round"/>
+      <path d="M337 632C402 718 515 751 621 716C689 694 743 647 775 585" fill="none" stroke="#000000" stroke-opacity="0.16" stroke-width="24" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <g opacity="0.86">
+    <rect x="438" y="790" width="42" height="16" rx="8" fill="#ffffff"/>
+    <rect x="492" y="790" width="92" height="16" rx="8" fill="#ffffff"/>
+    <rect x="596" y="790" width="28" height="16" rx="8" fill="#ffffff"/>
+  </g>
+
+  <metadata>dsh-icon-concept-06-frost-hug.png: original DSH concept, no third-party marks</metadata>
+</svg>

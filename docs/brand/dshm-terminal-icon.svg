@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>DSHM app icon</title>
+  <desc>Original DSHM application icon. No third-party marks.</desc>
+  <defs>
+    <linearGradient id="bg" x1="112" y1="72" x2="904" y2="952" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#18272B"/>
+      <stop offset="0.55" stop-color="#0D171A"/>
+      <stop offset="1" stop-color="#071013"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 470) rotate(90) scale(455)">
+      <stop stop-color="#235548" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#235548" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="224" fill="url(#glow)"/>
+  <path d="M330 278H250C238.954 278 230 286.954 230 298V726C230 737.046 238.954 746 250 746H330"
+        fill="none" stroke="#F3FAF7" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M694 278H774C785.046 278 794 286.954 794 298V726C794 737.046 785.046 746 774 746H694"
+        fill="none" stroke="#F3FAF7" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M390 384L536 512L390 640"
+        fill="none" stroke="#58E3B2" stroke-width="76" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M588 640H690"
+        fill="none" stroke="#F3FAF7" stroke-width="64" stroke-linecap="round"/>
+</svg>

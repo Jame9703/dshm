@@ -1,0 +1,23 @@
+{
+  "privacyPolicy": "https://agreement-drcn.hispace.dbankcloud.cn/index.html?lang=zh&agreementId=2068131051053539008",
+  "privacyAgreementId": "2068131051053539008",
+  "deviceTypes": [
+    {
+      "deviceType": 4,
+      "appAdapters": ""
+    },
+    {
+      "deviceType": 5,
+      "appAdapters": ""
+    },
+    {
+      "deviceType": 19,
+      "appAdapters": ""
+    }
+  ],
+  "isAiGenerate": 1,
+  "aiTypes": [
+    1
+  ],
+  "appRemark": "应用无需注册或登录。首次启动会解压内置核心，可能需要数十秒；随后可选择或新建本地工作区。AI 功能需用户自行配置模型服务凭据。邀请测试重点：1.1.4/1.1.5 覆盖升级数据保留、PC 与 MatePad Edge/Pro Max 原生终端、普通平板顶栏与侧栏、插件安装、登录回跳及浏览器任务收尾。"
+}

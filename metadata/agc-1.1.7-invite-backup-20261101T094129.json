@@ -1,0 +1,231 @@
+{
+  "_historicalNotice": "历史发布备份，原响应字段保留作证据。2026-11-14：原 newFeatures 中第 5 条本地模型可用承诺已撤回，不可直接复用发布；不再提供专用本地模型 / Ollama 入口与说明。官方通用自定义模型 API、已有配置与凭据、会话、插件、工作区和系统语音听写保留。",
+  "ret": {
+    "code": 0,
+    "msg": "success"
+  },
+  "appInfo": {
+    "releaseState": 7,
+    "defaultLang": "zh-CN",
+    "parentType": 13,
+    "harmonyChildType": 10000000,
+    "kindMainTag": 15000007,
+    "kindSubTags": [],
+    "privacyPolicy": "https://agreement-drcn.hispace.dbankcloud.cn/index.html?lang=zh&agreementId=2068131051053539008",
+    "publishCountry": "CN",
+    "contentRate": "",
+    "isAppForcedUpdate": 0,
+    "hispaceAutoDown": 0,
+    "appTariffType": "",
+    "publicationNumber": "",
+    "developerNameCn": "王志豪",
+    "developerNameEn": "王志豪",
+    "developerWebsite": "",
+    "customInfo": {
+      "email": "1185128119@qq.com",
+      "qqNum": "1185128119",
+      "internalPath": "内测群：467709799"
+    },
+    "certificateURLs": "",
+    "publicationURLs": "",
+    "updateTime": "2026-11-01 01:30:33",
+    "versionNumber": "1.1.7",
+    "versionCode": 1010008,
+    "buildVersion": "",
+    "versionId": "2073639729349309120",
+    "shareLink": "https://appgallery.huawei.com/link/invite-test-wap?taskId=7eb2f5d142542f61c1725c3c7491e11d",
+    "sensitivePermissionDesc": "{\"ohos.permission.STORE_PERSISTENT_DATA\":\"在应用沙箱的持久存储区保存核心运行时数据，避免每次启动重复解包\",\"ohos.permission.VIBRATE\":\" pasting,Provide light tactile feedback when copying, or starting and stopping meeting recording; degrade automatically when unavailable,Provide subtle haptic feedback when copying, or starting and stopping meeting recording; gracefully degrade when vibration is unavailable\",\"ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY\":\"After user approval, use projects in the public Documents directory as a workspace for browsing, searching, and editing files\",\"ohos.permission.PREPARE_APP_TERMINATE\":\"Keep running the current task in the background when you click Close on a free-form window\",\"ohos.permission.MICROPHONE\":\"语音输入需要麦克风：录音在你确认后开始，音频仅用于本机/你配置的服务转写，不写入会话记录\",\"ohos.permission.READ_PASTEBOARD\":\" or upload clipboard content,Read plain text from the clipboard only after the user chooses Paste; never read in the background, or uploads clipboard contents, reads images, then insert it into the focused input; the app never reads the clipboard in the background, read images,Read plain text from the system clipboard only when the user invokes Edit > Paste\",\"ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE\":\"本应用为开发工具（AI 编程助手宿主），其内置的核心运行时随包携带原生扩展模块与辅助可执行文件，需要在本应用数据目录内加载和运行它们\",\"ohos.permission.FILE_ACCESS_PERSIST\":\"持久化用户授权的工作区目录访问，以便跨会话持续读写项目文件\",\"ohos.permission.KEEP_BACKGROUND_RUNNING\":\"Keep the long-lived connection to the host while in the background so approval and question events are not missed\",\"ohos.permission.kernel.EXEMPT_ANONYMOUS_EXECUTABLE_MEMORY\":\"Provide anonymous executable memory for runtime JIT and the local virtual machine translation cache\",\"ohos.permission.READ_WRITE_DESKTOP_DIRECTORY\":\"After user approval, use temporary projects and scripts in the public Desktop directory as a browsable and editable workspace\",\"ohos.permission.CUSTOM_SANDBOX\":\"Run bundled signed git, rg, shell, and Python tools in the dynamic sandbox execution domain\",\"ohos.permission.INTERNET\":\" or a LAN/tunnel address) to exchange sessions and events,Connect to the Jinghong host you specify (on this device\",\"ohos.permission.kernel.IGNORE_LIBRARY_VALIDATION\":\"Load native libraries supplied by local development tools and plugins without system library signature validation\",\"ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY\":\"After user approval, import project archives, source trees, and build outputs from the public Download directory as a workspace\"}",
+    "familyShareTag": 0,
+    "deviceTypes": [
+      {
+        "deviceType": 4,
+        "appAdapters": ""
+      },
+      {
+        "deviceType": 5,
+        "appAdapters": ""
+      },
+      {
+        "deviceType": 19,
+        "appAdapters": ""
+      }
+    ],
+    "privacyRightsUrl": "",
+    "projectId": "101653523864823442",
+    "aclPermission": [
+      {
+        "id": "ohos.permission.STORE_PERSISTENT_DATA",
+        "reason": "在应用沙箱的持久存储区保存核心运行时数据，避免每次启动重复解包"
+      },
+      {
+        "id": "ohos.permission.VIBRATE",
+        "reason": "Provide light tactile feedback when copying, pasting, or starting and stopping meeting recording; degrade automatically when unavailable"
+      },
+      {
+        "id": "ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY",
+        "aclType": 0,
+        "reason": "After user approval, use projects in the public Documents directory as a workspace for browsing, searching, and editing files"
+      },
+      {
+        "id": "ohos.permission.MICROPHONE",
+        "reason": "语音输入需要麦克风：录音在你确认后开始，音频仅用于本机/你配置的服务转写，不写入会话记录"
+      },
+      {
+        "id": "ohos.permission.PREPARE_APP_TERMINATE",
+        "reason": "Keep running the current task in the background when you click Close on a free-form window"
+      },
+      {
+        "id": "ohos.permission.READ_PASTEBOARD",
+        "aclType": 0,
+        "reason": "Read plain text from the clipboard only after the user chooses Paste; never read in the background, read images, or upload clipboard content"
+      },
+      {
+        "id": "ohos.permission.FILE_ACCESS_PERSIST",
+        "aclType": 0,
+        "reason": "持久化用户授权的工作区目录访问，以便跨会话持续读写项目文件"
+      },
+      {
+        "id": "ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE",
+        "aclType": 0,
+        "reason": "本应用为开发工具（AI 编程助手宿主），其内置的核心运行时随包携带原生扩展模块与辅助可执行文件，需要在本应用数据目录内加载和运行它们"
+      },
+      {
+        "id": "ohos.permission.KEEP_BACKGROUND_RUNNING",
+        "reason": "Keep the long-lived connection to the host while in the background so approval and question events are not missed"
+      },
+      {
+        "id": "ohos.permission.READ_WRITE_DESKTOP_DIRECTORY",
+        "aclType": 0,
+        "reason": "After user approval, use temporary projects and scripts in the public Desktop directory as a browsable and editable workspace"
+      },
+      {
+        "id": "ohos.permission.kernel.EXEMPT_ANONYMOUS_EXECUTABLE_MEMORY",
+        "reason": "Provide anonymous executable memory for runtime JIT and the local virtual machine translation cache"
+      },
+      {
+        "id": "ohos.permission.CUSTOM_SANDBOX",
+        "aclType": 0,
+        "reason": "Run bundled signed git, rg, shell, and Python tools in the dynamic sandbox execution domain"
+      },
+      {
+        "id": "ohos.permission.INTERNET",
+        "reason": "Connect to the Jinghong host you specify (on this device, or a LAN/tunnel address) to exchange sessions and events"
+      },
+      {
+        "id": "ohos.permission.kernel.IGNORE_LIBRARY_VALIDATION",
+        "reason": "Load native libraries supplied by local development tools and plugins without system library signature validation"
+      },
+      {
+        "id": "ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY",
+        "aclType": 0,
+        "reason": "After user approval, import project archives, source trees, and build outputs from the public Download directory as a workspace"
+      }
+    ],
+    "registeredDclType": -1,
+    "registeredEntityName": "",
+    "privacyAgreementId": "2068131051053539008",
+    "userAgreementUrl": "",
+    "userAgreementIds": [],
+    "encrypted": 1,
+    "invitationCount": 9826,
+    "downloadCount": 0,
+    "installCount": 0,
+    "releasePhase": 0,
+    "aiTypes": [],
+    "testUserName": "",
+    "testUserPassword": "",
+    "appRemark": "",
+    "selfTestVideos": "",
+    "appReviewPhoneInfo": {
+      "account": "13087838358",
+      "updateTime": 1793496633568,
+      "state": 0
+    },
+    "appReviewEmailInfo": {
+      "account": "1185128119@qq.com",
+      "updateTime": 1793496633571,
+      "state": 0
+    },
+    "appReviewName": "王志豪",
+    "needNotify": 1
+  },
+  "auditInfo": {},
+  "languages": [
+    {
+      "lang": "zh-CN",
+      "appName": "DSHM",
+      "appDesc": "DSHM 是运行在 HarmonyOS 手机、平板与 PC / 2in1 上的本地 AI 编程工作台。\n\n会话与执行轨迹：完成多轮对话，查看工具调用、执行轨迹与结果。\n本地工作区：授权项目目录后，可浏览、预览和编辑文件；部分设备可使用应用内工作区浏览器。\n内置开发环境：随应用提供终端、Git、ripgrep 与 Python。PC、MatePad Edge 和 MatePad Pro Max 使用系统原生 PTY，手机与普通平板按设备能力使用适配后的终端环境。\n插件与浏览器：支持插件安装、网页抓取和浏览器页面操作；任务结束后可按设置关闭对应页面。\n本地优先：会话、插件和工作区默认保存在设备本地，不设服务端账号体系；模型服务由用户自行配置。\n\n首次启动需要解压内置核心，可能需要数十秒。",
+      "briefInfo": "",
+      "newFeatures": "版本 1.1.7（versionCode 1010008），核心 0.2.1-rc.5+dshm.105\n支持设备：6.1.0版本以上手机、平板、鸿蒙 PC / 2in1（含 MatePad Edge / MatePad Pro Max）\n\n更新内容： \n1.【华为账号与云同步】接入华为账号，仅读取账号标识用于同步归属，不保存登录凭据；会话、插件清单与工作区可云端备份并跨设备恢复；插件只同步清单、默认不自动安装；同步内容排除核心运行时与 API Key。 \n2.【连接稳定性】修复冷启动偶发提示「连接异常」：系统 Web 内核把本机误判为离线，导致连接循环休眠、不再发起尝试。 \n3.【平板界面】侧边栏恢复常驻显示，手动收起后不会被自动拉回。\n 4.【登录与通知】登录并入设置分区、不再跳二级页面；Agent 任务完成时在通知栏提示。\n 5.【本地模型】PC / 2in1 可直接接入本机模型服务，在设置中填写服务地址即可使用，无需修改代码。 \n6.【插件环境】随包提供独立 Node（子进程 JIT）与 PC 端 ffmpeg / ffprobe，在「设置 → 插件」安装养鱼插件后即可使用，无需自行配置。 \n7.【稳定性】修复手机首次安装后偶发无法进入应用；修复长时任务在息屏时被系统回收导致的后台连接中断；修复重复入口与登录绕路问题。\n 8.【品牌标识】统一替换原有的 dsh 相关标识，应用名称与品牌物料在正式上架前统一完成。\n\n升级保障：推荐安装提前安装dshm-boot-rescue，避免插件引起的核心崩溃，升级安装完整保留会话、插件、工作区、凭据与关键设置，不清理任何用户数据。 \n尾注：首次启动需解包内置核心，请耐心等待。如遇异常，请说明设备型号、系统版本、操作步骤，并附截图与大致发生时间。",
+      "icon": "https://nsp-appgallery-agcfs-drcn.obs.cn-north-2.myhuaweicloud.cn/CN/2026103118/1793469978182-5b101f11-d646-4b9f-b8a3-963410469889.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261101T013105Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Credential=HPUA0GULRMHOZRWMZ2LB%2F20261101%2Fcn-north-2%2Fs3%2Faws4_request&X-Amz-Signature=62081be62a1ab27a8146898cf2f5c9f74d78f752f1f49a724cbb4d1592fd628d",
+      "showType": 1,
+      "videoShowType": 1,
+      "introPic": "",
+      "introVideo": "[]",
+      "rcmdPic": "",
+      "rcmdVideo": "[]",
+      "deviceMaterials": [
+        {
+          "deviceType": 19,
+          "appIcon": "https://nsp-appgallery-agcfs-drcn.obs.cn-north-2.myhuaweicloud.cn/CN/2026103118/1793469998051-e75c2b00-e5ac-4df4-ac1c-631481d485d8.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261101T013105Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Credential=HPUA0GULRMHOZRWMZ2LB%2F20261101%2Fcn-north-2%2Fs3%2Faws4_request&X-Amz-Signature=7ce9c8586ce6ed23adfb75e9d9f179edd18b9951f86786f739108de80824cce9",
+          "screenShots": [],
+          "showType": 1,
+          "introVedios": [],
+          "rcmdVedios": [],
+          "promoGraphics": [],
+          "rcmdPics": "",
+          "videoShowType": 1
+        },
+        {
+          "deviceType": 4,
+          "appIcon": "https://nsp-appgallery-agcfs-drcn.obs.cn-north-2.myhuaweicloud.cn/CN/2026103118/1793469978182-5b101f11-d646-4b9f-b8a3-963410469889.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261101T013105Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Credential=HPUA0GULRMHOZRWMZ2LB%2F20261101%2Fcn-north-2%2Fs3%2Faws4_request&X-Amz-Signature=62081be62a1ab27a8146898cf2f5c9f74d78f752f1f49a724cbb4d1592fd628d",
+          "screenShots": [],
+          "showType": 1,
+          "introVedios": [],
+          "rcmdVedios": [],
+          "promoGraphics": [],
+          "rcmdPics": "",
+          "videoShowType": 1
+        },
+        {
+          "deviceType": 5,
+          "appIcon": "https://nsp-appgallery-agcfs-drcn.obs.cn-north-2.myhuaweicloud.cn/CN/2026103118/1793469992894-7b3ca477-7e51-4867-8106-8cfb39c29d50.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261101T013105Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Credential=HPUA0GULRMHOZRWMZ2LB%2F20261101%2Fcn-north-2%2Fs3%2Faws4_request&X-Amz-Signature=e55e194c49cc75a2371432a5d56bf701e26aa86c0fb060bc39ac7fc08da43483",
+          "screenShots": [],
+          "showType": 1,
+          "introVedios": [],
+          "rcmdVedios": [],
+          "promoGraphics": [],
+          "rcmdPics": "",
+          "videoShowType": 1
+        }
+      ]
+    }
+  ],
+  "phasedReleaseInfo": {},
+  "openTestInfo": {
+    "startTime": 1793462400000,
+    "endTime": 1795190400000,
+    "groups": "f5993f5837524ff381d91a52ce3e915d",
+    "expiredTimeLength": 7,
+    "testDesc": "1.1.7 接入华为账号及云同步，合规标识替换，稳定性优化",
+    "testTaskInfo": {
+      "groupInfos": [
+        {
+          "groupId": "c056e4d4e6ee4f5f9d8bd4ac2c3fdf74",
+          "groupName": "DSHM公开测试",
+          "addedTesterNum": 1,
+          "bind": 0
+        },
+        {
+          "groupId": "f5993f5837524ff381d91a52ce3e915d",
+          "groupName": "DSHM邀请测试",
+          "addedTesterNum": 3566,
+          "bind": 1
+        }
+      ],
+      "needShareLink": 1,
+      "shareLink": "https://appgallery.huawei.com/link/invite-test-wap?taskId=7eb2f5d142542f61c1725c3c7491e11d",
+      "needNotify": 1
+    }
+  }
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>DSHM splash mark</title>
+  <desc>Original DSHM splash mark for light surfaces. No third-party marks.</desc>
+  <path d="M330 278H250C238.954 278 230 286.954 230 298V726C230 737.046 238.954 746 250 746H330"
+        fill="none" stroke="#172326" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M694 278H774C785.046 278 794 286.954 794 298V726C794 737.046 785.046 746 774 746H694"
+        fill="none" stroke="#172326" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M390 384L536 512L390 640"
+        fill="none" stroke="#087D61" stroke-width="76" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M588 640H690"
+        fill="none" stroke="#172326" stroke-width="64" stroke-linecap="round"/>
+</svg>

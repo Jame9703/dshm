@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72" width="72" height="72">
+  <title>DSHM tray mark for light backgrounds</title>
+  <path d="M23 12H13V60H23M49 12H59V60H49"
+        fill="none" stroke="#111719" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M27 25L39 36L27 47" fill="none" stroke="#111719" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M43 47H52" fill="none" stroke="#111719" stroke-width="7" stroke-linecap="round"/>
+</svg>

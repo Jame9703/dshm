@@ -1,0 +1,67 @@
+<!doctype html><meta charset="utf-8"><style>html,body{margin:0;width:1024px;height:1024px;overflow:hidden;background:transparent}svg{display:block}</style><svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071511"/>
+      <stop offset="1" stop-color="#020605"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="44%" r="58%">
+      <stop offset="0" stop-color="#54f2a9" stop-opacity="0.55"/>
+      <stop offset="0.52" stop-color="#54f2a9" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#54f2a9" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb" cx="36%" cy="28%" r="72%">
+      <stop offset="0" stop-color="#c8ffe4"/>
+      <stop offset="0.52" stop-color="#41d987"/>
+      <stop offset="1" stop-color="#08764a"/>
+    </radialGradient>
+    <linearGradient id="whale" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6fff9"/>
+      <stop offset="1" stop-color="#9ad9bd"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#60f0a8" stop-opacity="0"/>
+      <stop offset="0.25" stop-color="#60f0a8" stop-opacity="0.9"/>
+      <stop offset="0.75" stop-color="#60f0a8" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#60f0a8" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="26" stdDeviation="28" flood-color="#05070d" flood-opacity="0.35"/>
+    </filter>
+    <clipPath id="orbClip">
+      <circle cx="512" cy="494" r="232"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#halo)"/>
+
+  <g filter="url(#shadow)">
+    <circle cx="512" cy="494" r="238" fill="url(#orb)"/>
+    <g clip-path="url(#orbClip)" opacity="0.35">
+      <path d="M286 536C388 460 474 470 575 526C650 568 716 570 794 522" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round"/>
+      <path d="M310 605C410 545 492 558 588 606C654 639 718 638 772 604" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round" opacity="0.55"/>
+      <circle cx="404" cy="356" r="84" fill="#ffffff" opacity="0.26"/>
+    </g>
+
+    <path d="M245 508C288 331 454 225 633 249C742 264 832 328 879 421" fill="none" stroke="url(#accent)" stroke-width="22" stroke-linecap="round" opacity="0.96"/>
+    <path d="M797 625C733 737 605 798 469 771" fill="none" stroke="url(#accent)" stroke-width="18" stroke-linecap="round" opacity="0.72"/>
+
+    <g transform="rotate(-10 512 512)">
+      <path d="M705 386C731 337 774 305 826 298C820 349 792 394 748 420C779 425 804 448 815 478C773 492 727 481 696 449C683 435 676 418 676 401C685 403 695 398 705 386Z" fill="url(#whale)"/>
+      <path d="M286 392C320 331 383 292 461 286C553 279 636 315 683 379C724 435 737 507 716 572C696 636 648 687 586 711C531 733 468 731 413 707C371 688 337 657 314 620C296 590 284 557 282 523C280 491 282 458 290 426C292 418 294 410 286 392ZM429 455C409 455 393 471 393 491C393 511 409 527 429 527C449 527 465 511 465 491C465 471 449 455 429 455ZM546 592C508 592 473 575 448 546C441 538 430 536 421 542C412 548 410 561 416 569C448 609 494 632 546 632C561 632 576 630 591 626C603 623 609 611 605 600C602 590 591 584 580 587C569 590 558 592 546 592Z" fill="url(#whale)" fill-rule="evenodd"/>
+      <path d="M333 394C379 339 447 315 520 324C610 336 682 407 697 496" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="20" stroke-linecap="round"/>
+      <path d="M342 620C391 690 481 724 568 704C624 691 673 655 699 606" fill="none" stroke="#000000" stroke-opacity="0.16" stroke-width="22" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <g opacity="0.72">
+    <rect x="432" y="776" width="46" height="18" rx="9" fill="#ffffff"/>
+    <rect x="489" y="776" width="94" height="18" rx="9" fill="#ffffff"/>
+    <rect x="594" y="776" width="30" height="18" rx="9" fill="#ffffff"/>
+  </g>
+
+  <metadata>dsh-icon-concept-03-execution-green.png: original DSH concept, no third-party marks</metadata>
+</svg>

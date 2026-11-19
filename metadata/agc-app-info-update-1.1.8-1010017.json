@@ -1,0 +1,43 @@
+{
+  "privacyPolicy": "https://agreement-drcn.hispace.dbankcloud.cn/index.html?lang=zh&agreementId=2068131051053539008",
+  "privacyAgreementId": "2068131051053539008",
+  "deviceTypes": [
+    {
+      "deviceType": 4,
+      "appAdapters": ""
+    },
+    {
+      "deviceType": 5,
+      "appAdapters": ""
+    },
+    {
+      "deviceType": 19,
+      "appAdapters": ""
+    }
+  ],
+  "isAiGenerate": 1,
+  "aiTypes": [
+    1
+  ],
+  "appRemark": "应用无需自有账号即可使用；云同步为可选，开启后使用华为账号标识。首次启动会解压内置核心，可能需要数十秒；随后可选择或新建本地工作区。AI 功能需用户自行配置模型服务凭据，未配置时仍可查看会话、工作区、插件、终端与设置。邀请测试重点：三端覆盖升级数据保留、PC / 2in1 原生终端、平板与手机 guest 终端与 pnpm、冷启动、插件安装、登录回跳与浏览器任务收尾。建议在 HarmonyOS PC / 2in1、平板与手机（API 26 及以上）分别测试。",
+  "sensitivePermissionDesc": {
+    "ohos.permission.INTERNET": "连接你指定的DSHM Host（本机或局域网/隧道地址）以收发会话与事件",
+    "ohos.permission.KEEP_BACKGROUND_RUNNING": "在后台维持与 Host 的长连接并接收审批/提问事件，避免待决事项被错过",
+    "ohos.permission.PREPARE_APP_TERMINATE": "在自由窗口（PC/平板）上点关闭时改为退到后台继续运行正在执行的任务；需要该权限才能接到系统的关闭回调",
+    "ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE": "本应用为开发工具（AI 编程助手宿主），其内置的核心运行时随包携带原生扩展模块与辅助可执行文件，需要在本应用数据目录内加载和运行它们",
+    "ohos.permission.FILE_ACCESS_PERSIST": "持久化用户授权的工作区目录访问，以便跨会话持续读写项目文件",
+    "ohos.permission.CUSTOM_SANDBOX": "作为本地开发工具，在动态沙箱执行域中运行随包分发的已签名 git、rg、shell 与 Python 等工具",
+    "ohos.permission.kernel.IGNORE_LIBRARY_VALIDATION": "加载本地开发工具和插件携带的原生共享库，支持未经过系统库签名校验的随包模块",
+    "ohos.permission.kernel.EXEMPT_ANONYMOUS_EXECUTABLE_MEMORY": "为核心运行时 JIT 与本地虚拟机翻译缓存申请匿名可执行内存，避免降级到解释执行",
+    "ohos.permission.STORE_PERSISTENT_DATA": "在应用沙箱的持久存储区保存核心运行时数据，避免每次启动重复解包",
+    "ohos.permission.VIBRATE": "复制、粘贴和会议录音开始或结束时提供轻触反馈，帮助用户确认操作完成；设备无振动能力时自动降级",
+    "ohos.permission.READ_PASTEBOARD": "用户主动执行粘贴时读取剪贴板纯文本并插入当前输入框；不会后台读取、读取图片或上传剪贴板内容",
+    "ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY": "用户授权后，可将公共 Documents 目录中的项目作为工作区，在应用内浏览、搜索和编辑文件",
+    "ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY": "用户授权后，可直接导入公共 Download 目录中的项目压缩包、源码和构建产物作为工作区",
+    "ohos.permission.READ_WRITE_DESKTOP_DIRECTORY": "用户授权后，可将公共 Desktop 目录中的临时项目和脚本作为工作区进行浏览和编辑",
+    "ohos.permission.ACCESS_USER_FULL_DISK": "用于在 PC / 2in1 上把用户选择的本地项目目录与随包工具链作为工作区直接读写（该受限权限已通过应用市场审批）",
+    "ohos.permission.MICROPHONE": "语音输入需要麦克风：录音在你确认后开始，音频仅用于本机/你配置的服务转写，不写入会话记录",
+    "ohos.permission.GET_NETWORK_INFO": "读取当前网络类型与连通状态，便于本地宿主在离线时直接降级，而不是等待请求超时",
+    "ohos.permission.RUNNING_LOCK": "解包核心、启动宿主、安装插件等长任务执行期间保持 CPU 不休眠，避免中途被系统降频或挂起"
+  }
+}

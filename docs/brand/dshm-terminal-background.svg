@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>DSHM icon background</title>
+  <desc>Opaque original DSHM background. No third-party marks.</desc>
+  <defs>
+    <linearGradient id="bg" x1="112" y1="72" x2="904" y2="952" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#18272B"/>
+      <stop offset="0.55" stop-color="#0D171A"/>
+      <stop offset="1" stop-color="#071013"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 470) rotate(90) scale(455)">
+      <stop stop-color="#235548" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#235548" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+</svg>

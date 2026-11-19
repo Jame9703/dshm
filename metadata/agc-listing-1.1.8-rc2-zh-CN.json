@@ -1,0 +1,6 @@
+{
+  "appName": "DSHM",
+  "bundleName": "com.dshm.dshclient",
+  "privacyPolicy": { "name": "DSHM隐私政策" },
+  "newFeatures": "版本 1.1.8 / 1010018，DSH 端侧核心 0.2.2-rc.5+dshm.1。同步核心及插件兼容，保留既有会话、插件和工作区。PC / 2in1 / MatePad Edge / Pro Max 使用原生终端，其余普通平板和手机使用 guest VM。此文件为发布草稿，不代表已出包或真机验收通过。"
+}

@@ -1,0 +1,37 @@
+{
+  "screenShotList": [
+    {
+      "lang": "zh-CN",
+      "fileInfoList": [
+        {
+          "deviceType": 4,
+          "objectIdList": [
+            "CN/2026102614/1793026225527-5493a205-89d8-4293-924f-46be558061cb.jpg",
+            "CN/2026102614/1793026226395-fa6d254c-9ec9-4fd8-a6bb-aee7d7beb8e6.jpg",
+            "CN/2026102614/1793026227293-2858aa92-8e2f-4648-a5cd-0ea5cf81a6a5.jpg",
+            "CN/2026102614/1793026228139-062c86de-6715-493d-8326-bd2d8cd6630e.jpg"
+          ],
+          "showType": 0
+        },
+        {
+          "deviceType": 5,
+          "objectIdList": [
+            "CN/2026102614/1793026266318-ee66192b-84e0-49ad-9272-066ea03661b2.jpg",
+            "CN/2026102614/1793026267234-c9e46a9d-cacb-4e0b-a2f7-e96f6bfc8623.jpg",
+            "CN/2026102614/1793026268228-f1bc3b77-c8fd-4554-a173-7ac29caf8be8.jpg"
+          ],
+          "showType": 1
+        },
+        {
+          "deviceType": 19,
+          "objectIdList": [
+            "CN/2026102614/1793026163974-f07dad73-9a7e-4b78-97c4-af3450d97964.jpg",
+            "CN/2026102614/1793026172287-c63fa2fe-5d61-4353-b725-9f5894e22afa.jpg",
+            "CN/2026102614/1793026173163-30ac69c5-00d0-4d73-b7f5-92630b6480bc.jpg"
+          ],
+          "showType": 0
+        }
+      ]
+    }
+  ]
+}

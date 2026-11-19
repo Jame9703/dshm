@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>碰一碰传文件演示页</title>
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; font-size: 14px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.hint { font-size: 12px; color: #888; margin: 0 0 12px; }
+  .composer { border: 1px solid #ccc; border-radius: 10px; padding: 10px; background: #fafafa; }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; min-height: 4px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #0A59F7; color: #0A59F7; border-radius: 14px; padding: 4px 10px; font-size: 12px; }
+  .chip .x { cursor: pointer; font-weight: bold; padding: 0 2px; }
+  textarea { width: 100%; box-sizing: border-box; border: 1px solid #ddd; border-radius: 8px; padding: 8px; font-size: 14px; min-height: 64px; resize: none; }
+  .actions { margin-top: 8px; display: flex; justify-content: flex-end; }
+  button { border: none; border-radius: 16px; padding: 6px 18px; font-size: 13px; }
+  #send { background: #0A59F7; color: #fff; }
+  #log { font-size: 11px; color: #aaa; margin-top: 10px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>碰一碰传文件演示</h1>
+<p class="hint">文件经 document 级 paste / drop 进入输入区成为附件 chip（文件名 + 大小），不自动发送；chip 可点 × 移除（FR-008）。真机「碰一碰」与「模拟碰一碰」都走同一注入链。</p>
+<div class="composer">
+  <div id="chips"></div>
+  <textarea id="input" placeholder="输入框（文件会以附件 chip 进入这里，不会自动发送）"></textarea>
+  <div class="actions">
+    <button id="send">发送</button>
+  </div>
+</div>
+<div id="log">[file-intake] 就绪，等待 paste / drop…</div>
+<script>
+(function () {
+  var chips = document.getElementById('chips');
+  var input = document.getElementById('input');
+  var logEl = document.getElementById('log');
+  function log(m) {
+    try {
+      logEl.textContent = '[file-intake] ' + m;
+      console.info('[dshm-knock] ' + m);
+    } catch (e) { /* 诊断不阻断 */ }
+  }
+  function fmtSize(n) {
+    if (n < 1024) { return n + ' B'; }
+    if (n < 1024 * 1024) { return (n / 1024).toFixed(1) + ' KB'; }
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  }
+  /* 文件 → 附件 chip 进输入区：不自动发送，chip 可 × 移除（官方 file-intake 行为复刻）。 */
+  function addChip(file) {
+    var chip = document.createElement('span');
+    chip.className = 'chip';
+    var name = document.createElement('span');
+    name.textContent = file.name + '（' + fmtSize(file.size) + '）';
+    var x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '×';
+    x.onclick = function () { chips.removeChild(chip); log('移除附件 ' + file.name); };
+    chip.appendChild(name);
+    chip.appendChild(x);
+    chips.appendChild(chip);
+    log('附件进输入区 ' + file.name + ' ' + file.size + ' 字节（不自动发送）');
+  }
+  /* 垫片合成 paste 的取文件口：clipboardData.files；drop 的取文件口：dataTransfer.files。 */
+  function filesOf(e) {
+    var src = e.clipboardData || e.dataTransfer;
+    if (!src) { return []; }
+    var out = [];
+    for (var i = 0; i < src.files.length; i++) { out.push(src.files[i]); }
+    return out;
+  }
+  /* document 级监听（官方 file-intake 的 paste 路由与 drop-events 的 drop 路由，均无 isTrusted 门槛）。 */
+  document.addEventListener('paste', function (e) {
+    var fs = filesOf(e);
+    if (fs.length === 0) { return; }
+    e.preventDefault();
+    for (var i = 0; i < fs.length; i++) { addChip(fs[i]); }
+  });
+  document.addEventListener('drop', function (e) {
+    var fs = filesOf(e);
+    if (fs.length === 0) { return; }
+    e.preventDefault();
+    for (var i = 0; i < fs.length; i++) { addChip(fs[i]); }
+  });
+  /* 阻止浏览器默认拖放行为（拖文件进窗口时整页被替换成文件内容）。 */
+  document.addEventListener('dragover', function (e) { e.preventDefault(); });
+  document.getElementById('send').onclick = function () {
+    var n = chips.children.length;
+    log('点发送：' + (n > 0 ? n + ' 个附件 + 正文「' + input.value + '」（demo 不真正发送）'
+      : '无附件（demo 不真正发送）'));
+  };
+  log('file-intake 监听已挂（document 级 paste/drop）');
+})();
+</script>
+</body>
+</html>

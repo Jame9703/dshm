@@ -1,0 +1,15 @@
+{
+  "privacyPolicy": "https://agreement-drcn.hispace.dbankcloud.cn/index.html?lang=zh&agreementId=2058241561019327424",
+  "privacyAgreementId": "2058241561019327424",
+  "deviceTypes": [
+    {
+      "deviceType": 19,
+      "appAdapters": ""
+    }
+  ],
+  "isAiGenerate": 1,
+  "aiTypes": [
+    1
+  ],
+  "appRemark": "应用无需注册或登录。首次启动会解压内置核心，可能需要数十秒；随后可选择或新建本地工作区。AI 功能需用户自行配置模型服务凭据，未配置时仍可查看会话、工作区、插件、终端与设置。建议在 HarmonyOS PC / 2in1（API 26 及以上）测试。"
+}
