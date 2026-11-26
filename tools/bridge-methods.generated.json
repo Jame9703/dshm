@@ -2,6 +2,7 @@
   "entry": {
     "defined": [
       "cancelNativeCapture",
+      "closeWebPicker",
       "cloudSyncAction",
       "cloudSyncState",
       "nativeCaptureState",
@@ -11,6 +12,7 @@
       "openFileLocation",
       "openFilePreview",
       "openWebActionMenu",
+      "openWebPicker",
       "platformForm",
       "platformHandheld",
       "platformPcMode",
@@ -21,10 +23,12 @@
       "startPick",
       "stopReadAloud",
       "takeNativeCapture",
+      "updateWebPicker",
       "writeGlassDiag"
     ],
     "registered": [
       "cancelNativeCapture",
+      "closeWebPicker",
       "cloudSyncAction",
       "cloudSyncState",
       "nativeCaptureState",
@@ -34,6 +38,7 @@
       "openFileLocation",
       "openFilePreview",
       "openWebActionMenu",
+      "openWebPicker",
       "platformForm",
       "platformHandheld",
       "platformPcMode",
@@ -44,6 +49,7 @@
       "startPick",
       "stopReadAloud",
       "takeNativeCapture",
+      "updateWebPicker",
       "writeGlassDiag"
     ]
   },

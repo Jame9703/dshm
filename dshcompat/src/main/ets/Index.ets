@@ -54,6 +54,7 @@ export { SURFACE } from './Surface';
 // DSHM Web UI 品牌垫片（仅替换宿主内可见品牌，不改上游源码或许可证）
 export { BRAND_SHIM_JS } from './WebBrand';
 export { WEB_ACTION_MENU_SHIM_JS } from './WebActionMenu';
+export { WEB_PICKER_SHIM_JS } from './WebPicker';
 
 // 字段别名表与常用 endpoint（投影层不再硬编码字段名与端点字面量）
 export {

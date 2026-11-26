@@ -51,7 +51,8 @@ import { DESKTOP_PROGRESSIVE_STARTUP, DESKTOP_WEB_LOADED, DESKTOP_WEB_NETWORK_LO
   buildDesktopWorkbenchPaintScript, desktopWorkbenchPaintPage } from '../common/DesktopStartup';
 import { DesktopStartupProgress } from '../common/DesktopStartupProgress';
 import { BRAND_SHIM_JS } from 'dshcompat';
-import { WEB_ACTION_MENU_SHIM_JS } from 'dshcompat';
+import { WEB_ACTION_MENU_SHIM_JS, WEB_PICKER_SHIM_JS } from 'dshcompat';
+import { DesktopWebPicker, WebPickerViewport } from '../common/DesktopWebPicker';
 // Web 权限裁决的纯逻辑（真机 bug 修复：getOrigin() 带结尾斜杠）
 import { isLoopbackOrigin, shouldGrantWebPermission } from 'appstate';
 // 语音音频换算（路线 A）：HMS 只收 16k/单声道/16位，且 writeAudio 只收 640/1280 字节
@@ -4620,6 +4621,13 @@ struct WebApp {
     ,'writeGlassDiag': (detail: string): void => this.dirPickerBridge.writeDiagMarkerPublic('diag-glass', detail)
     ,'openWebActionMenu': (id: number, x: number, y: number, category: string, rows: string): boolean =>
       this.openWebActionMenu(id, x, y, category, rows)
+    ,'openWebPicker': (id: number, x: number, top: number, bottom: number, payload: string): boolean =>
+      this.openWebPicker(id, x, top, bottom, payload)
+    ,'updateWebPicker': (id: number, payload: string): boolean =>
+      this.isWorkbenchMenuCaller() && this.desktopWebPicker.update(id, payload)
+    ,'closeWebPicker': (id: number): void => {
+      if (this.isWorkbenchMenuCaller()) this.desktopWebPicker.close(id);
+    }
     /*
      * 形态读数（2026-10-09）：侧栏垫片用它决定要不要开"移动端抽屉"（SIDEBAR_SHIM_JS §B）。
      * 【为什么必须由原生回答】手持档判据只有一处真源（platform.isHandheldForm()，
@@ -5626,6 +5634,7 @@ struct WebApp {
     /* 外壳玻璃（docs/359 一期）：排在侧栏垫片之后——它要认 .dshm-sbcol 这个钩子。 */
     { script: GLASS_SKIN_JS, scriptRules: ['*'] },
     { script: WEB_ACTION_MENU_SHIM_JS, scriptRules: ['*'] },
+    { script: WEB_PICKER_SHIM_JS, scriptRules: ['*'] },
     /* AI 生成标识：同样认 .dshm-frame 的主列；排在侧栏/玻璃之后即可。 */
     { script: AI_DISCLOSURE_SHIM_JS, scriptRules: ['*'] },
   { script: COMPOSER_PIN_SHIM_JS, scriptRules: ['*'] },
@@ -5979,6 +5988,7 @@ struct WebApp {
     this.nativeCaptureDisposed = true;
     this.cancelNativeCapture();
     this.closeWebActionMenu();
+    this.desktopWebPicker.close();
     this.startupPageActive = false;
     this.clearTabletStartupBrandTimer();
     if (this.startupWebPrepareTimer !== -1) {
@@ -7687,20 +7697,46 @@ struct WebApp {
   private webMenuResult: WebContextMenuResult | undefined = undefined;
   private webMenuClosed: boolean = true;
   private webActionMenu: WebActionMenu | undefined = undefined;
+  private desktopWebPicker: DesktopWebPicker = new DesktopWebPicker();
+
+  private isWorkbenchMenuCaller(): boolean {
+    try {
+      const local = /^http:\/\/127\.0\.0\.1:[0-9]+(?=\/|$)/.exec(this.launchUrl);
+      const caller: string = this.controller.getLastJavascriptProxyCallingFrameUrl();
+      return local !== null && caller.startsWith(local[0] + '/') &&
+        caller.split('#')[0] === this.controller.getUrl().split('#')[0];
+    } catch (e) {
+      return false;
+    }
+  }
+
+  private openWebPicker(id: number, x: number, top: number, bottom: number, payload: string): boolean {
+    if (!this.desktopForced || !this.startupMainWindow || !this.webReady || this.webActionMenu !== undefined ||
+      this.webMenuContent !== undefined || !this.isWorkbenchMenuCaller()) return false;
+    const viewport: WebPickerViewport = {
+      width: this.lastWebAreaWidth, height: this.lastWebAreaHeight, dark: this.themeMode === 'dark'
+    };
+    return this.desktopWebPicker.open(this.getUIContext(), id, x, top, bottom, viewport, payload,
+      (request: number, event: string, value: string): void => {
+        try {
+          this.controller.runJavaScript(`window.__DSHM_NATIVE_PICKERS__?.event(${request}, ${JSON.stringify(event)}, ${JSON.stringify(value)});`)
+            .catch((): void => {});
+        } catch (e) {
+          // Navigation can dispose the old document before the native dialog finishes.
+        }
+      });
+  }
 
   private openWebActionMenu(id: number, x: number, y: number, category: string, rows: string): boolean {
     if (!this.desktopForced || !this.startupMainWindow || !this.webReady || this.webActionMenu !== undefined ||
-      this.webMenuContent !== undefined || deviceInfo.sdkApiVersion < 26 || this.lastWebAreaWidth <= 0 ||
+      this.webMenuContent !== undefined || this.desktopWebPicker.isActive() || deviceInfo.sdkApiVersion < 26 || this.lastWebAreaWidth <= 0 ||
       this.lastWebAreaHeight <= 0 || !Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(x) ||
       !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 || rows.length > 819 ||
       (category !== 'account' && category !== 'context')) {
       return false;
     }
     try {
-      const local = /^http:\/\/127\.0\.0\.1:[0-9]+(?=\/|$)/.exec(this.launchUrl);
-      const caller: string = this.controller.getLastJavascriptProxyCallingFrameUrl();
-      if (local === null || !caller.startsWith(local[0] + '/') ||
-        caller.split('#')[0] !== this.controller.getUrl().split('#')[0] || !uiMaterial.isImmersiveMaterialSupported()) {
+      if (!this.isWorkbenchMenuCaller() || !uiMaterial.isImmersiveMaterialSupported()) {
         return false;
       }
       const material = immersiveMaterialOf(uiMaterial.ImmersiveStyle.THIN, false);
@@ -8370,7 +8406,7 @@ struct WebApp {
              * entry 侧是迁移遗漏。bridge 对象本体（'platformPcMode': …）一直在
              * bridges 里定义着，只是名单漏登记。
              */
-            methodList: ['startPick', 'onThemeMode', 'startNativeCapture', 'nativeCaptureState', 'takeNativeCapture', 'cancelNativeCapture', 'openExternal', 'openFilePreview', 'openFileLocation', 'writeGlassDiag', 'openWebActionMenu', 'platformHandheld', 'platformForm', 'platformPcMode', 'requestSystemBack', 'openCloudSync', 'cloudSyncState', 'cloudSyncAction', 'readAloud', 'stopReadAloud', 'shareText'],
+            methodList: ['startPick', 'onThemeMode', 'startNativeCapture', 'nativeCaptureState', 'takeNativeCapture', 'cancelNativeCapture', 'openExternal', 'openFilePreview', 'openFileLocation', 'writeGlassDiag', 'openWebActionMenu', 'openWebPicker', 'updateWebPicker', 'closeWebPicker', 'platformHandheld', 'platformForm', 'platformPcMode', 'requestSystemBack', 'openCloudSync', 'cloudSyncState', 'cloudSyncAction', 'readAloud', 'stopReadAloud', 'shareText'],
             controller: this.controller
           })          // 官方 web UI 自己按 prefers-color-scheme 适配暗色：跟随系统、不强制反色
           .darkMode(WebDarkMode.Auto)
@@ -8405,6 +8441,7 @@ struct WebApp {
             // 【顺序不可换】上一行必须是本回调的第一个动作（`check-native-capture-lifecycle`
             // 的主检和变异体依赖此顺序）。
             this.closeWebActionMenu();
+            this.desktopWebPicker.close();
             if (this.isStartupBlankNavigation(event.url)) {
               return;
             }

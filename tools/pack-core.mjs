@@ -38,6 +38,7 @@ import { patchWorkbenchStartup } from './lib/workbench-startup.mjs';
 import { patchSettingsStartup } from './lib/settings-startup.mjs';
 import { patchCordisStartup } from './lib/cordis-startup.mjs';
 import { patchPostStartupImports } from './lib/post-startup-imports.mjs';
+import { patchNativeWebPickers } from './lib/native-web-pickers.mjs';
 /*
  * 【语法检查子进程的启动标志（2026-10-31）】检测用的 `node --check` 是**子进程**，
  * 不继承父进程的 `--jitless`。而本机（HarmonyOS 端侧）内核拒绝 JIT 所需的
@@ -5515,6 +5516,7 @@ patchWebToolDeepHtmlFallback();
 patchWebFetchHeaders();
 patchSidebarTabIdLeak();
 patchDefaultWorkspaceToast();
+patchNativeWebPickers(STAGE, log);
 ensureRipgrepPlatformPackage();
 patchFsSearchFallback();
 patchAgentInstructionsScopeWalk();
