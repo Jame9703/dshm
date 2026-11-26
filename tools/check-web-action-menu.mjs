@@ -208,6 +208,7 @@ function verifyTouch(template) {
   const root = new Element();
   const button = new Element();
   const listeners = new Map();
+  const windowListeners = new Map();
   let sheet;
   const document = {
     documentElement: root,
@@ -216,7 +217,7 @@ function verifyTouch(template) {
     head: { appendChild: style => { sheet = style.textContent; } },
     addEventListener: (type, fn) => { listeners.set(type, fn); }
   };
-  const window = { addEventListener() {} };
+  const window = { addEventListener: (type, fn) => { windowListeners.set(type, fn); } };
   window.top = window;
   runInNewContext(runInNewContext(template), { window, document, Element, location: { origin: 'http://127.0.0.1:3120' } });
   assert.match(sheet, /:where\(button,[^{}]*\) \{ -webkit-user-select: none; user-select: none; \}/);
@@ -227,7 +228,18 @@ function verifyTouch(template) {
   assert.equal(button.attrs.has('data-dshm-touch-pressed'), true);
   listeners.get('pointerup')({ pointerId: 4 });
   assert.equal(button.attrs.has('data-dshm-touch-pressed'), true);
-  listeners.get('pointercancel')(event);
+  listeners.get('pointercancel')?.(event);
+  windowListeners.get('blur')?.();
+  window.__DSHM_FINISH_TOUCH__(0);
+  assert.equal(button.attrs.has('data-dshm-touch-pressed'), true);
+  window.__DSHM_FINISH_TOUCH__(Date.now());
+  assert.equal(button.attrs.has('data-dshm-touch-pressed'), false);
+  listeners.get('pointerdown')(event);
+  listeners.get('pointerup')(event);
+  assert.equal(button.attrs.has('data-dshm-touch-pressed'), false);
+  listeners.get('pointerdown')(event);
+  document.hidden = true;
+  listeners.get('visibilitychange')();
   assert.equal(button.attrs.has('data-dshm-touch-pressed'), false);
   assert.equal(root.attrs.has('data-dshm-touch'), true);
   listeners.get('keydown')();

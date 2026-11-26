@@ -51,7 +51,7 @@ import { DESKTOP_PROGRESSIVE_STARTUP, DESKTOP_WEB_LOADED, DESKTOP_WEB_NETWORK_LO
   buildDesktopWorkbenchPaintScript, desktopWorkbenchPaintPage } from '../common/DesktopStartup';
 import { DesktopStartupProgress } from '../common/DesktopStartupProgress';
 import { BRAND_SHIM_JS } from 'dshcompat';
-import { TOUCH_FEEDBACK_SHIM_JS, WEB_ACTION_MENU_SHIM_JS, WEB_PICKER_SHIM_JS } from 'dshcompat';
+import { finishWebTouchFeedback, TOUCH_FEEDBACK_SHIM_JS, WEB_ACTION_MENU_SHIM_JS, WEB_PICKER_SHIM_JS } from 'dshcompat';
 import { DesktopWebPicker, disposeOverlayContent, WebPickerViewport } from '../common/DesktopWebPicker';
 import { buildWebPickerPanel, WebPickerPanelParams, WebPickerPanelState } from '../common/WebPickerPanel';
 // Web 权限裁决的纯逻辑（真机 bug 修复：getOrigin() 带结尾斜杠）
@@ -8382,6 +8382,7 @@ struct WebApp {
           src: this.startupWebPrepared ? STARTUP_BLANK_URL : this.launchUrl,
           controller: this.controller
         })
+          .onTouch((event: TouchEvent): void => finishWebTouchFeedback(event, this.controller))
           .attributeModifier(WEB_CONTEXT_MENU_COMPAT)
           // 沉浸光感·混合承载（2026-11-17）：网页右键/长按菜单由应用侧接管，
           // openMenu 弹带 systemMaterial 的原生菜单（内容相关毛玻璃）。

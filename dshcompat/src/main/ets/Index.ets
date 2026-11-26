@@ -55,7 +55,7 @@ export { SURFACE } from './Surface';
 export { BRAND_SHIM_JS } from './WebBrand';
 export { WEB_ACTION_MENU_SHIM_JS } from './WebActionMenu';
 export { WEB_PICKER_SHIM_JS } from './WebPicker';
-export { TOUCH_FEEDBACK_SHIM_JS } from './TouchFeedback';
+export { finishWebTouchFeedback, TOUCH_FEEDBACK_SHIM_JS } from './TouchFeedback';
 
 // 字段别名表与常用 endpoint（投影层不再硬编码字段名与端点字面量）
 export {

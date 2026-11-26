@@ -43,7 +43,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { curves, window } from '@kit.ArkUI';
 import { Fs, HarmonySpacing, Radius, Sp, parseNotifyRoute } from 'appstate';
 import { BRAND_SHIM_JS } from 'dshcompat';
-import { TOUCH_FEEDBACK_SHIM_JS } from 'dshcompat';
+import { finishWebTouchFeedback, TOUCH_FEEDBACK_SHIM_JS } from 'dshcompat';
 // Web 权限裁决的纯逻辑（真机 bug 修复：getOrigin() 带结尾斜杠）
 import { isLoopbackOrigin, shouldGrantWebPermission } from 'appstate';
 // 语音音频换算（路线 A）：HMS 只收 16k/单声道/16位，且 writeAudio 只收 640/1280 字节
@@ -6792,6 +6792,7 @@ struct WebApp {
       // Web 放最底层：ERROR 时也不卸载（保持 controller 可用，重试走 refresh）
       if (this.phase !== WebPhase.BOOTING) {
         Web({ src: this.launchUrl, controller: this.controller })
+          .onTouch((event: TouchEvent): void => finishWebTouchFeedback(event, this.controller))
           .javaScriptAccess(true)
           .domStorageAccess(true)
           .fileAccess(false)
