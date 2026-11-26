@@ -107,7 +107,7 @@ export const WEB_ACTION_MENU_SHIM_JS: string = `(function () {
       if (menu && window.getComputedStyle(menu.node).opacity === '0') {
         var anchor = trigger.getBoundingClientRect();
         var rect = menu.node.getBoundingClientRect();
-        var above = category === 'account' || category === 'sidebar' || rect.bottom <= anchor.top + 1;
+        var above = category === 'account' || (category !== 'sidebar' && rect.bottom <= anchor.top + 1);
         var y = above ? anchor.top : anchor.bottom;
         try {
           accepted = b.openWebActionMenu(entry.id,

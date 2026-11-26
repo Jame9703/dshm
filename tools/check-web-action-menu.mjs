@@ -166,8 +166,8 @@ function verify(template) {
   context.draw();
   assert.deepEqual(context.selections, [{ index: 2, opacity: '0' }]);
 
-  for (const [category, above] of [['sidebar', true], ['navigation', false], ['action', true]]) {
-    const menu = fixture(script, { category, above: category === 'action', checked: true });
+  for (const [category, above] of [['sidebar', false], ['navigation', false], ['action', true]]) {
+    const menu = fixture(script, { category, above: category !== 'navigation', checked: true });
     menu.open();
     assert.equal(menu.opacity(menu.menu), '0');
     menu.draw();
