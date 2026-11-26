@@ -63,7 +63,7 @@ export class DesktopWorkspaceData {
     this.listener = listener;
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.conversation = new DesktopConversation(this.connection, onConversation,
-      (): void => { this.refreshSessions(); }, this.interactions);
+      (): void => { this.refreshSessions(); }, this.interactions, this.actions);
   }
 
   async start(url: string): Promise<void> {
@@ -79,6 +79,7 @@ export class DesktopWorkspaceData {
       onReady: (): void => {
         this.openWorkspaceStream();
         this.conversation.invalidateCommands();
+        this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
       },
       onEvent: (frame: Object): void => {

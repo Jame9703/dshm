@@ -102,7 +102,7 @@ export function commandCandidates(commands: DesktopCommand[], query: string, lea
     !commands.some((command: DesktopCommand): boolean => command.name === choice.name))];
   const order = ['file', 'goal', 'plan', 'feedback', 'compact', 'permission', 'model', 'export'];
   const needle = query.toLowerCase();
-  return all.filter((item: DesktopCommand): boolean => (leading || item.hint === undefined) &&
+  return all.filter((item: DesktopCommand): boolean => (leading || item.hint === undefined || item.kind === 'feedback') &&
     (!needle || [item.name, item.alias, item.label].some((term: string): boolean => term.toLowerCase().includes(needle))))
     .sort((left: DesktopCommand, right: DesktopCommand): number => {
       if (needle && (left.name === needle || left.alias === needle) !== (right.name === needle || right.alias === needle)) {

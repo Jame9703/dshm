@@ -4634,11 +4634,11 @@ export interface FeedbackCategory {
 
 export const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
   { id: 'task-result', label: '任务结果' },
-  { id: 'instruction-following', label: '指令遵循' },
-  { id: 'product-interaction', label: '产品交互' },
-  { id: 'service-stability', label: '服务稳定性' },
-  { id: 'resource-cost', label: '资源消耗' },
-  { id: 'security-privacy-permission', label: '安全隐私权限' },
+  { id: 'instruction-following', label: '指令理解与遵循' },
+  { id: 'product-interaction', label: '产品功能与交互' },
+  { id: 'service-stability', label: '稳定性和速度' },
+  { id: 'resource-cost', label: '资源使用与费用' },
+  { id: 'security-privacy-permission', label: '安全隐私与权限' },
   { id: 'other', label: '其他' }
 ];
 

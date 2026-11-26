@@ -17,6 +17,8 @@ import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopGoalBar } from './DesktopGoalBar';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
+import { DesktopRating } from './DesktopFeedback';
+import { DesktopReplyActions } from './DesktopReplyActions';
 
 @Component
 export struct DesktopConversationPane {
@@ -34,6 +36,7 @@ export struct DesktopConversationPane {
   @Prop menuOptions: MenuOptions | undefined = undefined;
   @Prop copyingTranscript: boolean = false;
   @Prop exportingLog: boolean = false;
+  @Prop choosingFeedback: boolean = false;
   onDraft: (value: string) => void = () => {};
   onAddAttachment: () => void = () => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
@@ -50,6 +53,10 @@ export struct DesktopConversationPane {
   onWeb: () => void = () => {};
   onCopyTranscript: () => void = () => {};
   onExportLog: () => void = () => {};
+  onSessionFeedback: (sessionId: string) => Promise<string> = (_sessionId: string): Promise<string> => Promise.resolve('');
+  onWarmFeedback: (sessionId: string) => void = (_sessionId: string): void => {};
+  onReplyRating: (sessionId: string, messageId: string, rating: DesktopRating) => void =
+    (_sessionId: string, _messageId: string, _rating: DesktopRating): void => {};
   onTerminal: () => void = () => {};
   onFiles: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
@@ -199,11 +206,12 @@ export struct DesktopConversationPane {
         section: '', token: this.snapshot?.permission === row.value ? '✓' : '' }));
   }
 
-  private replaceSlash(original: string, token: DesktopSlashToken, replacement: string): void {
+  private replaceSlash(original: string, token: DesktopSlashToken, replacement: string, refocus: boolean = true): void {
     if (this.draft !== original) { return; }
     const text = original.slice(0, token.start) + replacement + original.slice(token.end);
     this.dismissedDraft = text;
     this.onDraft(text);
+    if (!refocus) { return; }
     const session = this.sessionId;
     this.getUIContext().getFocusController().requestFocus('desktopSlashComposer');
     setTimeout((): void => {
@@ -243,12 +251,20 @@ export struct DesktopConversationPane {
         return;
       }
       this.closePalette();
-      if (row.hint !== undefined) {
+      if (row.kind === 'feedback') {
+        problem = await this.onSessionFeedback(session);
+        if (session === this.sessionId) {
+          this.paletteNotice = problem;
+          if (!problem) { this.replaceSlash(original, token, '', false); }
+        }
+        return;
+      } else if (row.hint !== undefined) {
         this.replaceSlash(original, token, `/${row.alias} `);
         return;
+      } else {
+        this.following = true;
+        problem = await this.onCommand(row.name);
       }
-      this.following = true;
-      problem = await this.onCommand(row.name);
     } else if (view === 'model') {
       const option = this.snapshot?.models.find((row: ModelOption): boolean => this.modelKey(row) === id);
       if (option === undefined) { return; }
@@ -395,7 +411,9 @@ export struct DesktopConversationPane {
       { value: '复制会话为 Markdown', icon: $r('app.media.dsh_session_copy'),
         enabled: !this.copyingTranscript, action: this.onCopyTranscript },
       { value: '下载 Session 日志', icon: $r('app.media.dsh_session_download'),
-        enabled: !this.exportingLog && !this.busy, action: this.onExportLog }
+        enabled: !this.exportingLog && !this.busy, action: this.onExportLog },
+      { value: '反馈', icon: $r('app.media.dsh_feedback_paper_plane_outline'), enabled: !this.choosingFeedback,
+        action: (): void => { this.onSessionFeedback(this.snapshot?.sessionId ?? ''); } }
     ];
   }
 
@@ -613,6 +631,13 @@ export struct DesktopConversationPane {
                 this.PlanCard(item.plan)
               } else if (item.command !== undefined) {
                 this.CommandCard(item.command)
+              } else if (item.replyTail !== undefined) {
+                DesktopReplyActions({ messageId: item.replyTail.messageId, text: item.replyTail.text,
+                  timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
+                  choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
+                  onRating: (messageId: string, rating: DesktopRating): void => {
+                    this.onReplyRating(this.sessionId, messageId, rating);
+                  } })
               } else if (item.message !== undefined) {
                 this.Message(item.message)
               } else if (item.artifacts !== undefined) {

@@ -4,7 +4,7 @@ import {
   projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, SessionPageValue, sessionCancelPayload,
   sessionFollowPayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
 } from 'appstate';
-import type { ModelOption, ModelSelection, PendingAttachment, PromptContentPart } from 'appstate';
+import type { FeedbackRow, ModelOption, ModelSelection, PendingAttachment, PromptContentPart } from 'appstate';
 import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
@@ -17,6 +17,9 @@ import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './De
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
 import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
+import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopFeedback } from './DesktopFeedback';
+import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
 import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopCommandRecord, observeDesktopCommand,
   resolveDesktopCommand } from './DesktopCommands';
 
@@ -38,6 +41,7 @@ export interface DesktopTranscriptItem {
   artifacts?: DesktopTurnArtifacts;
   process?: DesktopProcessGroup;
   command?: DesktopCommandRecord;
+  replyTail?: DesktopReplyTail;
 }
 
 export interface DesktopConversationSnapshot {
@@ -61,6 +65,7 @@ export interface DesktopConversationSnapshot {
   commands?: DesktopCommand[];
   commandLoading: boolean;
   commandError: string;
+  feedbackRows: FeedbackRow[];
 }
 
 interface DraftRequest {
@@ -89,6 +94,8 @@ export class DesktopConversation {
   private planMode?: boolean;
   private planAsOf: number = -1;
   private readonly goals: DesktopGoalState = new DesktopGoalState();
+  private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
+  readonly feedback: DesktopFeedback;
   private models: ModelOption[] = [];
   private modelsLoading: boolean = false;
   private modelsRequested: boolean = false;
@@ -111,11 +118,12 @@ export class DesktopConversation {
   private readonly pendingRequests: Map<string, DraftRequest> = new Map<string, DraftRequest>();
 
   constructor(connection: Connection, listener: (snapshot: DesktopConversationSnapshot) => void,
-    refreshSessions: () => void, interactions: DesktopInteractions) {
+    refreshSessions: () => void, interactions: DesktopInteractions, host: DesktopHostActions) {
     this.connection = connection;
     this.interactions = interactions;
     this.listener = listener;
     this.refreshSessions = refreshSessions;
+    this.feedback = new DesktopFeedback(host, (): void => this.publish());
   }
 
   async loadModels(refresh: boolean = false): Promise<void> {
@@ -147,11 +155,13 @@ export class DesktopConversation {
     const generation = ++this.generation;
     this.stopWatching();
     this.sessionId = sessionId;
+    this.feedback.select(sessionId);
     this.interactions.select(sessionId);
     this.transcript = [];
     this.turnArtifacts.clear();
     this.toolLog.clear();
     this.commandRecords.clear();
+    this.replyTimeline.clear();
     this.commandVersion++;
     this.commands = undefined;
     this.commandTask = undefined;
@@ -197,6 +207,7 @@ export class DesktopConversation {
 
   close(): void {
     this.closed = true;
+    this.feedback.select('');
     this.stopWatching();
     this.pendingRequests.clear();
   }
@@ -225,7 +236,7 @@ export class DesktopConversation {
   }
 
   async send(sessionId: string, text: string, attachments: PendingAttachment[],
-    onExport: (sessionId: string) => Promise<string>): Promise<string> {
+    onExport: (sessionId: string) => Promise<string>, onFeedback: (sessionId: string) => Promise<string>): Promise<string> {
     const invocation = commandInvocation(text);
     if (invocation !== undefined) {
       const commands = await this.loadCommands(sessionId);
@@ -235,6 +246,7 @@ export class DesktopConversation {
         if (attachments.length > 0 && !command.attachments) {
           return `/${invocation.token} 不接受附件，请先移除附件`;
         }
+        if (command.kind === 'feedback' && !invocation.suffix) { return onFeedback(sessionId); }
         const result = await this.executeCommand(sessionId, '/' + command.name + invocation.suffix, attachments);
         if (result === '' && command.kind === 'export' && !invocation.suffix) {
           return onExport(sessionId);
@@ -462,7 +474,8 @@ export class DesktopConversation {
     const result: Map<string, DesktopTranscriptItem> = new Map<string, DesktopTranscriptItem>();
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
-        if (item.artifacts === undefined && item.process === undefined && item.command === undefined) {
+        if (item.artifacts === undefined && item.process === undefined && item.command === undefined &&
+          item.replyTail === undefined) {
           result.set(item.id, item);
         }
       });
@@ -470,6 +483,7 @@ export class DesktopConversation {
       this.turnArtifacts.clear();
       this.toolLog.clear();
       this.commandRecords.clear();
+      this.replyTimeline.clear();
     }
     for (const record of records) {
       const seq = getNumber(getRecord(record, 'event'), 'seq') ?? -1;
@@ -480,6 +494,7 @@ export class DesktopConversation {
       observeDesktopArtifacts(this.turnArtifacts, event);
       this.toolLog.observe(record);
       observeDesktopCommand(this.commandRecords, event);
+      if (getString(event, 'type') === EVENT_TURN_END) { this.replyTimeline.observe(event); }
       const plan = desktopSubmittedPlan(event);
       if (plan !== undefined) {
         const id = 'plan:' + plan.callId;
@@ -497,6 +512,7 @@ export class DesktopConversation {
       if (message !== undefined && message.kind === TrajectoryKind.MESSAGE && !message.internal && message.speaker !== Speaker.SYSTEM &&
         (message.body.length > 0 || message.reasoning.length > 0)) {
         result.set(message.id, { id: message.id, sequence: seq, message: message });
+        if (message.speaker === Speaker.ASSISTANT) { this.replyTimeline.observe(event, message.body); }
       }
     }
     this.turnArtifacts.forEach((row: DesktopTurnArtifacts): void => {
@@ -515,6 +531,10 @@ export class DesktopConversation {
         result.set(id, { id: id, sequence: command.sequence, command: command });
       }
     });
+    for (const replyTail of this.replyTimeline.completed()) {
+      const id = `reply:${this.sessionId}:${replyTail.turn}:${replyTail.messageId}`;
+      result.set(id, { id: id, sequence: replyTail.endSeq, replyTail: replyTail });
+    }
     const ordered = Array.from(result.values()).sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
       a.sequence - b.sequence);
     const transcript: DesktopTranscriptItem[] = [];
@@ -754,7 +774,8 @@ export class DesktopConversation {
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
       goal: this.goals.goal,
-      commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError
+      commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
+      feedbackRows: this.feedback.rows
     });
   }
 }

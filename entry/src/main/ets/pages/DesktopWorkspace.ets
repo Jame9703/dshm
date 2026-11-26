@@ -10,6 +10,8 @@ import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
 import { exportDesktopLog } from '../desktop/DesktopLogExport';
 import { DesktopLogStage, DesktopSessionLogDialog } from '../desktop/DesktopSessionLogDialog';
 import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
+import { DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback';
+import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
@@ -91,6 +93,10 @@ struct DesktopWorkspace {
   @State private logProblem: string = '';
   private logDialog: number = -1;
   private logDialogVersion: number = 0;
+  @State private choosingFeedback: boolean = false;
+  private feedbackDialog: number = -1;
+  private feedbackDialogVersion: number = 0;
+  private openingFeedback: boolean = false;
   private readonly drafts: Map<string, string> = new Map<string, string>();
 
   @State private groups: DesktopWorkspaceGroup[] = [];
@@ -116,6 +122,7 @@ struct DesktopWorkspace {
     this.pageActive = false;
     this.closeAccount();
     this.closeLogDialog();
+    this.closeFeedback();
     this.data?.stop();
     this.data = undefined;
   }
@@ -152,6 +159,7 @@ struct DesktopWorkspace {
     if (!this.pageActive) {
       return;
     }
+    this.closeFeedback();
     this.data?.stop();
     this.data = undefined;
     this.attachmentsBySession.clear();
@@ -345,6 +353,7 @@ struct DesktopWorkspace {
 
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
     if (this.sessionId !== session.id) {
+      this.closeFeedback();
       this.draft = this.drafts.get(session.id) ?? '';
       this.attachments = this.attachmentsBySession.get(session.id) ?? [];
       this.chatError = '';
@@ -368,6 +377,7 @@ struct DesktopWorkspace {
   }
 
   private clearSession(): void {
+    this.closeFeedback();
     this.sessionId = '';
     this.selectedTitle = '';
     this.draft = '';
@@ -520,14 +530,99 @@ struct DesktopWorkspace {
     const files = this.attachments;
     if (conversation !== undefined && (text.trim().length > 0 || files.length > 0)) {
       this.chatAction(async (id: string): Promise<string> => {
-        const result = await conversation.send(id, text, files, (sessionId: string): Promise<string> =>
-          this.exportLog(sessionId));
+        const result = await conversation.send(id, text, files,
+          (sessionId: string): Promise<string> => this.exportLog(sessionId),
+          (sessionId: string): Promise<string> => this.openSessionFeedback(sessionId));
         if (result.length === 0 && conversation === this.data?.conversation) {
           this.setAttachments(id, []);
         }
         return result;
       }, text);
     }
+  }
+
+  private openSessionFeedback(sessionId: string): Promise<string> {
+    return this.openFeedback({ sessionId: sessionId, messageId: '', version: '' });
+  }
+
+  private async chooseReplyRating(sessionId: string, messageId: string, rating: DesktopRating): Promise<void> {
+    const feedback = this.data?.conversation.feedback;
+    if (feedback === undefined || !messageId || sessionId !== this.sessionId || this.choosingFeedback ||
+      this.feedbackDialog >= 0 || this.openingFeedback) { return; }
+    this.choosingFeedback = true;
+    try {
+      const loadProblem = await feedback.ensure(sessionId);
+      if (!this.pageActive || this.sessionId !== sessionId || this.data?.conversation.feedback !== feedback) { return; }
+      const previous = feedback.current(messageId);
+      const target: DesktopFeedbackTarget = { sessionId: sessionId, messageId: messageId,
+        rating: rating, version: previous?.version ?? '' };
+      const problem = !loadProblem && previous?.rating === rating ?
+        await feedback.retract(target) : await this.openFeedback(target);
+      if (problem && this.pageActive && this.sessionId === sessionId) {
+        this.getUIContext().getPromptAction().showToast({ message: problem });
+      }
+    } finally {
+      this.choosingFeedback = false;
+    }
+  }
+
+  @Builder
+  private FeedbackContent(target: DesktopFeedbackTarget, version: number) {
+    DesktopFeedbackDialog({
+      onClose: (): void => { this.closeFeedback(); },
+      onSubmit: (category: string, note: string): Promise<string> => this.submitFeedback(target, version, category, note)
+    })
+  }
+
+  private async openFeedback(target: DesktopFeedbackTarget): Promise<string> {
+    if (!this.pageActive || !target.sessionId || target.sessionId !== this.sessionId || this.data === undefined) {
+      return '当前会话暂不可反馈';
+    }
+    if (this.feedbackDialog >= 0 || this.openingFeedback) { return ''; }
+    this.openingFeedback = true;
+    const version = ++this.feedbackDialogVersion;
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    try {
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.FeedbackContent(target, version); },
+        alignment: DialogAlignment.Center, width: Math.max(230, Math.min(488, this.workbenchWidth - 32)),
+        autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          if (version === this.feedbackDialogVersion) { this.feedbackDialog = -1; this.feedbackDialogVersion++; }
+        } });
+      if (this.pageActive && this.sessionId === target.sessionId && version === this.feedbackDialogVersion) {
+        this.feedbackDialog = id;
+      } else {
+        prompt.closeCustomDialog(id);
+      }
+      return '';
+    } catch (_) {
+      return '无法打开反馈弹窗';
+    } finally {
+      this.openingFeedback = false;
+    }
+  }
+
+  private closeFeedback(): void {
+    const id = this.feedbackDialog;
+    this.feedbackDialog = -1;
+    this.feedbackDialogVersion++;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
+  }
+
+  private async submitFeedback(target: DesktopFeedbackTarget, version: number, category: string,
+    note: string): Promise<string> {
+    const feedback = this.data?.conversation.feedback;
+    if (feedback === undefined || this.sessionId !== target.sessionId || version !== this.feedbackDialogVersion) {
+      return '当前会话暂不可反馈';
+    }
+    const problem = await feedback.record(target, category, note);
+    if (!problem && this.pageActive && this.sessionId === target.sessionId && version === this.feedbackDialogVersion) {
+      this.closeFeedback();
+      this.getUIContext().getPromptAction().showToast({ message: '感谢你的反馈' });
+    }
+    return problem;
   }
 
   private async copyTranscript(): Promise<void> {
@@ -1252,6 +1347,12 @@ struct DesktopWorkspace {
           onWeb: (): void => { this.openWeb(false); },
           copyingTranscript: this.copyingTranscript,
           exportingLog: this.exportingLog,
+          choosingFeedback: this.choosingFeedback,
+          onSessionFeedback: (sessionId: string): Promise<string> => this.openSessionFeedback(sessionId),
+          onWarmFeedback: (sessionId: string): void => { this.data?.conversation.feedback.ensure(sessionId); },
+          onReplyRating: (sessionId: string, messageId: string, rating: DesktopRating): void => {
+            this.chooseReplyRating(sessionId, messageId, rating);
+          },
           onCopyTranscript: (): void => { this.copyTranscript(); },
           onExportLog: (): void => {
             this.chatAction((id: string): Promise<string> => this.exportLog(id));
