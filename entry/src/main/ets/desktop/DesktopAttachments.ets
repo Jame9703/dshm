@@ -13,10 +13,15 @@ export interface DesktopMediaAttachment {
   width?: number;
   height?: number;
   reference?: Object;
+  draftAnimation?: string;
 }
 
 export interface DesktopDraftAttachment extends PendingAttachment {
   picture?: DesktopMediaAttachment;
+}
+
+export async function desktopDraftGif(bytes: ArrayBuffer): Promise<string> {
+  return 'data:image/gif;base64,' + await new util.Base64Helper().encodeToString(new Uint8Array(bytes));
 }
 
 export function desktopImageMime(mime: string): boolean {
@@ -93,6 +98,7 @@ export struct DesktopAttachmentThumbnail {
     const row = this.attachment;
     if (!this.active || this.requested || row === undefined) { return; }
     this.requested = true;
+    if (row.draftAnimation) { return; }
     const picture = await readImage(this.host, this.sessionId, row, this.maxEdge * 3);
     if (this.active) { this.picture = picture; }
     else { picture?.release().catch((): void => {}); }
@@ -106,8 +112,8 @@ export struct DesktopAttachmentThumbnail {
 
   build() {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-      if (this.picture !== undefined) {
-        Image(this.picture).key(this.nodeKey + '-image').width('100%').height('100%')
+      if (this.attachment?.draftAnimation || this.picture !== undefined) {
+        Image(this.attachment?.draftAnimation ?? this.picture).key(this.nodeKey + '-image').width('100%').height('100%')
           .objectFit(ImageFit.Contain).draggable(false).accessibilityLevel('no')
       } else {
         SymbolGlyph($r('sys.symbol.picture')).fontSize(this.maxEdge <= 48 ? 14 : 22)
@@ -165,6 +171,7 @@ export struct DesktopAttachmentViewer {
 
   private async load(): Promise<void> {
     const row = this.attachment;
+    if (row?.draftAnimation) { this.loading = false; return; }
     const picture = row === undefined ? undefined : await readImage(this.host, this.sessionId, row, 2048);
     if (this.active) { this.picture = picture; this.loading = false; }
     else { picture?.release().catch((): void => {}); }
@@ -181,21 +188,21 @@ export struct DesktopAttachmentViewer {
         Text(this.attachment?.name ?? '查看原图').key('desktopImageViewerTitle').fontSize(17)
           .fontWeight(FontWeight.Medium).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Button('−', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(34).height(34).padding(0).fontSize(18)
-          .key('desktopImageZoomOut').accessibilityText('缩小').enabled(this.picture !== undefined && this.zoom > 1)
+          .key('desktopImageZoomOut').accessibilityText('缩小').enabled((!!this.attachment?.draftAnimation || this.picture !== undefined) && this.zoom > 1)
           .onClick((): void => { this.adjustZoom(this.zoom / 1.5); })
         Button(`${Math.round(this.zoom * 100)}%`, { buttonStyle: ButtonStyleMode.TEXTUAL }).height(34)
           .key('desktopImageZoomReset').accessibilityText('还原尺寸')
           .onClick((): void => { this.adjustZoom(1); })
         Button('+', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(34).height(34).padding(0).fontSize(18)
-          .key('desktopImageZoomIn').accessibilityText('放大').enabled(this.picture !== undefined && this.zoom < 4)
+          .key('desktopImageZoomIn').accessibilityText('放大').enabled((!!this.attachment?.draftAnimation || this.picture !== undefined) && this.zoom < 4)
           .onClick((): void => { this.adjustZoom(this.zoom * 1.5); })
         Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_dock_close')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
         }.key('desktopImageViewerClose').width(34).height(34).padding(0).accessibilityText('关闭').onClick(this.onClose)
       }.width('100%')
       Stack() {
-        if (this.picture !== undefined) {
-          Image(this.picture).key('desktopImageViewerPicture').width('100%').height('100%')
+        if (this.attachment?.draftAnimation || this.picture !== undefined) {
+          Image(this.attachment?.draftAnimation ?? this.picture).key('desktopImageViewerPicture').width('100%').height('100%')
             .objectFit(ImageFit.Contain).draggable(false)
             .scale({ x: this.zoom, y: this.zoom }).translate({ x: this.offsetX, y: this.offsetY })
             .gesture(GestureGroup(GestureMode.Parallel,

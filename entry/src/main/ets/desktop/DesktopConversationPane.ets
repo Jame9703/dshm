@@ -1,5 +1,8 @@
 import { Speaker, TrajectoryItem } from 'appstate';
 import { KeyCode } from '@kit.InputKit';
+import { DESKTOP_ATTACHMENT_DROP_TYPES, desktopClipboardHasAttachments, desktopClipboardHasText,
+  desktopDroppedFiles } from './DesktopAttachmentIntake';
+import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
 import type { ModelOption, ModelSelection } from 'appstate';
 import type { DesktopConversationSnapshot, DesktopPermissionOption, DesktopTranscriptItem } from './DesktopConversation';
 import { DesktopInteractionPane } from './DesktopInteractionPane';
@@ -45,6 +48,8 @@ export struct DesktopConversationPane {
   onFork: (sessionId: string, atSeq: number) => void = (_sessionId: string, _atSeq: number): void => {};
   onDraft: (value: string) => void = () => {};
   onAddAttachment: () => void = () => {};
+  onDropAttachments: (files: DesktopDroppedFiles) => void = (_files: DesktopDroppedFiles): void => {};
+  onPasteAttachments: () => void = (): void => {};
   onOpenImage: (row: DesktopMediaAttachment) => void = (_row: DesktopMediaAttachment): void => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
   onSend: (alternateDelivery: boolean) => void = (_alternateDelivery: boolean): void => {};
@@ -91,6 +96,7 @@ export struct DesktopConversationPane {
   private messageCount: number = 0;
   private partial: string = '';
   private scrollTimer: number = -1;
+  @State private attachmentOver: boolean = false;
   @State private expandedProcesses: string[] = [];
   @State private expandedReasoning: string[] = [];
   @State private inspectedTool: string = '';
@@ -333,6 +339,37 @@ export struct DesktopConversationPane {
     this.closePalette();
     this.following = true;
     this.onSend(alternateDelivery);
+  }
+
+  private acceptsAttachments(): boolean {
+    return !this.busy && this.snapshot?.loading === false;
+  }
+
+  private composerKey(event: KeyEvent): boolean {
+    if (this.acceptsAttachments() && event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_V &&
+      event.getModifierKeyState?.(['Ctrl']) === true && desktopClipboardHasAttachments()) {
+      this.onPasteAttachments();
+      return !desktopClipboardHasText();
+    }
+    return this.paletteKey(event);
+  }
+
+  private dropAttachments(event: DragEvent): void {
+    this.attachmentOver = false;
+    if (this.acceptsAttachments()) {
+      try {
+        const files = desktopDroppedFiles(event.getData());
+        if (files.uris.length > 0 || files.hasFolder) {
+          this.onDropAttachments(files);
+          event.setResult(DragResult.DRAG_SUCCESSFUL);
+          return;
+        }
+      } catch (_) {
+        event.setResult(DragResult.DRAG_FAILED);
+        return;
+      }
+    }
+    event.setResult(DragResult.DRAG_FAILED);
   }
 
   private paletteKey(event: KeyEvent): boolean {
@@ -594,7 +631,7 @@ export struct DesktopConversationPane {
         .onTextSelectionChange((start: number, end: number): void => {
           if (start === end) { this.refreshSlash(); }
         })
-        .onKeyPreIme((event: KeyEvent): boolean => this.paletteKey(event))
+        .onKeyPreIme((event: KeyEvent): boolean => this.composerKey(event))
         .onSubmit((): void => { if (this.hasDraft()) { this.handleSend(); } })
         .bindPopup(this.palette !== '', { builder: this.CommandPopup(), placement: Placement.TopLeft,
           enableArrow: false, mask: false, focusable: this.palette !== 'commands',
@@ -634,7 +671,15 @@ export struct DesktopConversationPane {
       .width('100%').padding({ left: 8, right: 8, bottom: 7 })
     }
     .width('100%').constraintSize({ maxWidth: 712 })
-    .borderRadius(20).backgroundColor($r('app.color.workspace_panel'))
+    .border({ width: 1, radius: 20, color: this.attachmentOver ? $r('sys.color.brand') : Color.Transparent })
+    .backgroundColor($r('app.color.workspace_panel'))
+    .allowDrop(DESKTOP_ATTACHMENT_DROP_TYPES)
+    .onDragEnter((): void => { this.attachmentOver = this.acceptsAttachments(); })
+    .onDragMove((event: DragEvent): void => {
+      event.setResult(this.acceptsAttachments() ? DragResult.DROP_ENABLED : DragResult.DROP_DISABLED);
+    })
+    .onDragLeave((): void => { this.attachmentOver = false; })
+    .onDrop((event: DragEvent): void => { this.dropAttachments(event); })
   }
 
   build() {

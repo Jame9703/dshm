@@ -1,5 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture } from '../desktop/DesktopAttachmentIntake';
+import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getString, parseTarget } from 'connection';
 import { WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
@@ -25,7 +28,7 @@ import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
-import { DesktopAttachmentViewer } from '../desktop/DesktopAttachments';
+import { DesktopAttachmentViewer, desktopDraftGif } from '../desktop/DesktopAttachments';
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from '../desktop/DesktopAttachments';
 import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
 import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } from '../desktop/DesktopSessionArchive';
@@ -808,15 +811,76 @@ struct DesktopWorkspace {
         if (picked.outcome !== PickOutcome.PICKED) {
           return picked.reason;
         }
-        const problems: string[] = [];
-        for (const uri of picked.uris) {
-          if (this.data !== data) { return ''; }
-          const problem = await this.stageDocument(data, id, uri);
-          if (problem) { problems.push(problem); }
-        }
-        return problems.join('\n');
+        return await this.stageDocuments(data, id, picked.uris);
       } catch (_) {
         return '无法读取所选文件';
+      }
+    });
+  }
+
+  private async stageDocuments(data: DesktopWorkspaceData, id: string, uris: string[]): Promise<string> {
+    const problems: string[] = [];
+    for (const uri of uris) {
+      if (this.data !== data) { return ''; }
+      const problem = await this.stageDocument(data, id, uri);
+      if (problem) { problems.push(problem); }
+    }
+    return problems.join('\n');
+  }
+
+  private attachDroppedFiles(files: DesktopDroppedFiles): void {
+    const data = this.data;
+    if (data === undefined) { return; }
+    this.chatAction(async (id: string): Promise<string> => {
+      const problems = await this.stageDocuments(data, id, files.uris);
+      if (!files.hasFolder) { return problems; }
+      const folderProblem = '请从工作区文件面板添加目录中的文件';
+      return problems ? problems + '\n' + folderProblem : folderProblem;
+    });
+  }
+
+  private attachClipboard(): void {
+    const data = this.data;
+    if (data === undefined) { return; }
+    this.chatAction(async (id: string): Promise<string> => {
+      try {
+        const board = pasteboard.getSystemPasteboard();
+        const clipboard = await board.getData();
+        const problems: string[] = [];
+        const uris = new Set<string>();
+        let pictureCount = 0;
+        for (let index = 0; index < clipboard.getRecordCount(); index++) {
+          if (this.data !== data) { return ''; }
+          const record = clipboard.getRecord(index);
+          if (record.mimeType === pasteboard.MIMETYPE_TEXT_URI) {
+            const uri = desktopAttachmentUri(record.uri);
+            if (uri) { uris.add(uri); }
+          } else if (record.mimeType === pasteboard.MIMETYPE_PIXELMAP && record.pixelMap !== undefined) {
+            const picture = record.pixelMap;
+            pictureCount++;
+            const name = pictureCount === 1 ? '剪贴板图片.png' : '剪贴板图片-' + pictureCount + '.png';
+            try {
+              const bytes = await packDesktopClipboardPicture(picture);
+              const problem = await this.stageAttachment(data, id, name, bytes, 'image/png');
+              if (problem) { problems.push(problem); }
+            } catch (_) {
+              problems.push(name + '：无法读取剪贴板图片');
+            } finally {
+              await picture.release().catch((): void => {});
+            }
+          }
+        }
+        if (uris.size === 0 && pictureCount === 0) {
+          const files = desktopDroppedFiles(await board.getUnifiedData());
+          for (const uri of files.uris) { uris.add(uri); }
+          if (files.hasFolder) { problems.push('请从工作区文件面板添加目录中的文件'); }
+        }
+        const problemsFromFiles = await this.stageDocuments(data, id, Array.from(uris));
+        if (problemsFromFiles) { problems.push(problemsFromFiles); }
+        if (uris.size === 0 && pictureCount === 0 && problems.length === 0) { return '剪贴板中没有可添加的图片或文件'; }
+        return problems.join('\n');
+      } catch (_) {
+        return '无法读取剪贴板附件';
       }
     });
   }
@@ -848,11 +912,19 @@ struct DesktopWorkspace {
     if (file.outcome !== PickOutcome.PICKED || file.data === undefined) {
       return file.reason || '无法读取所选附件';
     }
+    return this.stageAttachment(data, id, name || file.name, file.data, file.mediaType);
+  }
+
+  private async stageAttachment(data: DesktopWorkspaceData, id: string, label: string, bytes: ArrayBuffer,
+    mediaType: string): Promise<string> {
     if (this.data !== data) { return ''; }
-    const label = name || file.name;
     try {
-      const uploaded = await data.conversation.upload(id, label, file.data, file.mediaType);
+      const uploaded = await data.conversation.upload(id, label, bytes, mediaType);
       if (typeof uploaded === 'string') { return `${label}：${uploaded}`; }
+      if (mediaType === 'image/gif' && uploaded.picture !== undefined && this.data === data) {
+        const animation = await desktopDraftGif(bytes).catch((): string => '');
+        if (animation) { uploaded.picture.draftAnimation = animation; }
+      }
       if (this.data === data) {
         this.setAttachments(id, [...(this.attachmentsBySession.get(id) ?? []), uploaded]);
       }
@@ -1754,6 +1826,8 @@ struct DesktopWorkspace {
           draft: this.draft,
           attachments: this.attachments,
           onAddAttachment: (): void => this.attachDocument(),
+          onDropAttachments: (files: DesktopDroppedFiles): void => { this.attachDroppedFiles(files); },
+          onPasteAttachments: (): void => { this.attachClipboard(); },
           onOpenImage: (row: DesktopMediaAttachment): void => { this.openImagePreview(row); },
           onRemoveAttachment: (receiptId: string): void => {
             this.setAttachments(this.sessionId, this.attachments.filter((file: DesktopDraftAttachment): boolean =>
