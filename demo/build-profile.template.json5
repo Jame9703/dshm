@@ -1,0 +1,46 @@
+{
+  /* 本文件是 demo 工程的构建配置模板，入库用；真正构建时复制为 build-profile.json5。
+     根 build-profile.json5 由 DevEco Studio 自动写入本机签名物料（证书绝对路径 +
+     storePassword/keyPassword），**绝不入库**（见根 .gitignore）。
+     另：本 demo 只用于复现设备面行为，signingConfigs 留空即可，
+     DevEco 首次构建会自动生成本机调试签名。 */
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

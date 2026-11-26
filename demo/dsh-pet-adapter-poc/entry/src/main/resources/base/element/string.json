@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "dsh-pet 桌面宿主适配 POC"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "dsh-pet 宿主窗口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "dsh-pet适配POC"
+    },
+    {
+      "name": "pet_topmost_reason",
+      "value": "用于让 dsh-pet 桌面窗口保持在其他应用窗口之上"
+    },
+    {
+      "name": "pet_shadow_reason",
+      "value": "关闭桌宠透明窗口的系统阴影，避免宠物周围出现矩形边界"
+    }
+  ]
+}

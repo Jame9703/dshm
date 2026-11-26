@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSHM — HarmonyOS 本地 AI 编程工作台</title>
+<meta name="description" content="DSHM 是 HarmonyOS 上的本地 AI 编程工作台：代码默认不出设备，模型由你配置，一套能力覆盖手机、平板与 2in1 / PC。">
+<meta name="keywords" content="AI编程,本地AI,代码助手,HarmonyOS,鸿蒙,开发工具,终端,Python,工作区,插件,AI Agent">
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<style>
+:root{
+  --blue:#0a5ee0; --blue-deep:#123a86; --ink:#16254a; --ink-2:#46557a;
+  --muted:#68779a; --line:#e2e9f6; --soft:#f4f8ff;
+  --grad:linear-gradient(120deg,#2b8cff 0%,#4f6ff5 45%,#8f5ce8 100%);
+  --shadow:0 22px 60px rgba(28,66,140,.13);
+  --shadow-sm:0 8px 26px rgba(28,66,140,.09);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:#fff;color:var(--ink);font-family:Inter,"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+img{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+.container{width:min(1200px,91vw);margin:0 auto}
+.grad-text{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* nav */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(255,255,255,.86);backdrop-filter:blur(16px);border-bottom:1px solid transparent;transition:border-color .3s,box-shadow .3s}
+nav.scrolled{border-bottom-color:var(--line);box-shadow:0 6px 24px rgba(28,66,140,.06)}
+.nav-inner{height:72px;display:flex;align-items:center;justify-content:space-between}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;letter-spacing:.3px;color:var(--ink)}
+.brand img{width:32px;height:32px;border-radius:8px}
+.nav-links{display:flex;align-items:center;gap:32px;font-size:14px;color:var(--ink-2)}
+.nav-links a{transition:color .2s}
+.nav-links a:hover{color:var(--blue)}
+.nav-cta{padding:9px 19px;border-radius:9px;background:var(--blue);color:#fff!important;font-size:13px;font-weight:650;box-shadow:0 8px 20px rgba(10,94,224,.24);transition:transform .2s,box-shadow .2s}
+.nav-cta:hover{transform:translateY(-2px);box-shadow:0 12px 26px rgba(10,94,224,.34)}
+.menu-toggle{display:none;background:none;border:0;color:var(--ink);font-size:25px;cursor:pointer}
+
+/* hero */
+.hero{position:relative;padding:120px 0 92px;overflow:hidden;background:linear-gradient(180deg,#f7faff 0%,#ffffff 72%)}
+.hero:before,.hero:after{content:"";position:absolute;border:1px solid rgba(10,94,224,.10);border-radius:50%;pointer-events:none}
+.hero:before{width:1100px;height:1100px;right:-380px;top:-560px;box-shadow:0 0 0 90px rgba(10,94,224,.025),0 0 0 180px rgba(10,94,224,.02)}
+.hero:after{width:760px;height:760px;left:-420px;bottom:-520px;box-shadow:0 0 0 70px rgba(10,94,224,.02)}
+.hero-inner{display:grid;grid-template-columns:.92fr 1.06fr 1.12fr;gap:28px;align-items:center;position:relative}
+
+/* 3D 展台图标 */
+.stage{position:relative;aspect-ratio:1/1;width:100%;max-width:390px}
+.stage:before{content:"";position:absolute;left:4%;right:4%;bottom:3%;height:20%;border-radius:50%;background:linear-gradient(180deg,#ffffff 0%,#e7f0ff 38%,#c7daf6 62%,#eef5ff 100%);box-shadow:0 26px 50px rgba(24,68,150,.20),inset 0 -10px 22px rgba(90,140,220,.28)}
+.stage:after{content:"";position:absolute;left:14%;right:14%;bottom:11%;height:8%;border-radius:50%;background:radial-gradient(ellipse,rgba(43,140,255,.28),transparent 70%);filter:blur(8px)}
+.app-icon{position:absolute;left:15%;top:7%;width:70%;aspect-ratio:1;border-radius:23%;background:#fff;box-shadow:0 30px 55px rgba(20,60,140,.24),inset 0 0 0 1px rgba(255,255,255,.95);overflow:hidden;animation:float 7s ease-in-out infinite}
+.app-icon img{width:100%;height:100%;object-fit:cover}
+@keyframes float{50%{transform:translateY(-13px)}}
+
+/* hero 文案 */
+.hero-copy h1{font-size:clamp(34px,3.7vw,52px);line-height:1.24;letter-spacing:-1px;font-weight:820;color:var(--blue-deep)}
+.hero-copy .sub{font-size:17.5px;font-weight:700;color:var(--ink);margin-bottom:14px}
+.hero-copy p.desc{font-size:14.5px;color:var(--muted);line-height:1.9;margin:16px 0 22px}
+.hero-tags{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:28px}
+.hero-tags span{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--blue-deep);background:#eef4ff;border:1px solid #d8e6ff;border-radius:100px;padding:6px 13px}
+.hero-tags i{width:6px;height:6px;border-radius:50%;background:var(--blue)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 26px;border-radius:11px;font-size:14.5px;font-weight:650;transition:transform .2s,box-shadow .2s}
+.btn-primary{background:var(--blue);color:#fff;box-shadow:0 14px 34px rgba(10,94,224,.30)}
+.btn-primary:hover{transform:translateY(-3px);box-shadow:0 18px 42px rgba(10,94,224,.42)}
+.btn-ghost{background:#fff;color:var(--blue-deep);border:1px solid #d8e6ff}
+.btn-ghost:hover{background:#f2f7ff;transform:translateY(-2px)}
+
+/* 设备群 */
+.dev-showcase{position:relative;height:410px}
+.dev-showcase img{position:absolute;border-radius:10px;background:#fff;box-shadow:var(--shadow)}
+.dev-pc{width:96%;left:0;top:8px;border:6px solid #1c2333;border-bottom-width:9px}
+.dev-phone{width:30%;right:-2%;bottom:-6px;border:5px solid #20283a;border-radius:24px!important;border-bottom-width:9px;z-index:2;animation:float2 8s ease-in-out infinite}
+.dev-tablet{width:58%;right:1%;bottom:6px;border:6px solid #20283a;border-radius:14px!important;z-index:1}
+@keyframes float2{50%{transform:translateY(12px)}}
+
+/* section base */
+section{position:relative}
+.eyebrow{display:inline-block;font-size:12px;letter-spacing:2.2px;text-transform:uppercase;color:var(--blue);font-weight:750;margin-bottom:12px}
+.sec-title{font-size:clamp(28px,3.4vw,42px);font-weight:800;letter-spacing:-.7px;line-height:1.34;color:var(--blue-deep)}
+.sec-desc{color:var(--muted);font-size:15px;margin-top:14px;line-height:1.85}
+
+/* pillars */
+.pillars{padding:70px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fbfcff}
+.pillar-grid{display:grid;grid-template-columns:repeat(3,1fr)}
+.pillar{padding:6px 40px;border-right:1px solid var(--line)}
+.pillar:first-child{padding-left:0}
+.pillar:last-child{border:0}
+.pillar h3{font-size:17px;margin-bottom:9px;display:flex;align-items:center;gap:10px;color:var(--blue-deep)}
+.pillar .pi{color:var(--blue)}
+.pillar p{font-size:13.5px;color:var(--muted);line-height:1.85}
+
+/* features */
+.features{padding:110px 0}
+.f-head{text-align:center;max-width:720px;margin:0 auto 52px}
+.f-head .sec-desc{margin-left:auto;margin-right:auto}
+.f-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.feature{background:#fff;border:1px solid var(--line);border-radius:18px;padding:30px 27px;box-shadow:var(--shadow-sm);transition:transform .28s,border-color .28s,box-shadow .28s;position:relative;overflow:hidden}
+.feature:hover{transform:translateY(-7px);border-color:#bcd6ff;box-shadow:0 24px 50px rgba(28,66,140,.15)}
+.feature .fi{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;background:#edf4ff;border:1px solid #d9e8ff;margin-bottom:19px}
+.feature .fi svg{width:23px;height:23px;color:var(--blue)}
+.feature h3{font-size:16.5px;margin-bottom:9px;color:var(--blue-deep)}
+.feature p{font-size:13.3px;color:var(--muted);line-height:1.85}
+.feature .tag{position:absolute;top:22px;right:20px;font-size:10px;color:#8ea3c8;border:1px solid var(--line);padding:2px 8px;border-radius:6px;background:#f8fbff}
+
+/* devices */
+.devices{padding:100px 0;background:linear-gradient(180deg,#fff,#f6f9ff 50%,#fff)}
+.d-head{text-align:center;margin-bottom:52px}
+.d-head .sec-desc{margin:14px auto 0}
+.d-grid{display:grid;grid-template-columns:1.22fr 1.02fr .6fr;gap:22px;align-items:end}
+.frame{border-radius:15px;overflow:hidden;background:#0d121c;box-shadow:var(--shadow);border:1px solid #dde8f8;transition:transform .3s}
+.frame:hover{transform:translateY(-8px)}
+.frame img{width:100%;display:block}
+.frame.tablet{border-radius:17px;border-width:5px;border-color:#20283a}
+.frame.phone{border-radius:28px;border-width:6px;border-bottom-width:10px;border-color:#20283a}
+.device h4{font-size:15px;margin-top:18px;color:var(--blue-deep)}
+.device p{font-size:12.5px;color:var(--muted);margin-top:4px}
+
+/* tech */
+.tech{padding:105px 0}
+.tech-grid{display:grid;grid-template-columns:1fr 1.08fr;gap:56px;align-items:center}
+.tech-list{list-style:none;margin-top:26px}
+.tech-list li{padding:11px 0 11px 24px;position:relative;font-size:13.8px;color:var(--ink-2);border-bottom:1px solid var(--line);line-height:1.75}
+.tech-list li:before{content:"";position:absolute;left:2px;top:19px;width:7px;height:7px;border-radius:50%;background:var(--blue)}
+.tech-list b{color:var(--blue-deep);font-weight:650}
+.terminal{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#fbfcff;box-shadow:var(--shadow)}
+.terminal .tbar{height:38px;background:#f2f6ff;display:flex;align-items:center;padding:0 14px;gap:7px;border-bottom:1px solid var(--line)}
+.terminal .tbar i{width:9px;height:9px;border-radius:50%;background:#c9d6ee}
+.terminal .tbar span{margin-left:auto;font-size:10.5px;color:#8fa0c2;font-family:ui-monospace,monospace}
+.terminal pre{padding:24px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.85;color:#4a5d84;overflow-x:auto}
+.terminal pre .c{color:#a3b2ce}
+.terminal pre .g{color:var(--blue)}
+.terminal pre .p{color:#8f5ce8}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.chip{font-size:11.5px;padding:6px 12px;border-radius:8px;background:#f2f7ff;border:1px solid #dde9fb;color:#5a6c92;font-family:ui-monospace,monospace}
+
+/* opensource */
+.os{padding:105px 0;border-top:1px solid var(--line);background:radial-gradient(700px 380px at 50% 0%,rgba(43,140,255,.10),transparent 72%)}
+.os-box{max-width:830px;margin:0 auto;text-align:center}
+.os-quote{font-size:clamp(21px,2.5vw,30px);line-height:1.62;font-weight:700;color:var(--blue-deep)}
+.os-note{color:var(--muted);font-size:14.3px;margin-top:18px;line-height:1.95}
+.os-tags{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:26px}
+.os-tags span{font-size:12px;padding:7px 15px;border-radius:100px;border:1px solid #dbe7fa;background:#fff;color:#57709b}
+.sponsors{display:flex;justify-content:center;gap:32px;margin-top:40px;flex-wrap:wrap}
+.sponsor{text-align:center}
+.sponsor img{width:148px;height:148px;object-fit:cover;border-radius:12px;background:#fff;padding:6px;border:1px solid var(--line)}
+.sponsor small{display:block;color:var(--muted);font-size:12px;margin-top:10px}
+
+/* download */
+.download{padding:100px 0;text-align:center}
+.dl-card{border:1px solid #d8e7ff;border-radius:24px;padding:62px 30px;background:linear-gradient(145deg,#eef5ff,#f9fbff);position:relative;overflow:hidden;box-shadow:var(--shadow)}
+.dl-card:before{content:"";position:absolute;width:540px;height:300px;left:50%;top:-190px;transform:translateX(-50%);background:var(--grad);filter:blur(110px);opacity:.16}
+.dl-card h2{font-size:clamp(28px,3.8vw,44px);font-weight:820;color:var(--blue-deep);position:relative;line-height:1.32}
+.dl-card p{color:var(--muted);margin-top:16px;position:relative}
+.dl-card .btn{margin-top:30px;position:relative}
+.dl-note{font-size:12.5px;color:#8495b5;margin-top:26px;position:relative}
+
+/* footer */
+footer{border-top:1px solid var(--line);padding:54px 0 32px;background:#fafcff}
+.f-top{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap;padding-bottom:34px;border-bottom:1px solid var(--line)}
+.f-brand p{font-size:13px;color:var(--muted);margin-top:13px;max-width:330px;line-height:1.85}
+.f-col h5{font-size:12.5px;color:var(--blue-deep);margin-bottom:14px;letter-spacing:.5px}
+.f-col a,.f-col span{display:block;font-size:12.5px;color:var(--muted);margin:8px 0;transition:color .2s}
+.f-col a:hover{color:var(--blue)}
+.socials{display:flex;flex-wrap:wrap;gap:8px;max-width:430px}
+.socials span{font-size:11.5px;padding:5px 11px;border-radius:7px;border:1px solid var(--line);background:#fff;color:#6b7c9f}
+.f-bottom{padding-top:24px;font-size:11.5px;color:#8797b4;line-height:1.9}
+.f-bottom b{color:#5b6d92;font-weight:650}
+
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s ease}
+.reveal.show{opacity:1;transform:none}
+
+@media(max-width:1050px){
+  .hero-inner{grid-template-columns:1fr 1fr;gap:40px}
+  .hero .stage{max-width:320px}
+  .hero-copy{grid-column:1}
+  .dev-showcase{grid-column:2;grid-row:1/span 2;height:470px}
+  .dev-pc{width:100%}
+  .f-grid{grid-template-columns:repeat(2,1fr)}
+  .tech-grid{grid-template-columns:1fr;gap:36px}
+  .d-grid{grid-template-columns:1fr 1fr}
+  .d-grid .device:first-child{grid-column:span 2}
+}
+@media(max-width:760px){
+  .nav-links{display:none;position:absolute;top:72px;left:0;right:0;background:rgba(255,255,255,.98);flex-direction:column;gap:0;padding:10px 5vw 22px;border-bottom:1px solid var(--line)}
+  .nav-links.open{display:flex}
+  .nav-links a{padding:12px 0;width:100%}
+  .menu-toggle{display:block}
+  .hero{padding-top:100px}
+  .hero-inner{grid-template-columns:1fr}
+  .hero .stage{max-width:260px;margin:0 auto}
+  .hero-copy{grid-column:1}
+  .dev-showcase{grid-column:1;grid-row:auto;height:320px}
+  .dev-phone{width:34%;right:0;bottom:-10px}
+  .f-grid{grid-template-columns:1fr}
+  .d-grid{grid-template-columns:1fr}
+  .d-grid .device:first-child{grid-column:span 1}
+  .pillar-grid{grid-template-columns:1fr;gap:24px}
+  .pillar{padding:0 0 22px 0;border-right:0;border-bottom:1px solid var(--line)}
+}
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="#top"><img src="assets/logo.svg" alt="DSHM">DSHM</a>
+    <div class="nav-links" id="navLinks">
+      <a href="#features">功能</a>
+      <a href="#devices">多端</a>
+      <a href="#tech">技术内核</a>
+      <a href="#opensource">开源与免费</a>
+      <a class="nav-cta" href="#download">获取应用</a>
+    </div>
+    <button class="menu-toggle" aria-label="菜单" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="container hero-inner">
+    <div class="stage reveal"><div class="app-icon"><img src="assets/logo.svg" alt="DSHM 应用图标"></div></div>
+    <div class="hero-copy reveal">
+      <div class="sub">应用已上架 · 华为应用市场</div>
+      <h1>HarmonyOS<br>本地 AI 编程工作台</h1>
+      <p class="desc">代码，不该先上传到云端。DSHM 把 DeepSeek Harness 的运行本体装进鸿蒙应用，本地优先、模型由你配置，装上即用，不需要电脑常驻任何服务。</p>
+      <div class="hero-tags">
+        <span><i></i>鸿蒙 PC</span><span><i></i>手机</span><span><i></i>平板</span><span><i></i>三端覆盖</span>
+      </div>
+      <div class="hero-actions" style="display:flex;gap:12px;flex-wrap:wrap">
+        <a class="btn btn-primary" href="#download">获取应用 →</a>
+        <a class="btn btn-ghost" href="#features">了解功能</a>
+      </div>
+    </div>
+    <div class="dev-showcase reveal">
+      <img class="dev-pc" src="assets/pc-home.jpg" alt="DSHM 2in1 / PC 界面">
+      <img class="dev-tablet" src="assets/tablet-home.jpg" alt="DSHM 平板界面" loading="lazy">
+      <img class="dev-phone" src="assets/phone-home.jpg" alt="DSHM 手机界面" loading="lazy">
+    </div>
+  </div>
+</header>
+
+<section class="pillars">
+  <div class="container pillar-grid">
+    <div class="pillar reveal">
+      <h3><span class="pi">◇</span> 本地优先</h3>
+      <p>代码、会话、工作区都在设备里。Host 只监听 127.0.0.1，每一次对话与工具调用都在本机执行。</p>
+    </div>
+    <div class="pillar reveal">
+      <h3><span class="pi" style="color:#4f6ff5">◇</span> 模型由你配置</h3>
+      <p>按提供方管理 baseURL、模型目录与密钥。默认模型与推理强度可选，不绑定任何一家云端。</p>
+    </div>
+    <div class="pillar reveal">
+      <h3><span class="pi" style="color:#8f5ce8">◇</span> 一套能力，三端覆盖</h3>
+      <p>手机、平板、2in1 / 鸿蒙 PC 共用同一套能力。不是网页版聊天，而是端侧完整的开发环境。</p>
+    </div>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <div class="container">
+    <div class="f-head reveal">
+      <span class="eyebrow">Features</span>
+      <h2 class="sec-title">不是聊天机器人，<br>是能把任务做完的 AI Agent</h2>
+      <p class="sec-desc">会规划、会调用工具、会把改动落到你的工作区。每一步都看得见，也随时可以接手。</p>
+    </div>
+    <div class="f-grid">
+      <article class="feature reveal">
+        <span class="tag">轨迹</span>
+        <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M4 12h16M4 17h7"/><circle cx="18" cy="7" r="2"/><circle cx="14" cy="17" r="2"/></svg></div>
+        <h3>每一步工具调用，都看得见</h3>
+        <p>对话与执行轨迹分开呈现：工具调用、子代理、目标与任务、交付物、错误，逐条可查。</p>
+      </article>
+      <article class="feature reveal">
+        <span class="tag">工作区</span>
+        <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+        <h3>打开本地项目，直接读改</h3>
+        <p>用系统文件选择器授权目录，在工作区里浏览、预览、编辑文件。AI 的读写范围限定在你选的目录。</p>
+      </article>
+      <article class="feature reveal">
+        <span class="tag">开发环境</span>
+        <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></div>
+        <h3>终端、Python、Git 开箱即用</h3>
+        <p>PC / 2in1 提供原生 PTY；平板与手机随包 Linux guest VM，bash、Python、Git、ripgrep 都备好了。</p>
+      </article>
+      <article class="feature reveal">
+        <span class="tag">扩展</span>
+        <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10 3h4v3a2 2 0 1 0 4 0V3h3v4a2 2 0 1 1-3.5 1.3L21 11v10H3V11l3.5-2.7A2 2 0 1 1 3 7V3h4v3a2 2 0 1 0 3-1.7z"/></svg></div>
+        <h3>插件按需扩展</h3>
+        <p>随包 11 个插件，市场里按需安装、启用或禁用。失败可回滚，还有启动救援中心兜底。</p>
+      </article>
+      <article class="feature reveal">
+        <span class="tag">版本</span>
+        <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M6 8.5v7M8.5 6h4a3 3 0 0 1 3 3v4"/></svg></div>
+        <h3>核心版本切换与回滚</h3>
+        <p>多个核心版本可同时安装，一键切换：停旧、起新、逐版本校验后激活。升级上游，App 代码不动。</p>
+      </article>
+      <article class="feature reveal">
+        <span class="tag">自动化 · PC/2in1</span>
+        <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div>
+        <h3>浏览器自动化</h3>
+        <p>在 PC / 2in1 上按需拉起系统浏览器，任务结束自动收尾。移动端不注册该类工具。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="devices" id="devices">
+  <div class="container">
+    <div class="d-head reveal">
+      <span class="eyebrow">Every screen</span>
+      <h2 class="sec-title">过去，AI 编程属于一块屏幕。<br><span class="grad-text">今天，它属于你手里的每一块屏幕。</span></h2>
+      <p class="sec-desc">同一套能力，按设备形态自然展开：横屏侧栏常驻、竖屏也有入口、手机上随时接着改。</p>
+    </div>
+    <div class="d-grid">
+      <div class="device reveal">
+        <div class="frame"><img src="assets/pc-home.jpg" alt="DSHM 2in1 / PC 界面" loading="lazy"></div>
+        <h4>2in1 / 鸿蒙 PC</h4>
+        <p>原生终端 · 完整工作区 · 浏览器自动化</p>
+      </div>
+      <div class="device reveal">
+        <div class="frame tablet"><img src="assets/tablet-home.jpg" alt="DSHM 平板界面" loading="lazy"></div>
+        <h4>平板</h4>
+        <p>横竖屏自适应 · 侧栏随时可用</p>
+      </div>
+      <div class="device reveal">
+        <div class="frame phone"><img src="assets/phone-home.jpg" alt="DSHM 手机界面" loading="lazy"></div>
+        <h4>手机</h4>
+        <p>继续会话 · 随时预览与执行</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="tech" id="tech">
+  <div class="container tech-grid">
+    <div class="reveal">
+      <span class="eyebrow">Under the hood</span>
+      <h2 class="sec-title">官方没有鸿蒙端，<br>那就把运行本体搬过来</h2>
+      <p class="sec-desc">这是一次平台移植：把面向桌面 Electron 的运行时，搬到 OpenHarmony arm64 上自足运行。不 fork、不魔改上游，差异只通过 dsh 自己的组合面表达。</p>
+      <ul class="tech-list">
+        <li><b>端侧自足运行</b> — HAP 内置 Node 运行时与 dsh 核心树，Host 跑在应用进程内，只监听回环地址。</li>
+        <li><b>构建期自签名</b> — 原生二进制随包分发并自签名，进入应用签名域后才能执行。</li>
+        <li><b>jitless / 无 WASM</b> — 不申请 JIT，通过 fetch 垫片与 undici 模块名钩子补齐，不改上游源码。</li>
+        <li><b>核心可切换可回滚</b> — 核心树以归档分发，版本仓库激活事务切换，失败自动回滚。</li>
+        <li><b>界面不重写</b> — 官方 Web 前端内容不变，ArkUI 只做平台宿主，官方主题更新无需重做界面。</li>
+      </ul>
+    </div>
+    <div class="reveal">
+      <div class="terminal">
+        <div class="tbar"><i></i><i></i><i></i><span>architecture · dshm</span></div>
+<pre><span class="c">┌─ DSHM（一个 HAP）──────────────────────────┐</span>
+│  <span class="g">ArkUI 原生页面</span>（客户端）                │
+│        │  HTTP /api/*                      │
+│        │  WebSocket /api/remote.mux        │
+│        ▼                                   │
+│  <span class="g">端侧 dsh Host</span>（Node 运行于本应用进程内） │
+│        │  DSH_HOME = &lt;应用沙箱&gt;/dsh/home    │
+│        ▼                                   │
+│  <span class="p">核心版本仓库</span>（多版本并存 / 切换 / 回滚） │
+<span class="c">└───────────────────────────────────────────┘</span>
+
+<span class="c"># 同进程 = 安全语义简化</span>
+<span class="g">→</span> 回环通信，不暴露局域网
+<span class="g">→</span> 无需跨设备转发
+<span class="g">→</span> 随应用生命周期起停</pre>
+      </div>
+      <div class="chips">
+        <span class="chip">HarmonyOS / OpenHarmony arm64</span>
+        <span class="chip">ArkTS · ArkUI · Stage 模型</span>
+        <span class="chip">--jitless</span>
+        <span class="chip">127.0.0.1</span>
+        <span class="chip">API 23+</span>
+        <span class="chip">133 条回归门禁</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="os" id="opensource">
+  <div class="container os-box reveal">
+    <span class="eyebrow">Open source & free</span>
+    <h2 class="os-quote">DSHM 是业余时间做的移植。<br>项目<span class="grad-text">完全免费，没有付费墙</span>。</h2>
+    <p class="os-note">官方的 dsh 运行时没有鸿蒙端；端侧差异、沙箱绕行、手持档适配，以及两百多条回归门禁，都是照着真机读数一条条抠出来的。赞赏不会改变任何功能取舍，也不会影响 issue 的处理顺序——如果它正好省了你的事，请我喝杯咖啡就好。</p>
+    <div class="os-tags"><span>MIT License</span><span>无付费墙</span><span>不 fork 上游</span><span>数据留在本机</span></div>
+    <div class="sponsors">
+      <div class="sponsor"><img src="assets/wechat.jpg" alt="微信赞赏码" loading="lazy"><small>微信赞赏</small></div>
+      <div class="sponsor"><img src="assets/alipay.jpg" alt="支付宝赞赏码" loading="lazy"><small>支付宝赞赏</small></div>
+    </div>
+  </div>
+</section>
+
+<section class="download" id="download">
+  <div class="container">
+    <div class="dl-card reveal">
+      <h2>在你的鸿蒙设备上，<br><span class="grad-text">开始本地 AI 编程</span></h2>
+      <p>支持 HarmonyOS 手机、折叠屏、平板与 2in1 / PC（API 23 及以上）。</p>
+      <a class="btn btn-primary" href="#top">在华为应用市场搜索 DSHM →</a>
+      <div class="dl-note">当前版本 v1.1.8 · 完全免费 · 数据默认不出设备</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div class="f-top">
+      <div class="f-brand">
+        <a class="brand" href="#top"><img src="assets/logo.svg" alt="DSHM">DSHM</a>
+        <p>在 HarmonyOS 上自足运行 DeepSeek Harness 的应用。本地优先，模型由你配置，数据留在设备里。</p>
+      </div>
+      <div class="f-col">
+        <h5>产品</h5>
+        <a href="#features">功能特性</a><a href="#devices">多端支持</a><a href="#tech">技术内核</a><a href="#download">获取应用</a>
+      </div>
+      <div class="f-col">
+        <h5>关注</h5>
+        <div class="socials">
+          <span>B站 · 彡染二拾一</span><span>抖音 · Sol</span><span>公众号 · DSHM开发者</span>
+          <span>小红书 · 正经华吹</span><span>微博 · @Sol5766</span><span>视频号 · DSHM开发者</span>
+        </div>
+      </div>
+    </div>
+    <div class="f-bottom">
+      <b>DSHM 是独立客户端</b>，与华为、DeepSeek 官方无隶属、授权或背书关系；HarmonyOS 仅作平台说明。dsh / DeepSeek Harness 的商标与上游代码版权归各自所有者，MIT 许可不授予商标、Logo 或官方背书。<br>
+      本站素材与文案取自 DSHM 开源项目 · 开源协议 MIT · Copyright © 2026 sol
+    </div>
+  </div>
+</footer>
+
+<script>
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>36));
+const io=new IntersectionObserver((es)=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('show');io.unobserve(e.target)}}),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+document.querySelectorAll('.nav-links a').forEach(a=>a.addEventListener('click',()=>document.getElementById('navLinks').classList.remove('open')));
+</script>
+</body>
+</html>

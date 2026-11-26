@@ -1,0 +1,41 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    /*
+     * 【复现关键变量 A】deviceTypes 含 "2in1" 且不含 "phone"。
+     * 官方规则（智慧多窗简介 → 适配注意事项）：满足此条件即被系统判定为 PC 应用；
+     * 在 Tablet 上运行的 PC 应用不支持悬浮窗（小窗）。
+     * 对照变体 B：只保留 "tablet"，去掉 "2in1"，即不被判为 PC 应用。
+     */
+    "deviceTypes": [
+      "tablet",
+      "2in1"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    /* 【复现关键变量 B】abilities 中不声明 supportWindowMode。
+       缺省即 ["fullscreen","split","floating"]，所以本 demo 不是因该字段缺失而失败。 */
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [ "entity.system.home" ],
+            "actions": [ "ohos.want.action.home" ]
+          }
+        ]
+      }
+    ]
+  }
+}

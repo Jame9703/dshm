@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "平板PC应用分类最小复现" },
+    { "name": "EntryAbility_desc", "value": "复现入口" },
+    { "name": "EntryAbility_label", "value": "PC应用复现Demo" }
+  ]
+}

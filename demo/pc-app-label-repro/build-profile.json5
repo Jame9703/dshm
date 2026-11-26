@@ -1,0 +1,32 @@
+{
+  "app": {
+    /* 交付时不内置任何个人调试签名；请用 DevEco Studio 自动生成的默认调试签名，
+       或按 README 在本机临时补 signingConfigs 后构建。
+       本 demo 只用于复现设备面分类现象，不涉及权限与发布配置。 */
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [ { "name": "debug" }, { "name": "release" } ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        { "name": "default", "applyToProducts": [ "default" ] }
+      ]
+    }
+  ]
+}

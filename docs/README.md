@@ -38,9 +38,13 @@
 
 ## 9. 编号文档全量索引
 
-当前 `docs/` 顶层只剩一份编号契约文档（被两道门禁消费），必须保留：
+当前 `docs/` 顶层只剩两份编号文档（各被门禁消费），必须保留：
 
 - [`199-Host同步探测缓存（LOOP-GAP根因与修复）.md`](199-Host同步探测缓存（LOOP-GAP根因与修复）.md)
+- [`200-ACCESS_USER_FULL_DISK必要性说明（会话授权完全控制）.md`](200-ACCESS_USER_FULL_DISK必要性说明（会话授权完全控制）.md)
+- [`201-WorkBuddy启动加载顺序拆解与借鉴.md`](201-WorkBuddy启动加载顺序拆解与借鉴.md)
+- [`202-三端语音朗读增强与移动端文档扫描.md`](202-三端语音朗读增强与移动端文档扫描.md)
+- [`203-DSH核心升级-0.2.3-alpha.2.md`](203-DSH核心升级-0.2.3-alpha.2.md)
 
 其余编号文档均已归档：`docs/archive/<编号>-*.md`（归档目录共 350 个 `.md`，
 含旧版 README / HANDOFF 两份快照与归档说明；逐篇清单见 `docs/archive/MIGRATION.txt`）。

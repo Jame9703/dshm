@@ -1,0 +1,45 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    /* PC/2in1 专用 POC；不参与平板/手机形态验证。 */
+    "deviceTypes": [ "2in1" ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.WINDOW_TOPMOST",
+        "reason": "$string:pet_topmost_reason",
+        "usedScene": { "abilities": [ "EntryAbility" ], "when": "always" }
+      },
+      {
+        "name": "ohos.permission.SET_WINDOW_TRANSPARENT",
+        "reason": "$string:pet_transparent_reason",
+        "usedScene": { "abilities": [ "EntryAbility" ], "when": "always" }
+      }
+    ],
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        /* API 15+ 在 PC/2in1：配置含 floating ⇒ 以自由窗口启动（不是全屏）。 */
+        "supportWindowMode": [ "floating" ],
+        "skills": [
+          {
+            "entities": [ "entity.system.home" ],
+            "actions": [ "ohos.want.action.home" ]
+          }
+        ]
+      }
+    ]
+  }
+}

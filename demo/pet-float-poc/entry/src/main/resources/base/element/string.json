@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "PC/2in1 悬浮桌宠 POC" },
+    { "name": "EntryAbility_desc", "value": "桌宠窗口" },
+    { "name": "EntryAbility_label", "value": "桌宠POC" },
+    { "name": "pet_topmost_reason", "value": "用于让桌宠窗口保持在其他应用窗口之上" },
+    { "name": "pet_transparent_reason", "value": "用于让桌宠窗口背景透明并去除窗口阴影" }
+  ]
+}

@@ -61,6 +61,8 @@
 | 设置面板玻璃排除 | 2026-11-17 | 现行 | 设置面板及内部 dialog 全形态排除玻璃 | `docs/archive/420-*` |
 | 侧栏窄视口交官方抽屉 | 2026-11-18 | 现行 | 平板/折叠 <1024 不再写死 280/56 | `docs/HANDOFF.md` §2 与 `check-sidebar-shim-css` |
 | 本机可侧载包 | 2026-11-17 | 现行 | 只有本机调试签名 local-install 可装；canonical Beta 报 9568322 | `AGENT-HANDOFF.md` §3.3 |
+| P2-3 桥探测噪声缓修 | 2026-11-26 | 现行 | 工作区可验证来源已穷尽（methodList 对齐、无跨壳调用、调用方全守卫、退避已上线）；ArkWeb 内部日志应用层不可控；功能面零影响 ⇒ 缓修，下轮带新 Beta 真机采样（速率/时间戳/UI 状态）再定位 | `docs/archive/295-*`、`dist/acceptance/20261125-core023-audit-report.md` §11、手机 r51 诊断 |
+| libreoffice-kit-wasm 维持随包 | 2026-11-26 | 现行 | 真机硬依赖（office 链路 `package.json` 子路径直取），裁剪废弃；img-sharp-wasm32 无真机异常维持裁剪 | `hostcore/core-recipe.json`（`$comment_keep_libreofficeKitWasm`）、`docs/PITFALLS.md` §2.14 |
 
 ## 6. 维护规则
 

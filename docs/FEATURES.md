@@ -19,7 +19,7 @@
 
 ---
 
-## 1. 当前在版功能（1.1.8 / 1010018）
+## 1. 当前在版功能（1.1.8 / 1010020）
 
 ### 1.1 启动、核心与宿主
 
@@ -30,11 +30,17 @@
 | libnode `io_uring` 中性化 | 三端 | `tools/patch-libnode-io-uring.mjs` | syscall 槽位中性化后再签名 | `check-libnode-io-uring` |
 | `bin/dsh` 按当前核心选版本 | 三端 | 核心树 `bin/dsh`（随包） | 路径从脚本自身推导；禁止写死版本号 | `check-dsh-cli-current-core` |
 | 启动编排与就绪探测 | 三端 | `hostcore/app/startup-work.cjs`、`hostcore/app/main.js` | 端口 / 就绪文件探测；宿主慢启动不得误判「核心不可连」 | `check-startup-work`、`check-ws-self-heal` |
+| 原生语音朗读（Speech Kit / 小艺音色优先） | 三端 | `platform/src/main/ets/system/ReadAloud.ets` | `TextReader` 优先、TTS 兜底；`listVoices` 探测本机已装小艺音色，无则回落 SDK 推荐中文女声 person=13；音色探测失败不阻断朗读 | `check-feature-wiring`、`check-dead-code` |
+| 文档扫描 / 表格提取（会话区加号，移动端口） | phone | `platform/src/main/ets/system/DocumentScan.ets`、`phone/src/main/ets/pages/WebApp.ets` | DocScan 能力不可用时走系统选择器；扫描结果临时 URI 必须复制进沙箱再 `handleFileList`；取消/失败回传空列表 | `check-feature-wiring`、`check-permission-surface` |
+| 启动分段度量（S0–S7） | 三端 | `platform/src/main/ets/diagnostics/StartupMarks.ets`、`tools/startup-report.mjs` | 每个标记双时间戳（`ts` 相对 / `epochMs` 绝对）；同 id 幂等；SUMMARY 只在终态写 | `check-startup-work` |
+| 编译缓存可见性 | 三端 | `hostcore/app/main.js`（`reportCompileCache`）、`hostruntime/src/main/ets/runtime/RuntimePort.ets` | `NODE_COMPILE_CACHE` 由 ArkTS 侧传入；宿主侧回读 `module.getCompileCacheDir()` 判定是否真的生效 | `check-startup-work` |
 | 更新事务 / 安装单飞 | 三端 | `hostcore/app/dshm-update-transaction.cjs` | 失败可恢复；并发安装只跑一份 | `check-bundled-install-singleflight`、`check-installer-integrity` |
 | 单宿主 / 端口隔离 | PC/2in1 | `hostruntime/src/main/ets/runtime/DshHost.ets` | 一个宿主进程一套端口；跨模块不得重复起 | `check-host-port-isolation`、`check-host-module-singleflight` |
 | 内存守卫与生命周期 | 三端 | `platform/src/main/ets/notify/NotificationCenter.ets`、`hostcore/app/main.js` | 资源按代次回收；退出不泄漏 | `check-memory-guard`、`check-memory-host-lifecycle` |
 | 启动救援插件 | 三端 | `hostcore/plugins/dshm-boot-rescue` | 内置与外部同名插件解耦，只跑一套 | `check-boot-rescue`、`check-boot-rescue-id` |
 | 用户数据保全 | 三端 | `hostcore/app/dshm-user-rows.js` | 升级 / 覆盖安装不得删 `el2` 数据 | `check-user-data-preserved` |
+| 宿主本地 Web 路由（`/dshm-*` 诊断与工具） | 三端 | `hostcore/app/main.js`、`hostcore/app/dshm-pet-host.cjs` | 11 条路由显式 `auth:'anonymous'`（0.2.3 webserver 默认 `required`，不写即 401）；真实防护 = handler 内 token 检查 + `isTrustedRequest` 403 栅栏 | `check-webserver-route-auth`（含 `--self-test`） |
+| PTY dlopen 探针缓存 | 三端 | `hostcore/app/main.js`（`readPtyDlopenCache`/`writePtyDlopenCache`） | 缓存记录含 `corePath`；核心更换后自动失效，不指向旧核心路径 | 无独立门禁；验收 = 真机诊断 R8 探针指向当前 `CORE_DIR`（换核心后首启即失效重测） |
 
 ### 1.2 三端壳与布局
 
@@ -48,8 +54,11 @@
 | 设置面板官方排除 | 三端 | `entry/src/main/ets/pages/WebApp.ets`、`phone/src/main/ets/pages/WebApp.ets` | 设置面板及内部 dialog 全形态排除玻璃 | `check-pc-settings-chrome` |
 | 沉浸光感材质 | PC/平板 | `entry/src/main/ets/pages/WebApp.ets` | `systemMaterial` / `uiMaterial`；API < 26 守卫 | `check-web-glass-skin` |
 | 网页右键 / 长按菜单接管 | PC/平板 | `entry/src/main/ets/pages/WebApp.ets`（`handleWebContextMenuShow`） | 语境判定 + 动作映射（链接/图片/输入框/纯选区）；任何异常一律回退系统默认菜单 | `check-web-glass-skin`（材质一致）+ 真机判据四类 |
-| 自由窗口装饰 | PC/2in1 | `entry/src/main/ets/entryability/EntryAbility.ets` | 系统装饰 + 可拖拽 | `check-free-window-decor` |
+| 自由窗口装饰（分屏 / 拖拽入口） | PC/2in1/平板 | `entry/src/main/ets/entryability/EntryAbility.ets` | 启动链对所有形态统一执行：`pcMode = 手持 && FLOATING` ⇒ 恢复标题栏 + 三键；全屏仍隐藏装饰；禁止手持档早分支 | `check-decor-button-mode`（`check-free-window-decor` 脚本自身基线报错，待修） |
 | 手持返回键分层消费 | 手机/平板 | `phone/src/main/ets/pages/WebApp.ets` | 先关弹层，再退页面 | `check-handheld-back` |
+| dsh-pet 桌面宿主 | PC/2in1 | `entry/.../PetAbility.ets`、`entry/.../PetWeb.ets`、`hostcore/app/dshm-pet-host.cjs` | 插件渲染页同源加载 + `__DSHM_PET_BRIDGE__` 映射；`DSH_PET_IN_PROCESS=1` 不 spawn Electron；透明区穿透（`setTouchableAreas`，201/801 降级整窗可触）；`excludeFromMissions` 不现 Alt+Tab 空卡片 | `check-permission-surface`、真机 |
+| 手机状态栏沉浸（含最近任务） | 手机 | `phone/src/main/ets/entryability/EntryAbility.ets`、`phone/src/main/ets/pages/WebApp.ets` | `layout-fullscreen` + `topInsetVp` 成对；状态栏底色交还透明 | `check-decor-button-mode` |
+| 外链外开（登录授权页 / 正文链接） | 三端 | 两壳 `OPEN_LINK_SHIM_JS`、`platform/src/main/ets/system/OpenLink.ets` | rc.3 账号封套剥离；全部 http(s) 锚点接管；同源放行 | `check-open-link-bridge` |
 | 双壳一致性 | 平板/手机 | 两壳同构点 | 共享逻辑改动必须两壳同步 | `check-dual-shell-parity` |
 
 ### 1.3 终端与执行环境
@@ -61,6 +70,7 @@
 | 终端会话生命周期 | 三端 | `hostcore/plugins/dshm-vm-bash/lib/index.js` | 句柄与代次回收；退出不留孤儿 | `check-guest-terminal-lifecycle`、`check-guest-handle-lifecycle` |
 | VM 资源档（2 vCPU / 内存分档） | 平板/手机 | `hostcore/plugins/dshm-vm-bash/lib/vm.js` | 2 vCPU；guest 内存经济档 512 / 性能档 1024 MiB；TCG 128 / 512 MiB；启动地板不变 | `check-vm-memory-tier`、`check-vm-bash` |
 | 工具链落位（busybox / python / git / tmux / gh） | 三端 | `tools/place-toolchain.mjs` | 闭包完整、SONAME 软链齐全 | `assert-exec-fix`、`assert-python-bridge` |
+| Python 预设站点包（pptx / lxml / Pillow / yaml / openpyxl） | 三端 | `hostruntime/.../resfile/toolchain/python/dshm-pysite.tar.gz`、`hostcore/app/main.js`（`ensurePythonSitePreset`） | 仅当 `py-site` 不存在或为空时解（不覆盖用户 pip 包）；**稳态 boot 也必须补投**（只挂新解包收尾会让升级用户永远拿不到，R4）；`PYTHONPATH` 注入 `$HOME/py-site` | `check-python-env`；真机 `python3 -c "import pptx"` |
 | CLI 垫片语义 | 三端 | `tools/assert-cli-shim.mjs` | 假壳必须显式拒绝，不得静默成功 | `check-cli-shim-semantics` |
 | 输出背压 / 取消 | 三端 | 核心树 subprocess 层 | 长输出不撑爆内存；取消可回收 | `check-node-output-bounds` |
 
@@ -72,7 +82,7 @@
 | 目录授权持久化 | 平板/手机 | `platform/src/main/ets/system/FilePicker.ets` | picker 授权只活一个进程 ⇒ 必须持久化并跨启动恢复 | `check-folder-grants-startup`、`check-picker-api23` |
 | 工作区认领 | PC/平板 | `hostcore/plugins/dshm-workspace-claim` | 默认工作区登记不得自建 | `check-workspace-claim` |
 | 文件预览与读字节 | 三端 | `entry/src/main/ets/view/FilePreviewPane.ets` | 空响应必须报错而非白屏 | `check-file-location` |
-| 权限面 entry 18 / phone 9 | 三端 | `entry/`、`phone/src/main/module.json5` | 条数 + 顺序 + reason 逐位钉死；ACL 以发布 Profile 为准 | `check-permission-surface`（含 `--self-test`） |
+| 权限面 entry 19 / phone 9 | 三端 | `entry/`、`phone/src/main/module.json5` | 条数 + 顺序 + reason 逐位钉死；ACL 以发布 Profile 为准 | `check-permission-surface`（含 `--self-test`） |
 | 0 APK 面 | 三端 | 全仓 | 不得出现 apk 文件 / 目录 / 随包条目 | `check-no-apk-surface` |
 | AI 生成标识 | 三端 | `entry/src/main/ets/pages/WebApp.ets`、`phone/src/main/ets/pages/WebApp.ets` | 只挂会话正文，离开会话页即移除 | `check-ai-disclosure-scope` |
 | 品牌面 / 身份 | 三端 | `AppScope/`、各模块资源 | 正式身份不得残留 beta 字符串 | `check-brand-surface` |

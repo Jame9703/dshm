@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "PC/2in1 独立子窗桌宠 POC" },
+    { "name": "EntryAbility_desc", "value": "桌宠宿主窗口" },
+    { "name": "EntryAbility_label", "value": "桌宠子窗POC" },
+    { "name": "pet_topmost_reason", "value": "用于让桌宠宿主窗口保持在其他应用窗口之上" }
+  ]
+}

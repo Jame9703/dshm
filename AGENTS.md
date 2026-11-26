@@ -39,7 +39,7 @@ Stage 模型，多 HAP + 共享 HSP + HAR：
 
 | 模块 | 类型 | 设备面 | 职责 |
 |---|---|---|---|
-| `entry` | entry HAP | tablet + 2in1 | PC / 平板壳：窗口、顶栏、托盘、侧栏、分享、权限面 18 |
+| `entry` | entry HAP | tablet + 2in1 | PC / 平板壳：窗口、顶栏、托盘、侧栏、分享、权限面 19（新增 WINDOW_TOPMOST） |
 | `phone` | entry HAP | phone | 手机 / 折叠壳：抽屉、返回键、权限面 9 |
 | `hostruntime` | shared HSP | 三端 | 宿主：单实例、端口、核心安装、Node 启动 |
 | `platform` | HAR | 三端 | 共享能力：设备事实、通知、文件选择、云同步 |
@@ -59,8 +59,8 @@ Stage 模型，多 HAP + 共享 HSP + HAR：
 
 | 平台 | 判定 | 模块 / 权限 | 顶栏 | 左栏 | 终端 |
 |---|---|---|---|---|---|
-| PC / 2in1 / MatePad Edge / Pro Max | desktopForced | entry / 18 | PC 顶栏（三键 / 托盘） | 常驻 | 原生 PTY |
-| 平板（不含 Edge/ProMax） | tablet | entry / 18 | 无自绘顶栏 | 展开 280 / 收起 56，`<1024` 交官方抽屉 | guest VM |
+| PC / 2in1 / MatePad Edge / Pro Max | desktopForced | entry / 19 | PC 顶栏（三键 / 托盘） | 常驻 | 原生 PTY |
+| 平板（不含 Edge/ProMax） | tablet | entry / 19 | 无自绘顶栏 | 展开 280 / 收起 56，`<1024` 交官方抽屉 | guest VM |
 | 手机 | phone | phone / 9 | 无 | 抽屉 + 单颗 ⊞ | guest VM |
 | 折叠单屏 | foldable + singleScreen | phone / 9 | 无 | 手机抽屉 | guest VM |
 | 折叠多屏 | foldable + 非 singleScreen | phone / 9 | 无 | 平板形态 | guest VM |
@@ -121,7 +121,7 @@ Stage 模型，多 HAP + 共享 HSP + HAR：
 ### 5.4 权限与资源
 
 - **先实现、后声明**：不得声明没有运行时消费点的权限。
-- 权限面 entry 18 / phone 9，条数 + 顺序 + reason 逐位钉死；任何改动必须同步门禁。
+- 权限面 entry 19 / phone 9，条数 + 顺序 + reason 逐位钉死；任何改动必须同步门禁。
 - ACL 以发布 Profile 的 `allowed-acls` 为准；不得声明 Profile 未批准的受控权限。
 - 不把「删权限」当排障手段；按「声明面 / Profile / 设备实读」三类证据排查。
 
@@ -205,7 +205,7 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 node tools/build-beta.mjs --combined-app
 5. 默认注入 `ACCESS_USER_FULL_DISK`（`--no-full-disk` 关闭），仅构建期，`finally` 恢复。
 6. 把 `hostruntime` 的 target 临时并入 `default` product，执行
    `devecocli build --product default --build-mode debug`。
-7. 校验产物：beta 身份 / `versionCode` / debug 模式 / entry 18 条 / phone 9 条。
+7. 校验产物：beta 身份 / `versionCode` / debug 模式 / entry 19 条 / phone 9 条。
 8. 把 `tablet/`、`phone/`、三端合一 `.app`、`SHA256SUMS`、`README.txt` 写入输出目录；
    `finally` 逐字还原 16 个文件并重放 `place-host-app`。
 
@@ -264,7 +264,7 @@ dist/release-test/SHA256SUMS.txt
 
 - `pack.info` 的 bundle / versionName / versionCode；
 - 模块设备面：entry `tablet,2in1`、phone `phone`、hostruntime 三端；
-- 权限：entry 18 / phone 9；
+- 权限：entry 19 / phone 9；
 - HSP 内核心容器**恰好 1 份**且版本与 `core-recipe.json` 一致；HSP 不含 ffmpeg 资产；
 - 不得内置 `dsh-bili-whale`；
 - `hap-sign-tool verify-app` 通过。
@@ -372,7 +372,7 @@ python3 dist/acceptance/rerun-gates.py <基线报告> <输出报告>
 
 1. **真机数据**：只允许覆盖安装（`hdc install -r`）；禁止 `hdc uninstall` / `bm uninstall` / 删 `el2`。
 2. **签名物料**：`signing/**`、`.certs/**`、`AGC-operations/release-signing/**`、含口令的 `build-profile.json5` 永不删除。
-3. **权限面**：entry 18 / phone 9；不新增未审批 ACL；不声明无消费点的权限；不靠删权限排障。
+3. **权限面**：entry 19 / phone 9；不新增未审批 ACL；不声明无消费点的权限；不靠删权限排障。
 4. **版本号**：只在用户明确说「升到 X」时改。
 5. **交付件**：`dist/release-test/*.app`、`dist/beta/*`、`dist/core/*.zip`、`dist/acceptance/*`、`dist/frozen/*`、`SHA256SUMS.txt` 一律不删。
 6. **代码**：不提交、不推送；不删 `resfile/`、不删自带插件与 toolchain 资产。
