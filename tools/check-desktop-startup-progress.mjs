@@ -393,9 +393,17 @@ function checkWebPreparation(source) {
     frames,
     setTimeout: (run, ms) => { timers.push({ run, ms }); return timers.length; },
     StartupFrameCallback: class { constructor(run) { this.run = run; } },
-    WebPhase: { BOOTING: 'booting' }, DESKTOP_WORKBENCH_PAINT_OBSERVER: 'observer',
-    TABLET_STARTUP_WEB_HANDOFF: 'handoff',
+    WebPhase: { BOOTING: 'booting' },
+    DESKTOP_WORKBENCH_PAINT_OBSERVER: 'events.push("observer");',
+    TABLET_STARTUP_WEB_HANDOFF: 'events.push("handoff");',
   });
+  const scripts = (page, hostname) => {
+    const events = [];
+    for (const item of page.webDocumentStartScripts()) {
+      runInNewContext(item.script, { location: { hostname }, events });
+    }
+    return events;
+  };
   const tablet = makePage();
   tablet.rawDeviceType = 'tablet';
   tablet.prepareDesktopWebAfterFrame();
@@ -404,7 +412,9 @@ function checkWebPreparation(source) {
   assert.equal(timers[0].ms, 1100);
   timers.shift().run();
   assert.equal(tablet.startupWebPrepared, true);
-  assert.deepEqual(Array.from(tablet.webDocumentStartScripts(), item => item.script), ['observer', 'handoff']);
+  assert.deepEqual(scripts(tablet, '127.0.0.1'), ['observer', 'handoff']);
+  assert.deepEqual(scripts(tablet, 'example.com'), [], 'external browser frames receive no app scripts');
+  assert.deepEqual(scripts(tablet, ''), [], 'the blank preload must not run app scripts');
 
   const fastHost = makePage();
   fastHost.rawDeviceType = 'tablet';
@@ -413,14 +423,14 @@ function checkWebPreparation(source) {
   fastHost.launchUrl = 'http://127.0.0.1:3120/';
   timers.shift().run();
   assert.equal(fastHost.startupWebPrepared, false, 'an authenticated URL takes precedence over the queued blank Web');
-  assert.deepEqual(Array.from(fastHost.webDocumentStartScripts(), item => item.script), ['handoff']);
+  assert.deepEqual(scripts(fastHost, '127.0.0.1'), ['handoff']);
 
   const desktop = makePage();
   desktop.rawDeviceType = '2in1';
   desktop.prepareDesktopWebAfterFrame();
   frames.shift().run();
   assert.equal(desktop.startupWebPrepared, true);
-  assert.deepEqual(Array.from(desktop.webDocumentStartScripts(), item => item.script), ['observer']);
+  assert.deepEqual(scripts(desktop, '127.0.0.1'), ['observer']);
   assert.equal(timers.length, 0);
 }
 
@@ -632,6 +642,7 @@ await checkPolling(node);
 await checkAuthRetry(node);
 if (process.argv.includes('--self-test')) {
   assert.throws(() => checkWebPreparation(web.replace("this.rawDeviceType === 'tablet'", 'false')));
+  assert.throws(() => checkWebPreparation(web.replace('script: this.appFrameGuard(item.script)', 'script: item.script')));
   assert.throws(() => checkProgressMotion(common.replace('limit: 63.8', 'limit: 64')));
   assert.throws(() => checkProgressView(progressView.replace('animation !== this.motionId ||', 'false ||')));
   assert.throws(() => checkProgressMotion(common.replace('speed * this.duration', '0 * this.duration')));
