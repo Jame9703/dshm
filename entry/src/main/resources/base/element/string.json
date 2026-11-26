@@ -413,6 +413,14 @@
       "value": "推理等级"
     },
     {
+      "name": "desktop_chat_steer",
+      "value": "插话发送"
+    },
+    {
+      "name": "desktop_chat_queue",
+      "value": "加入待发送队列"
+    },
+    {
       "name": "desktop_chat_send",
       "value": "发送消息"
     },

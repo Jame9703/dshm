@@ -2,8 +2,8 @@ import { projectSessionCreate, projectSessionList, sessionCreatePayload, session
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { EventSink, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT,
-  WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_SETTINGS_DOCUMENT_UPDATED,
+  SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopInteractions } from './DesktopInteractions';
 import type { DesktopInteraction } from './DesktopInteractions';
@@ -87,12 +87,16 @@ export class DesktopWorkspaceData {
         this.conversation.invalidateCommands();
         this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
+        this.readSubmitPreference();
       },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
         const event = getString(frame, 'event');
         if (event === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
         if (event === EVENT_GOAL_ACTIVATION_CHANGED) { this.conversation.observeGoalActivation(frame); }
+        if (event === EVENT_SETTINGS_DOCUMENT_UPDATED && getArray(frame, 'args')?.[0] === 'ui-conversation') {
+          this.readSubmitPreference();
+        }
       },
       onEnd: (): void => { this.interactions.resetEvents(); }
     };
@@ -106,6 +110,17 @@ export class DesktopWorkspaceData {
     if (opened) {
       this.openWorkspaceStream();
     }
+  }
+
+  private submitPreferenceVersion: number = 0;
+
+  private async readSubmitPreference(): Promise<void> {
+    const version = ++this.submitPreferenceVersion;
+    const result = await this.actions.call(SETTINGS_DESCRIBE_ENDPOINT, {});
+    if (!result.ok || !this.active || version !== this.submitPreferenceVersion) { return; }
+    const settings = getArray(result.value, 'namespaces')?.find((row: Object): boolean =>
+      getString(row, 'ns') === 'ui-conversation');
+    this.conversation.setBusyEnter(getString(getRecord(settings, 'value'), 'busyEnter') === 'steer');
   }
 
   private openWorkspaceStream(): void {

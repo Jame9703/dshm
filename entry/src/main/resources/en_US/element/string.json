@@ -393,6 +393,14 @@
       "value": "Reasoning effort"
     },
     {
+      "name": "desktop_chat_steer",
+      "value": "Send as steering"
+    },
+    {
+      "name": "desktop_chat_queue",
+      "value": "Add to queue"
+    },
+    {
       "name": "desktop_chat_send",
       "value": "Send message"
     },

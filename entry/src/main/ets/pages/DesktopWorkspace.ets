@@ -21,7 +21,7 @@ import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
 import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import type { ModelSelection, PendingAttachment, SessionListItem } from 'appstate';
+import type { ModelSelection, PendingAttachment, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import type { DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
@@ -534,7 +534,7 @@ struct DesktopWorkspace {
     }
   }
 
-  private sendMessage(): void {
+  private sendMessage(alternateDelivery: boolean): void {
     const conversation = this.data?.conversation;
     const text = this.draft;
     const files = this.attachments;
@@ -542,7 +542,7 @@ struct DesktopWorkspace {
       this.chatAction(async (id: string): Promise<string> => {
         const result = await conversation.send(id, text, files,
           (sessionId: string): Promise<string> => this.exportLog(sessionId),
-          (sessionId: string): Promise<string> => this.openSessionFeedback(sessionId));
+          (sessionId: string): Promise<string> => this.openSessionFeedback(sessionId), alternateDelivery);
         if (result.length === 0 && conversation === this.data?.conversation) {
           this.setAttachments(id, []);
         }
@@ -1356,7 +1356,13 @@ struct DesktopWorkspace {
           commandError: this.chatError,
           menuOptions: desktopMenuOptions(Placement.TopLeft),
           onDraft: (value: string): void => this.changeDraft(value),
-          onSend: (): void => this.sendMessage(),
+          onSend: (alternateDelivery: boolean): void => this.sendMessage(alternateDelivery),
+          onQueueAction: (session: string, id: string, action: QueueActionBody): Promise<string> =>
+            this.data?.conversation.updateQueue(session, id, action) ?? Promise.resolve('当前会话暂不可操作'),
+          onSteerQueue: (): void => {
+            const conversation = this.data?.conversation;
+            if (conversation !== undefined) { this.chatAction((id: string): Promise<string> => conversation.steerQueue(id)); }
+          },
           onLoadModels: (): void => { this.data?.conversation.loadModels(true); },
           onModelsSettings: (): void => { this.openSettings('settings.models'); },
           onLoadCommands: (): void => { this.data?.conversation.loadCommands(this.sessionId); },

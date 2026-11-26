@@ -19,6 +19,8 @@ import { DesktopGoalBar } from './DesktopGoalBar';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
 import { DesktopReplyActions } from './DesktopReplyActions';
+import { DesktopQueueDock } from './DesktopQueueDock';
+import type { QueueActionBody } from 'appstate';
 
 @Component
 export struct DesktopConversationPane {
@@ -42,7 +44,10 @@ export struct DesktopConversationPane {
   onDraft: (value: string) => void = () => {};
   onAddAttachment: () => void = () => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
-  onSend: () => void = () => {};
+  onSend: (alternateDelivery: boolean) => void = (_alternateDelivery: boolean): void => {};
+  onQueueAction: (session: string, id: string, action: QueueActionBody) => Promise<string> =
+    (_session: string, _id: string, _action: QueueActionBody): Promise<string> => Promise.resolve('');
+  onSteerQueue: () => void = (): void => {};
   onLoadModels: () => void = () => {};
   onModelsSettings: () => void = () => {};
   onLoadCommands: () => void = () => {};
@@ -288,7 +293,19 @@ export struct DesktopConversationPane {
     if (session === this.sessionId && !problem) { this.replaceSlash(original, token, ''); }
   }
 
-  private handleSend(): void {
+  private hasDraft(): boolean {
+    return this.draft.trim().length > 0 || this.attachments.length > 0;
+  }
+
+  private primaryStops(): boolean {
+    return this.snapshot?.running === true && !this.hasDraft();
+  }
+
+  private canSteerQueue(): boolean {
+    return this.primaryStops() && !this.busy && (this.snapshot?.queue.length ?? 0) > 0;
+  }
+
+  private handleSend(alternateDelivery: boolean = false): void {
     if (this.busy || this.snapshot?.loading !== false) { return; }
     const command = commandInvocation(this.draft);
     if (command !== undefined && !command.suffix) {
@@ -312,7 +329,7 @@ export struct DesktopConversationPane {
     this.dismissedDraft = this.draft;
     this.closePalette();
     this.following = true;
-    this.onSend();
+    this.onSend(alternateDelivery);
   }
 
   private paletteKey(event: KeyEvent): boolean {
@@ -330,12 +347,14 @@ export struct DesktopConversationPane {
       this.paletteScroller.scrollToIndex(this.highlight, false, ScrollAlign.AUTO);
       return true;
     }
-    if (event.keyCode !== KeyCode.KEYCODE_ENTER || event.getModifierKeyState?.(['Shift']) || this.snapshot?.running) {
+    if (event.keyCode !== KeyCode.KEYCODE_ENTER || event.getModifierKeyState?.(['Shift'])) {
       return false;
     }
     const item = rows[this.highlight] ?? rows[0];
+    const accelerated = event.getModifierKeyState?.(['Ctrl']) === true;
     if (item !== undefined) { this.pickPalette(item.id); }
-    else { this.handleSend(); }
+    else if (accelerated && this.canSteerQueue() && !this.palette) { this.onSteerQueue(); }
+    else if (this.hasDraft()) { this.handleSend(accelerated); }
     return true;
   }
 
@@ -532,7 +551,8 @@ export struct DesktopConversationPane {
         .scrollable(ScrollDirection.Horizontal).width('100%').padding({ left: 8, right: 8 })
       }
       TextArea({ text: this.draft, controller: this.composer, placeholder: this.snapshot?.planMode === true ?
-        '描述你的任务以生成计划' : $r('app.string.desktop_chat_placeholder') })
+        '描述你的任务以生成计划' : (this.canSteerQueue() ? '按 Ctrl+Enter 插话发送排队消息' :
+          $r('app.string.desktop_chat_placeholder')) })
         .key('desktopSlashComposer').enterKeyType(EnterKeyType.Send)
         .width('100%').height(66).fontSize(15).borderRadius(16).padding({ left: 12, right: 12, top: 10 })
         .fontColor($r('sys.color.font_primary')).backgroundColor(Color.Transparent)
@@ -546,7 +566,7 @@ export struct DesktopConversationPane {
           if (start === end) { this.refreshSlash(); }
         })
         .onKeyPreIme((event: KeyEvent): boolean => this.paletteKey(event))
-        .onSubmit((): void => { if (!this.snapshot?.running) { this.handleSend(); } })
+        .onSubmit((): void => { if (this.hasDraft()) { this.handleSend(); } })
         .bindPopup(this.palette !== '', { builder: this.CommandPopup(), placement: Placement.TopLeft,
           enableArrow: false, mask: false, focusable: this.palette !== 'commands',
           systemMaterial: desktopMenuOptions(Placement.TopLeft).systemMaterial,
@@ -555,19 +575,27 @@ export struct DesktopConversationPane {
           } })
       Row({ space: 4 }) {
         this.ComposerControls()
+        if (this.snapshot?.running && !this.primaryStops()) {
+          Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(15)
+          }.key('desktopComposerStop').width(34).height(34).focusOnTouch(false)
+            .enabled(!this.busy).accessibilityText($r('app.string.desktop_chat_stop')).onClick(this.onStop)
+        }
         Button({ type: ButtonType.Circle }) {
-          SymbolGlyph(this.snapshot?.running ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_up'))
+          SymbolGlyph(this.primaryStops() ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_up'))
             .fontSize(17).fontColor([Color.White])
         }
         .key('desktopComposerSubmit').width(34).height(34)
         .backgroundColor($r('sys.color.brand')).focusOnTouch(false)
-        .accessibilityText(this.snapshot?.running ? $r('app.string.desktop_chat_stop') :
-          $r('app.string.desktop_chat_send'))
+        .accessibilityText(this.primaryStops() ? $r('app.string.desktop_chat_stop') :
+          (this.snapshot?.running ? (this.snapshot.busyEnterSteers ? $r('app.string.desktop_chat_steer') :
+            $r('app.string.desktop_chat_queue')) :
+            $r('app.string.desktop_chat_send')))
         .enabled(!this.busy && (this.snapshot?.running === true ||
           ((this.draft.trim().length > 0 || this.attachments.length > 0) &&
             this.snapshot?.loading === false)))
         .onClick((): void => {
-          if (this.snapshot?.running) {
+          if (this.primaryStops()) {
             this.onStop();
           } else {
             this.handleSend();
@@ -720,6 +748,10 @@ export struct DesktopConversationPane {
           .padding({ left: 16, right: 16, bottom: 6 })
       }
       Column({ space: 6 }) {
+        if ((this.snapshot?.queue.length ?? 0) > 0) {
+          DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
+            running: this.snapshot?.running === true, busy: this.busy, host: this.host, onAction: this.onQueueAction })
+        }
         if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
           DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })
         }

@@ -1,15 +1,16 @@
 import {
   commandsListEndpoint, commandsListPayload, filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress,
   modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
-  projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, SessionPageValue, sessionCancelPayload,
-  sessionFollowPayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
+  projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, queueSteerAction,
+  SessionPageValue, sessionCancelPayload,
+  sessionFollowPayload, sessionUpdateQueuePayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
 } from 'appstate';
-import type { FeedbackRow, ModelOption, ModelSelection, PendingAttachment, PromptContentPart } from 'appstate';
+import type { FeedbackRow, ModelOption, ModelSelection, PendingAttachment, PromptContentPart, QueueActionBody } from 'appstate';
 import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
   argsFor, COMMANDS_EXECUTE_ENDPOINT, EVENT_TURN_END, mayChangeSessionTitle, MODEL_CATALOG_ENDPOINT, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
-  SESSION_PAGE_ENDPOINT, SESSION_PROMPT_ENDPOINT, SESSION_SELECT_MODEL_ENDPOINT
+  SESSION_PAGE_ENDPOINT, SESSION_PROMPT_ENDPOINT, SESSION_SELECT_MODEL_ENDPOINT, SESSION_UPDATE_QUEUE_ENDPOINT
 } from 'dshcompat';
 
 import { DesktopInteractions } from './DesktopInteractions';
@@ -20,6 +21,7 @@ import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopFeedback } from './DesktopFeedback';
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
+import { DesktopPromptQueue, DesktopQueueAttachment, DesktopQueuedPrompt } from './DesktopPromptQueue';
 import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopCommandRecord, observeDesktopCommand,
   resolveDesktopCommand } from './DesktopCommands';
 
@@ -67,6 +69,8 @@ export interface DesktopConversationSnapshot {
   commandLoading: boolean;
   commandError: string;
   feedbackRows: FeedbackRow[];
+  queue: DesktopQueuedPrompt[];
+  busyEnterSteers: boolean;
 }
 
 interface DraftRequest {
@@ -95,6 +99,9 @@ export class DesktopConversation {
   private planMode?: boolean;
   private planAsOf: number = -1;
   private readonly goals: DesktopGoalState = new DesktopGoalState();
+  private readonly queue: DesktopPromptQueue = new DesktopPromptQueue();
+  private readonly sending: Map<string, DesktopQueuedPrompt> = new Map<string, DesktopQueuedPrompt>();
+  private busyEnterSteers: boolean = false;
   private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
   private inheritedSequence: number = -1;
   readonly feedback: DesktopFeedback;
@@ -172,6 +179,7 @@ export class DesktopConversation {
     this.planMode = undefined;
     this.planAsOf = -1;
     this.goals.reset();
+    this.queue.reset();
     this.model = undefined;
     this.permission = '';
     this.cursor = -1;
@@ -239,7 +247,8 @@ export class DesktopConversation {
   }
 
   async send(sessionId: string, text: string, attachments: PendingAttachment[],
-    onExport: (sessionId: string) => Promise<string>, onFeedback: (sessionId: string) => Promise<string>): Promise<string> {
+    onExport: (sessionId: string) => Promise<string>, onFeedback: (sessionId: string) => Promise<string>,
+    alternateDelivery: boolean): Promise<string> {
     const invocation = commandInvocation(text);
     if (invocation !== undefined) {
       const commands = await this.loadCommands(sessionId);
@@ -258,7 +267,9 @@ export class DesktopConversation {
       }
     }
     const ids = attachments.map((file: PendingAttachment): string => file.receiptId);
-    const signature = JSON.stringify([text, ...ids]);
+    const busy = sessionId === this.sessionId && this.running;
+    const mode = busy && (this.busyEnterSteers !== alternateDelivery) ? PromptMode.STEER : PromptMode.QUEUE;
+    const signature = JSON.stringify([mode, text, ...ids]);
     const parts: PromptContentPart[] = ids.map((id: string): PromptContentPart => filePart(id));
     if (text.trim().length > 0) {
       parts.unshift(textPart(text));
@@ -268,13 +279,69 @@ export class DesktopConversation {
       request = { signature: signature, id: 'req-' + randomUuid() };
       this.pendingRequests.set(sessionId, request);
     }
-    const args = promptPayload(request.id, sessionId, PromptMode.QUEUE, parts, '');
+    const args = promptPayload(request.id, sessionId, mode, parts, '');
+    const requestId = request.id;
+    if (args !== undefined && busy && mode === PromptMode.QUEUE) {
+      const files = attachments.map((attachment: PendingAttachment): DesktopQueueAttachment => {
+        return { id: attachment.receiptId, name: attachment.name, bytes: attachment.bytes, image: false };
+      });
+      this.sending.set(sessionId, { id: request.id, requestId: request.id, text: text,
+        editable: false, attachments: files, sending: true });
+      this.publish();
+    }
+    const generation = this.generation;
     const response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args);
-    if (response?.ok && projectSessionPrompt(response.value).accepted) {
+    const accepted = response?.ok === true && projectSessionPrompt(response.value).accepted;
+    if (this.sending.has(sessionId)) {
+      if (accepted && sessionId === this.sessionId && this.current(generation) &&
+        !this.queue.rows.some((row: DesktopQueuedPrompt): boolean => row.requestId === requestId)) {
+        await this.loadSelection(generation);
+      }
+      this.sending.delete(sessionId);
+      this.publish();
+    }
+    if (accepted) {
       this.pendingRequests.delete(sessionId);
       return '';
     }
     return this.failure(response, '宿主未确认发送');
+  }
+
+  async updateQueue(sessionId: string, itemId: string, action: QueueActionBody): Promise<string> {
+    if (this.sessionId !== sessionId || !this.queue.rows.some((row: DesktopQueuedPrompt): boolean => row.id === itemId)) {
+      return '这条消息已离开待发送队列';
+    }
+    const generation = this.generation;
+    const args = sessionUpdateQueuePayload(sessionId, itemId, action);
+    const response = args === undefined ? undefined : await this.connection.call(SESSION_UPDATE_QUEUE_ENDPOINT, args);
+    if (this.current(generation)) { await this.loadSelection(generation); }
+    return response?.ok && getBoolean(response.value, 'accepted') === true ? '' :
+      this.failure(response, '无法更新排队消息');
+  }
+
+  async steerQueue(sessionId: string): Promise<string> {
+    if (sessionId !== this.sessionId || !this.running) { return ''; }
+    const generation = this.generation;
+    const queued = this.queue.rows;
+    for (const row of queued) {
+      const args = sessionUpdateQueuePayload(sessionId, row.id, queueSteerAction());
+      const response = args === undefined ? undefined : await this.connection.call(SESSION_UPDATE_QUEUE_ENDPOINT, args);
+      if (!this.current(generation)) { return ''; }
+      if (!response?.ok || getBoolean(response.value, 'accepted') !== true) {
+        await this.loadSelection(generation);
+        const code = response?.error?.code;
+        return code === 'session/steer-unavailable' || code === 'session/queue-item-not-found' ?
+          '' : this.failure(response, '插话发送失败');
+      }
+    }
+    if (queued.length > 0) { await this.loadSelection(generation); }
+    return '';
+  }
+
+  setBusyEnter(steers: boolean): void {
+    if (this.busyEnterSteers === steers) { return; }
+    this.busyEnterSteers = steers;
+    this.publish();
   }
 
   async togglePlanMode(sessionId: string, enabled: boolean): Promise<string> {
@@ -577,7 +644,8 @@ export class DesktopConversation {
       } else {
         this.readQuestions(result.value);
         const goalChanged = this.readGoal(result.value);
-        if (this.readPlan(result.value) || goalChanged) {
+        const queueChanged = this.readQueue(result.value);
+        if (this.readPlan(result.value) || goalChanged || queueChanged) {
           this.publish();
         }
       }
@@ -680,6 +748,7 @@ export class DesktopConversation {
     this.readQuestions(projection);
     this.readPlan(projection);
     this.readGoal(projection);
+    this.readQueue(projection);
     const values = getRecord(projection, 'values');
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
@@ -693,6 +762,10 @@ export class DesktopConversation {
     const changed = this.goals.observeProjection(projection);
     if (changed && !this.goals.goal?.activation) { this.readGoalActivation(); }
     return changed;
+  }
+
+  private readQueue(projection?: Object): boolean {
+    return this.queue.observe(getRecord(projection, 'values'), getNumber(projection, 'asOfSeq') ?? -1);
   }
 
   private onFrame(frame: Object): void {
@@ -718,8 +791,10 @@ export class DesktopConversation {
         this.running = true;
       }
     } else if (type === 'projection') {
-      if (!this.goals.observeDelta(frame)) { return; }
-      if (!this.goals.goal?.activation) { this.readGoalActivation(); }
+      const goalChanged = this.goals.observeDelta(frame);
+      const queueChanged = this.queue.observe(getRecord(frame, 'changes'), getNumber(frame, 'seq') ?? -1);
+      if (!goalChanged && !queueChanged) { return; }
+      if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
@@ -781,6 +856,9 @@ export class DesktopConversation {
       return;
     }
     const selection = this.model ?? this.defaultModel;
+    const sending = this.sending.get(this.sessionId);
+    const queue = sending !== undefined && !this.queue.rows.some((row: DesktopQueuedPrompt): boolean =>
+      row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
@@ -789,7 +867,7 @@ export class DesktopConversation {
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
       goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
-      feedbackRows: this.feedback.rows
+      feedbackRows: this.feedback.rows, queue: queue, busyEnterSteers: this.busyEnterSteers
     });
   }
 }
