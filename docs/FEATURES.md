@@ -30,6 +30,9 @@
 | libnode `io_uring` 中性化 | 三端 | `tools/patch-libnode-io-uring.mjs` | syscall 槽位中性化后再签名 | `check-libnode-io-uring` |
 | `bin/dsh` 按当前核心选版本 | 三端 | 核心树 `bin/dsh`（随包） | 路径从脚本自身推导；禁止写死版本号 | `check-dsh-cli-current-core` |
 | 启动编排与就绪探测 | 三端 | `hostcore/app/startup-work.cjs`、`hostcore/app/main.js` | 端口 / 就绪文件探测；宿主慢启动不得误判「核心不可连」 | `check-startup-work`、`check-ws-self-heal` |
+| 桌面工作区交接 | PC/2in1/Edge/ProMax | `entry/src/main/ets/common/DesktopStartup.ets`、`entry/src/main/ets/pages/WebApp.ets` | 按阶段推进进度条，分段预挂 ArkWeb，正式工作区实绘后退场。沿用系统深浅色和回环鉴权 | `check-desktop-startup-progress --self-test`、`check-native-capture-lifecycle --self-test` |
+| 内置核心预校验 | 三端 | `hostruntime/src/main/ets/core/BundledCore.ets` | 同次安装复用核对过的摘要；安装身份或资源变更后重新校验。工作区绘制后清理退役核心 | `check-bundled-install-singleflight`、`check-bundled-core-rollback` |
+| 核心按需加载 | 三端宿主、桌面形态平板网页 | `tools/pack-core.mjs`、`tools/lib/post-startup-imports.mjs`、`tools/lib/workbench-startup.mjs` | 保留上游路由和服务注册，首次使用时再加载相应依赖。鉴权工作区的语法高亮按需初始化，入口内容摘要用于缓存更新 | `check-post-startup-imports --stage <核心树> --self-test`、`check-client-combo-startup --stage <核心树> --self-test` |
 | 原生语音朗读（Speech Kit / 小艺音色优先） | 三端 | `platform/src/main/ets/system/ReadAloud.ets` | `TextReader` 优先、TTS 兜底；`listVoices` 探测本机已装小艺音色，无则回落 SDK 推荐中文女声 person=13；音色探测失败不阻断朗读 | `check-feature-wiring`、`check-dead-code` |
 | 文档扫描 / 表格提取（会话区加号，移动端口） | phone | `platform/src/main/ets/system/DocumentScan.ets`、`phone/src/main/ets/pages/WebApp.ets` | DocScan 能力不可用时走系统选择器；扫描结果临时 URI 必须复制进沙箱再 `handleFileList`；取消/失败回传空列表 | `check-feature-wiring`、`check-permission-surface` |
 | 启动分段度量（S0–S7） | 三端 | `platform/src/main/ets/diagnostics/StartupMarks.ets`、`tools/startup-report.mjs` | 每个标记双时间戳（`ts` 相对 / `epochMs` 绝对）；同 id 幂等；SUMMARY 只在终态写 | `check-startup-work` |
