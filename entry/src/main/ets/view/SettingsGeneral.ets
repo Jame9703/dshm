@@ -145,7 +145,7 @@ export struct SettingsGeneral {
               }, (item: SettingItem) => item.key)
             }
             .width('100%')
-          }, (group: SettingGroup) => group.title)
+          }, (group: SettingGroup): string => JSON.stringify(group))
 
           this.diagnosticsEntry()
     }
