@@ -5,6 +5,7 @@ import { desktopChangeSummary, DesktopChangeSummary } from './DesktopArtifacts';
 
 export class DesktopHostActions {
   private readonly connection: Connection;
+  private readonly referencePaths: Map<string, Promise<boolean>> = new Map();
   private readonly changes: Map<string, Promise<DesktopChangeSummary | undefined>> = new Map();
 
   constructor(connection: Connection) {
@@ -28,6 +29,27 @@ export class DesktopHostActions {
       return rpcFail(new RemoteFailure('unsupported', '当前宿主协议不提供此操作', ''));
     }
     return this.connection.call(endpoint, args, { timeoutMs: optionsTimeoutMs, responseLimit: responseLimit });
+  }
+
+  referencePathExists(sessionId: string, path: string): Promise<boolean> {
+    const key = JSON.stringify([sessionId, path]);
+    const cached = this.referencePaths.get(key);
+    if (cached !== undefined) { return cached; }
+    if (this.referencePaths.size >= 256) {
+      const oldest = this.referencePaths.keys().next();
+      if (!oldest.done) { this.referencePaths.delete(oldest.value); }
+    }
+    const request = this.call('workspaceFiles/stat', { 'workspaceFileScopeId': sessionId, 'path': path }, 5000)
+      .then((result: RpcResult): boolean => {
+        const code = result.error?.code;
+        if (result.ok || code === 'workspace-file/not-regular-file') { return true; }
+        if (code !== 'workspace-file/not-found' && this.referencePaths.get(key) === request) {
+          this.referencePaths.delete(key);
+        }
+        return false;
+      });
+    this.referencePaths.set(key, request);
+    return request;
   }
 
   changeSummary(sessionId: string, sequence: number): Promise<DesktopChangeSummary | undefined> {

@@ -14,6 +14,7 @@ import {
   SESSION_PAGE_ENDPOINT, SESSION_PROMPT_ENDPOINT, SESSION_SELECT_MODEL_ENDPOINT, SESSION_UPDATE_QUEUE_ENDPOINT
 } from 'dshcompat';
 
+import { desktopRecallLabels } from './DesktopReferences';
 import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
@@ -43,6 +44,7 @@ export interface DesktopTranscriptItem {
   sequence: number;
   message?: TrajectoryItem;
   attachments?: DesktopMediaAttachment[];
+  referenceLabels?: string[];
   plan?: DesktopPlanDocument;
   artifacts?: DesktopTurnArtifacts;
   process?: DesktopProcessGroup;
@@ -95,6 +97,7 @@ export class DesktopConversation {
   private stopFollow?: () => void;
   private timer: number = -1;
   private transcript: DesktopTranscriptItem[] = [];
+  private readonly recallLabels: Map<number, string[]> = new Map();
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private readonly toolLog: DesktopToolLog = new DesktopToolLog();
   private readonly commandRecords: Map<string, DesktopCommandRecord> = new Map();
@@ -176,6 +179,7 @@ export class DesktopConversation {
     this.feedback.select(sessionId);
     this.interactions.select(sessionId);
     this.transcript = [];
+    this.recallLabels.clear();
     this.turnArtifacts.clear();
     this.toolLog.clear();
     this.commandRecords.clear();
@@ -585,6 +589,7 @@ export class DesktopConversation {
         }
       });
     } else {
+      this.recallLabels.clear();
       this.turnArtifacts.clear();
       this.toolLog.clear();
       this.commandRecords.clear();
@@ -618,9 +623,14 @@ export class DesktopConversation {
         }
         continue;
       }
-      const source = getString(getRecord(getRecord(event, 'data'), 'source'), 'kind');
-      if (getString(event, 'type') === 'user/message' && source !== undefined && source !== 'user') {
-        continue;
+      if (eventType === 'user/message') {
+        const source = getRecord(getRecord(event, 'data'), 'source');
+        const kind = getString(source, 'kind');
+        if (kind !== undefined && kind !== 'user') {
+          const labels = desktopRecallLabels(source);
+          if (seq > 0 && labels.length > 0) { this.recallLabels.set(seq - 1, labels); }
+          continue;
+        }
       }
       const message = projectWireRecord(record);
       const attachments = message?.speaker === Speaker.USER ?
@@ -664,6 +674,7 @@ export class DesktopConversation {
         previous.steps.push(...process.steps);
         previous.version += ':' + process.version;
       } else {
+        current.referenceLabels = current.message?.speaker === Speaker.USER ? this.recallLabels.get(current.sequence) : undefined;
         transcript.push(current);
       }
     }

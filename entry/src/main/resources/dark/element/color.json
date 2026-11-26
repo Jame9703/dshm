@@ -29,6 +29,10 @@
       "value": "#33FFFFFF"
     },
     {
+      "name": "desktop_reference_text",
+      "value": "#7AAAFF"
+    },
+    {
       "name": "desktop_diff_added",
       "value": "#233D2A"
     },

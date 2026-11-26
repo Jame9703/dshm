@@ -24,6 +24,7 @@ import type { DesktopReferenceChoice, DesktopReferenceCrumb, DesktopReferenceTok
 import { DesktopGoalBar } from './DesktopGoalBar';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
+import { DesktopReferenceMessage } from './DesktopReferenceMessage';
 import { DesktopReplyActions } from './DesktopReplyActions';
 import { DesktopQueueDock } from './DesktopQueueDock';
 import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
@@ -661,7 +662,7 @@ export struct DesktopConversationPane {
   }
 
   @Builder
-  private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[]) {
+  private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[], referenceLabels: string[]) {
     Column({ space: 7 }) {
       if (item.speaker === Speaker.USER) {
         if (attachments.length > 0) {
@@ -678,7 +679,11 @@ export struct DesktopConversationPane {
             }, (row: DesktopMediaAttachment, index: number): string => row.id + ':' + index)
           }.width('100%').constraintSize({ maxWidth: '82%' })
         }
-        if (item.body) {
+        if (item.body.includes('@') || referenceLabels.length > 0) {
+          DesktopReferenceMessage({ text: item.body, referenceLabels: referenceLabels,
+            sessionId: this.sessionId, host: this.host, nodeKey: 'desktopInlineReferences-' + item.id,
+            onFile: this.onArtifactFile })
+        } else if (item.body) {
           Text(item.body)
             .fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
             .padding({ left: 14, right: 14, top: 10, bottom: 10 })
@@ -920,7 +925,7 @@ export struct DesktopConversationPane {
                   Divider().layoutWeight(1).color($r('app.color.workspace_border'))
                 }.width('100%').constraintSize({ maxWidth: 712 })
               } else if (item.message !== undefined) {
-                this.Message(item.message, item.attachments ?? [])
+                this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [])
               } else if (item.artifacts !== undefined) {
                 DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
                   artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
@@ -938,7 +943,8 @@ export struct DesktopConversationPane {
             .width('100%').justifyContent(FlexAlign.Center)
           }
         }, (item: DesktopTranscriptItem): string => this.sessionId + ':' + item.id +
-          (item.process?.version ?? '') + (item.command?.completed ?? ''))
+          (item.process?.version ?? '') + (item.command?.completed ?? '') +
+          (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels)))
         if ((this.snapshot?.partial.length ?? 0) > 0) {
           ListItem() {
             Row() {

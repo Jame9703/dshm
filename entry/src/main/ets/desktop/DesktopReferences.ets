@@ -1,5 +1,16 @@
 import { fileReferencesEndpoint, projectFileReferences, projectSessionReferences, sessionReferencesEndpoint } from 'appstate';
+import { getArray, getString } from 'connection';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
+
+export function desktopRecallLabels(source?: Object): string[] {
+  if (getString(source, 'kind') !== 'session-reference') { return []; }
+  const labels = new Set<string>();
+  for (const item of getArray(source, 'references') ?? []) {
+    const label = getString(item, 'label');
+    if (label) { labels.add(label); }
+  }
+  return Array.from(labels);
+}
 
 export interface DesktopReferenceToken {
   start: number;
