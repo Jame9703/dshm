@@ -16,6 +16,7 @@ import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
 import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
+import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
 import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopCommandRecord, observeDesktopCommand,
   resolveDesktopCommand } from './DesktopCommands';
 
@@ -54,6 +55,7 @@ export interface DesktopConversationSnapshot {
   permission: string;
   modelLabel: string;
   planMode?: boolean;
+  goal?: DesktopGoal;
   selection?: ModelSelection;
   error: string;
   commands?: DesktopCommand[];
@@ -86,6 +88,7 @@ export class DesktopConversation {
   private commandVersion: number = 0;
   private planMode?: boolean;
   private planAsOf: number = -1;
+  private readonly goals: DesktopGoalState = new DesktopGoalState();
   private models: ModelOption[] = [];
   private modelsLoading: boolean = false;
   private modelsRequested: boolean = false;
@@ -155,6 +158,7 @@ export class DesktopConversation {
     this.commandError = '';
     this.planMode = undefined;
     this.planAsOf = -1;
+    this.goals.reset();
     this.model = undefined;
     this.permission = '';
     this.cursor = -1;
@@ -260,6 +264,44 @@ export class DesktopConversation {
 
   async togglePlanMode(sessionId: string, enabled: boolean): Promise<string> {
     return this.executeCommand(sessionId, enabled ? '/plan' : '/plan off', []);
+  }
+
+  async mutateGoal(sessionId: string, action: DesktopGoalAction, expected: DesktopGoalRef,
+    objective: string): Promise<string> {
+    const goal = this.goals.goal;
+    if (sessionId !== this.sessionId || goal?.id !== expected.id || goal.revision !== expected.revision) {
+      return '目标已更新，请重新打开编辑';
+    }
+    const ref: Record<string, Object> = { 'id': expected.id, 'revision': expected.revision };
+    const body: Record<string, Object> = { 'agentId': sessionId, 'ref': ref };
+    if (action === DesktopGoalAction.EDIT) {
+      const changes: Record<string, Object> = { 'objective': objective.trim() };
+      body['request'] = changes;
+    }
+    const endpoint = `goals/${action}`;
+    const args = argsFor(endpoint, body);
+    const generation = this.generation;
+    const result = args === undefined ? undefined : await this.connection.call(endpoint, args);
+    if (this.current(generation)) { await this.loadSelection(generation); }
+    return result?.ok ? '' : this.failure(result, '宿主未确认目标操作');
+  }
+
+  observeGoalActivation(frame: Object): void {
+    if (this.goals.observeEvent(frame, this.sessionId)) { this.publish(); }
+  }
+
+  async readGoalActivation(): Promise<void> {
+    const goal = this.goals.goal;
+    if (this.closed || goal?.phase !== 'active') { return; }
+    const body: Record<string, Object> = { 'agentId': this.sessionId };
+    const args = argsFor('goals/get', body);
+    if (args === undefined) { return; }
+    const version = this.goals.readVersion();
+    const generation = this.generation;
+    const reply = await this.connection.call('goals/get', args);
+    if (reply.ok && this.current(generation) && this.goals.observeRead(version, goal, reply.value)) {
+      this.publish();
+    }
   }
 
   async runCommandChoice(sessionId: string, name: string,
@@ -496,7 +538,8 @@ export class DesktopConversation {
         this.publish();
       } else {
         this.readQuestions(result.value);
-        if (this.readPlan(result.value)) {
+        const goalChanged = this.readGoal(result.value);
+        if (this.readPlan(result.value) || goalChanged) {
           this.publish();
         }
       }
@@ -598,6 +641,7 @@ export class DesktopConversation {
   private readProjection(projection: Object | undefined): void {
     this.readQuestions(projection);
     this.readPlan(projection);
+    this.readGoal(projection);
     const values = getRecord(projection, 'values');
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
@@ -605,6 +649,12 @@ export class DesktopConversation {
     if (this.permission.length > 0) {
       this.loadPermissions();
     }
+  }
+
+  private readGoal(projection?: Object): boolean {
+    const changed = this.goals.observeProjection(projection);
+    if (changed && !this.goals.goal?.activation) { this.readGoalActivation(); }
+    return changed;
   }
 
   private onFrame(frame: Object): void {
@@ -629,6 +679,9 @@ export class DesktopConversation {
         }
         this.running = true;
       }
+    } else if (type === 'projection') {
+      if (!this.goals.observeDelta(frame)) { return; }
+      if (!this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
@@ -636,7 +689,7 @@ export class DesktopConversation {
         this.preparingTool = '';
       }
       if (eventType?.startsWith('user-question/') || eventType === 'tool/result' || eventType === 'user/message' ||
-        eventType === 'plan/mode' || eventType === 'command/done') {
+        eventType === 'plan/mode' || eventType === 'command/done' || eventType === 'goal/change') {
         this.loadSelection(this.generation);
       }
       this.cursor = Math.max(this.cursor, getNumber(event, 'seq') ?? -1);
@@ -696,6 +749,7 @@ export class DesktopConversation {
       models: this.models, modelsLoading: this.modelsLoading, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
+      goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError
     });
   }

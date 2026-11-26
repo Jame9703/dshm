@@ -8,6 +8,7 @@ import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
 import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
 import { exportDesktopLog } from '../desktop/DesktopLogExport';
+import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
@@ -1114,6 +1115,11 @@ struct DesktopWorkspace {
             if (conversation !== undefined) {
               this.chatAction((id: string): Promise<string> => conversation.togglePlanMode(id, enabled));
             }
+          },
+          onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string): Promise<string> => {
+            const conversation = this.data?.conversation;
+            return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
+              (id: string): Promise<string> => conversation.mutateGoal(id, action, ref, objective));
           },
           onPlanPreview: (plan: DesktopPlanDocument): void => { this.showPlan(plan); },
           onPlanResume: (id: string): void => { this.data?.interactions.reopenPlanReview(id); },

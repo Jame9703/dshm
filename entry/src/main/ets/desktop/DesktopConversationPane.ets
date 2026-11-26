@@ -15,6 +15,8 @@ import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalett
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopGoalBar } from './DesktopGoalBar';
+import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 
 @Component
 export struct DesktopConversationPane {
@@ -52,6 +54,8 @@ export struct DesktopConversationPane {
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
     (_id: string, _answers: DesktopQuestionAnswer[]): void => {};
   onPlanMode: (enabled: boolean) => void = (_enabled: boolean): void => {};
+  onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string) => Promise<string> =
+    (_action: DesktopGoalAction, _ref: DesktopGoalRef, _objective: string): Promise<string> => Promise.resolve('');
   onPlanPreview: (plan: DesktopPlanDocument) => void = (_plan: DesktopPlanDocument): void => {};
   onPlanDecision: (id: string, approve: boolean) => void = (_id: string, _approve: boolean): void => {};
   onPlanResume: (id: string) => void = (_id: string): void => {};
@@ -658,8 +662,12 @@ export struct DesktopConversationPane {
           .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
           .padding({ left: 16, right: 16, bottom: 6 })
       }
-      Row() { this.Composer() }
-        .width('100%').padding({ left: 20, right: 20, bottom: 16 }).justifyContent(FlexAlign.Center)
+      Column({ space: 6 }) {
+        if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
+          DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })
+        }
+        this.Composer()
+      }.width('100%').padding({ left: 20, right: 20, bottom: 16 }).alignItems(HorizontalAlign.Center)
     }
     .width('100%').height('100%')
   }

@@ -2,7 +2,8 @@ import { projectSessionCreate, projectSessionList, sessionCreatePayload, session
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { EventSink, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, SESSION_CREATE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, SESSION_CREATE_ENDPOINT,
+  WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopInteractions } from './DesktopInteractions';
 import type { DesktopInteraction } from './DesktopInteractions';
@@ -75,10 +76,16 @@ export class DesktopWorkspaceData {
       return;
     }
     const eventSink: EventSink = {
-      onReady: (): void => { this.openWorkspaceStream(); this.conversation.invalidateCommands(); },
+      onReady: (): void => {
+        this.openWorkspaceStream();
+        this.conversation.invalidateCommands();
+        this.conversation.readGoalActivation();
+      },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
-        if (getString(frame, 'event') === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
+        const event = getString(frame, 'event');
+        if (event === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
+        if (event === EVENT_GOAL_ACTIVATION_CHANGED) { this.conversation.observeGoalActivation(frame); }
       },
       onEnd: (): void => { this.interactions.resetEvents(); }
     };
