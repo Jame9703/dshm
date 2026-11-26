@@ -54,6 +54,10 @@ native modules, QEMU and the guest VM components, Alpine Linux packages,
 Git, Python, ripgrep, ffmpeg, and other libraries listed by the upstream
 package manifests and retained notice files.
 
+The ArkUI terminal also includes the xterm.js headless engine
+(@xterm/headless 6.0.0, MIT). Its license ships in the entry module
+under `licenses/xterm-headless.txt`.
+
 The authoritative upstream project is:
 
 https://github.com/deepseek-ai/deepseek-harness

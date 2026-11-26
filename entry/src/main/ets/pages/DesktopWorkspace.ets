@@ -1,5 +1,6 @@
 import { parseTarget } from 'connection';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
+import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { PickOutcome, pickDocument, pickFolder } from 'platform';
 import { harmonySheetOptions } from '../view/NativePrimitives';
@@ -40,6 +41,8 @@ struct DesktopWorkspace {
   @State private expandedIds: string[] = [];
   @State private sidebarCollapsed: boolean = false;
   @State private sidebarWidth: number = 280;
+  @State private terminalWidth: number = 340;
+  @State private terminalSession: string = '';
   @State private searchOpen: boolean = false;
   @State private query: string = '';
   @State private selectedWorkspaceTitle: ResourceStr = '';
@@ -91,6 +94,10 @@ struct DesktopWorkspace {
   }
 
   onBackPress(): boolean {
+    if (this.terminalSession.length > 0 && this.terminalSession === this.sessionId && this.panel === 'session') {
+      this.terminalSession = '';
+      return true;
+    }
     if (this.archiveOpen) {
       this.archiveOpen = false;
       return true;
@@ -905,7 +912,7 @@ struct DesktopWorkspace {
 
   @Builder
   private SessionContent() {
-    Column() {
+    Row() {
       if (this.sessionId.length > 0) {
         DesktopConversationPane({
           snapshot: this.chat,
@@ -939,6 +946,10 @@ struct DesktopWorkspace {
           onStop: (): void => this.stopMessage(),
           onEarlier: (): void => this.data?.conversation.loadEarlier(),
           onWeb: (): void => { this.openWeb(false); },
+          terminalOpen: this.terminalSession === this.sessionId,
+          onTerminal: (): void => {
+            this.terminalSession = this.terminalSession === this.sessionId ? '' : this.sessionId;
+          },
           onModel: (selection: ModelSelection): void => this.chooseModel(selection),
           onPermission: (preset: string): void => {
             const conversation = this.data?.conversation;
@@ -947,6 +958,18 @@ struct DesktopWorkspace {
             }
           }
         })
+        .layoutWeight(1)
+        if (this.terminalSession === this.sessionId && this.data !== undefined) {
+          Column() {
+            DesktopTerminalPane({
+              host: this.data.actions,
+              sessionId: this.sessionId,
+              appearance: this.appearance,
+              onHidePanel: (): void => { this.terminalSession = ''; }
+            })
+          }
+          .width(this.terminalWidth).height('100%')
+        }
       } else {
         this.SessionPane()
       }
@@ -1042,6 +1065,7 @@ struct DesktopWorkspace {
       .width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
       .onAreaChange((_, area: Area): void => {
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
+        this.terminalWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })
       .bindSheet(this.renameOpen || this.accountOpen, this.WorkspaceSheet(), harmonySheetOptions((): void => {
         this.renameOpen = false;

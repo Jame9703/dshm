@@ -74,6 +74,7 @@ export type {
   CookieRecord,
   DiagnosticItem,
   DiagnosticReport,
+  DuplexStream,
   EventSink,
   HostConfig,
   HostFacts,

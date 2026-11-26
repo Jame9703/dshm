@@ -103,6 +103,12 @@ export interface StreamSink {
   onEnd: () => void;
 }
 
+/** 双向逻辑流句柄，关闭后不能再发送。 */
+export interface DuplexStream {
+  send: (item: Object) => Promise<boolean>;
+  close: () => void;
+}
+
 /** 请求可选项 */
 export interface CallOptions {
   /** 超时毫秒数；缺省使用 ConnectionOptions.defaultTimeoutMs */

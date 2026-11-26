@@ -1,5 +1,5 @@
 import { Connection, getArray, getRecord, getString, RemoteFailure, rpcFail } from 'connection';
-import type { RpcResult, StreamSink } from 'connection';
+import type { DuplexStream, RpcResult, StreamSink } from 'connection';
 import { argsFor } from 'dshcompat';
 
 export class DesktopHostActions {
@@ -12,6 +12,11 @@ export class DesktopHostActions {
   watch(endpoint: string, body: Record<string, Object>, sink: StreamSink): (() => void) | undefined {
     const args = argsFor(endpoint, body);
     return args === undefined ? undefined : this.connection.openStream(endpoint, args, sink);
+  }
+
+  attach(endpoint: string, body: Record<string, Object>, sink: StreamSink): DuplexStream | undefined {
+    const args = argsFor(endpoint, body);
+    return args === undefined ? undefined : this.connection.openDuplexStream(endpoint, args, sink);
   }
 
   async call(endpoint: string, body: Record<string, Object | null> = {},

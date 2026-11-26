@@ -14,6 +14,7 @@ export struct DesktopConversationPane {
   @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: PendingAttachment[] = [];
   @Prop busy: boolean = false;
+  @Prop terminalOpen: boolean = false;
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
   onDraft: (value: string) => void = () => {};
@@ -23,6 +24,7 @@ export struct DesktopConversationPane {
   onStop: () => void = () => {};
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
+  onTerminal: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
   onPermission: (preset: string) => void = () => {};
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
@@ -208,6 +210,10 @@ export struct DesktopConversationPane {
           }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('终端', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+          .height(34).focusOnTouch(false)
+          .accessibilitySelected(this.terminalOpen)
+          .onClick(this.onTerminal)
         Button($r('app.string.desktop_experiment_open_web'),
           { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(34).focusOnTouch(false).onClick(this.onWeb)

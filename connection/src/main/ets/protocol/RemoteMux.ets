@@ -653,6 +653,28 @@ export class RemoteMux {
     return streamId;
   }
 
+  async sendItem(streamId: string, value: Object): Promise<boolean> {
+    const socket = this.socket;
+    if (socket === undefined || !this.isOpen() || !this.streams.has(streamId)) {
+      return false;
+    }
+    const frame: Record<string, Object> = { 'type': 'item', 'streamId': streamId, 'value': value };
+    const text = stringifyJson(frame);
+    if (text === undefined) {
+      return false;
+    }
+    try {
+      if (await socket.send(text)) {
+        return true;
+      }
+    } catch (_) {
+    }
+    if (this.socket === socket) {
+      this.onSocketClosed('逻辑流上行发送失败');
+    }
+    return false;
+  }
+
   /** 主动取消一条逻辑流（对应上游 finally 里的 cancel 帧） */
   cancel(streamId: string): void {
     const stream: LogicalStream | undefined = this.streams.get(streamId);

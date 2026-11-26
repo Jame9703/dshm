@@ -138,6 +138,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: node tools/check-web-action-menu.mjs --self-test
 
+      - name: 门禁 · check-desktop-terminal
+        if: ${{ !cancelled() }}
+        run: node tools/check-desktop-terminal.mjs --self-test
+
       - name: 门禁 · check-web-pickers
         if: ${{ !cancelled() }}
         run: node tools/check-web-pickers.mjs --self-test

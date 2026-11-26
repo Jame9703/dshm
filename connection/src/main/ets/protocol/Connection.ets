@@ -35,6 +35,7 @@ import {
   CookieRecord,
   DiagnosticItem,
   DiagnosticReport,
+  DuplexStream,
   EventSink,
   HostConfig,
   StreamSink
@@ -565,6 +566,10 @@ export class Connection {
    * @returns 取消函数；未连接时返回 undefined
    */
   openStream(endpoint: string, args: Object, sink: StreamSink): (() => void) | undefined {
+    return this.openDuplexStream(endpoint, args, sink)?.close;
+  }
+
+  openDuplexStream(endpoint: string, args: Object, sink: StreamSink): DuplexStream | undefined {
     const mux: RemoteMux | undefined = this.mux;
     if (mux === undefined || !mux.isOpen()) {
       return undefined;
@@ -578,8 +583,9 @@ export class Connection {
     if (streamId === undefined) {
       return undefined;
     }
-    return () => {
-      mux.cancel(streamId);
+    return {
+      send: (item: Object): Promise<boolean> => mux.sendItem(streamId, item),
+      close: (): void => { mux.cancel(streamId); }
     };
   }
 
