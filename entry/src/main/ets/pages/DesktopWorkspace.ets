@@ -2,6 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getString, parseTarget } from 'connection';
+import { WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopFileNavigation, DesktopFilesPane } from '../desktop/DesktopFilesPane';
@@ -16,7 +17,7 @@ import { DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback
 import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
+import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
   readDocumentUri, uriFromPath } from 'platform';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
@@ -25,6 +26,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, PendingAttachment, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
+import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } from '../desktop/DesktopSessionArchive';
+import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
 import type { DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
@@ -77,9 +80,15 @@ struct DesktopWorkspace {
   @State private forking: boolean = false;
   private pendingForkId: string = '';
   private pendingForkSource: string = '';
-  @State private archived: SessionListItem[] = [];
+  @State private archivedIds: string[] = [];
+  @State private archiveFilter: DesktopArchiveFilter = DesktopArchiveFilter.HIDE;
+  @State private archiveRequest: DesktopArchiveRequest | undefined = undefined;
+  @State private archiveNotice: DesktopArchiveNotice | undefined = undefined;
+  @State private archiveProblem: string = '';
+  private archiveDialog: number = -1;
+  private archiveDialogVersion: number = 0;
+  private archiveNoticeTimer: number = -1;
   @State private pinned: string[] = [];
-  @State @Watch('syncReading') private archiveOpen: boolean = false;
   @State private unreadSessions: DesktopUnreadSession[] = [];
   @State private readingReady: boolean = false;
   @State private renameOpen: boolean = false;
@@ -159,6 +168,8 @@ struct DesktopWorkspace {
     this.closeLogDialog();
     this.closeFeedback();
     this.closeRename();
+    this.closeArchiveConfirmation();
+    this.dismissArchiveNotice();
     this.data?.stop();
     this.data = undefined;
   }
@@ -176,8 +187,7 @@ struct DesktopWorkspace {
 
   private syncReading(): void {
     const chat = this.chat?.sessionId === this.sessionId ? this.chat : undefined;
-    const visible = this.pageActive && this.pageVisible && this.panel === 'session' && !this.archiveOpen &&
-      this.readingFocused;
+    const visible = this.pageActive && this.pageVisible && this.panel === 'session' && this.readingFocused;
     this.data?.reading.show(this.sessionId, chat?.historyLoaded === true, chat?.receivedTurn ?? 0, visible);
   }
 
@@ -198,10 +208,6 @@ struct DesktopWorkspace {
       this.terminalSession = '';
       return true;
     }
-    if (this.archiveOpen) {
-      this.archiveOpen = false;
-      return true;
-    }
     if (this.panel !== 'session') {
       this.panel = 'session';
       return true;
@@ -214,6 +220,8 @@ struct DesktopWorkspace {
       return;
     }
     this.closeFeedback();
+    this.closeArchiveConfirmation();
+    this.dismissArchiveNotice();
     this.data?.stop();
     this.data = undefined;
     this.attachmentsBySession.clear();
@@ -228,6 +236,7 @@ struct DesktopWorkspace {
     this.interactions = [];
     this.unreadSessions = [];
     this.readingReady = false;
+    this.archivedIds = [];
     this.shownPlanReviews.clear();
     this.closePlan();
     this.closeFiles();
@@ -244,7 +253,7 @@ struct DesktopWorkspace {
       if (!snapshot.ready) {
         return;
       }
-      this.archived = snapshot.archived;
+      this.archivedIds = snapshot.archivedIds;
       this.pinned = snapshot.pinned;
       this.updateGroups(snapshot.workspaces, snapshot.sessions);
       this.ready = true;
@@ -285,7 +294,7 @@ struct DesktopWorkspace {
     for (const session of sessions) {
       const group = byMember.get(session.id) ?? byPath.get(session.cwd) ?? ungrouped;
       group.sessions.push(session);
-      if (session.id === this.sessionId) {
+      if (session.id === this.sessionId && !this.archivedIds.includes(session.id)) {
         this.selectSession(group, session);
       }
     }
@@ -297,7 +306,8 @@ struct DesktopWorkspace {
     if (ungrouped.sessions.length > 0) {
       this.groups.push(ungrouped);
     }
-    if (!sessions.some((session: SessionListItem): boolean => session.id === this.sessionId)) {
+    if (this.archivedIds.includes(this.sessionId) || !sessions.some((session: SessionListItem): boolean =>
+      session.id === this.sessionId)) {
       this.clearSession();
       this.selectedWorkspaceTitle =
         this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
@@ -316,6 +326,7 @@ struct DesktopWorkspace {
   }
 
   private pinRank(id: string): number {
+    if (this.archivedIds.includes(id)) { return this.pinned.length; }
     const index = this.pinned.indexOf(id);
     return index < 0 ? this.pinned.length : index;
   }
@@ -410,6 +421,14 @@ struct DesktopWorkspace {
   }
 
   private sessionActions(session: SessionListItem): MenuElement[] {
+    if (this.archivedIds.includes(session.id)) {
+      return [
+        { value: '复制 Session ID', icon: $r('app.media.dsh_session_copy'),
+          action: (): void => { this.copySessionId(session.id); } },
+        { value: '取消归档', icon: $r('app.media.dsh_session_unarchive_outline'),
+          action: (): void => { this.restoreSession(session.id); } }
+      ];
+    }
     const pinned = this.pinned.includes(session.id);
     const unread = this.unreadSession(session.id) !== undefined;
     return [
@@ -426,10 +445,158 @@ struct DesktopWorkspace {
         action: (): void => { this.forkFrom(session.id); } },
       { value: '复制 Session ID', icon: $r('app.media.dsh_session_copy'),
         action: (): void => { this.copySessionId(session.id); } },
-      { value: '归档会话', icon: $r('app.media.dsh_session_archive_outline'), action: (): void => {
-        this.manage('workspace/archiveSession', { 'sessionId': session.id });
-      } }
+      { value: '归档会话', icon: $r('app.media.dsh_session_archive_outline'),
+        action: (): void => { this.archiveSession(session.id, this.accessibilityLabel(this.sessionLabel(session))); } }
     ];
+  }
+
+  private async archiveSession(id: string, title: string, stop: boolean = false): Promise<void> {
+    const data = this.data;
+    if (data === undefined || this.workspaceBusy || (stop ? this.archiveRequest?.id !== id :
+      this.archiveRequest !== undefined)) { return; }
+    this.workspaceBusy = true;
+    this.archiveProblem = '';
+    const body: Record<string, Object> = { 'sessionId': id };
+    if (stop) { body['stopActivity'] = true; }
+    const result = await data.actions.call(WORKSPACE_ARCHIVE_SESSION_ENDPOINT, body);
+    if (this.data !== data || !this.pageActive) { return; }
+    this.workspaceBusy = false;
+    if (result.ok) {
+      this.closeArchiveConfirmation();
+      this.showArchiveNotice(id, stop);
+    } else if (!stop && result.error?.code === 'workspace/session-active') {
+      this.archiveRequest = { id: id, title: title, activity: desktopArchiveActivity(result.error.details, id) };
+      this.openArchiveConfirmation();
+    } else {
+      const problem = result.error?.message || '无法归档会话，请重试';
+      if (stop) { this.archiveProblem = problem; }
+      else { this.getUIContext().getPromptAction().showToast({ message: problem }); }
+    }
+  }
+
+  @Builder
+  private ArchiveConfirmationContent(request: DesktopArchiveRequest) {
+    DesktopArchiveDialog({ title: request.title, activity: request.activity, busy: this.workspaceBusy,
+      problem: this.archiveProblem, onClose: (): void => { this.closeArchiveConfirmation(); },
+      onConfirm: (): void => { this.archiveSession(request.id, request.title, true); } })
+  }
+
+  private async openArchiveConfirmation(): Promise<void> {
+    const request = this.archiveRequest;
+    if (request === undefined) { return; }
+    const version = ++this.archiveDialogVersion;
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    try {
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.ArchiveConfirmationContent(request); },
+        alignment: DialogAlignment.Center,
+        width: Math.max(220, Math.min(496, this.workbenchWidth - 32)),
+        autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onWillDismiss: (action): void => { if (!this.workspaceBusy) { action.dismiss(); } },
+        onDidDisappear: (): void => {
+          if (version === this.archiveDialogVersion) {
+            this.archiveDialog = -1;
+            this.archiveRequest = undefined;
+            this.archiveDialogVersion++;
+          }
+        }
+      });
+      if (this.pageActive && version === this.archiveDialogVersion) { this.archiveDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (version === this.archiveDialogVersion) {
+        this.archiveRequest = undefined;
+        prompt.showToast({ message: '无法打开归档确认，请重试' });
+      }
+    }
+  }
+
+  private closeArchiveConfirmation(): void {
+    const dialog = this.archiveDialog;
+    this.archiveDialog = -1;
+    this.archiveDialogVersion++;
+    this.archiveRequest = undefined;
+    this.archiveProblem = '';
+    if (dialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(dialog); }
+  }
+
+  private async restoreSession(id: string): Promise<void> {
+    if (await this.manage('workspace/unarchiveSession', { 'sessionId': id })) {
+      if (this.archiveNotice?.id === id) { this.dismissArchiveNotice(); }
+    }
+  }
+
+  private setArchiveFilter(filter: DesktopArchiveFilter, sessionId: string = ''): void {
+    this.sidebarCollapsed = false;
+    this.archiveFilter = filter;
+    const group = sessionId ? this.groups.find((item: DesktopWorkspaceGroup): boolean =>
+      item.sessions.some((row: SessionListItem): boolean => row.id === sessionId)) : undefined;
+    if (group !== undefined && !this.expandedIds.includes(group.id)) {
+      this.expandedIds = [...this.expandedIds, group.id];
+    }
+    this.filterGroups(this.query);
+  }
+
+  private archiveFilterActions(): MenuElement[] {
+    return [
+      { value: (this.archiveFilter === DesktopArchiveFilter.HIDE ? '✓ ' : '') + '隐藏已归档',
+        icon: $r('app.media.dsh_session_archive_off_outline'),
+        action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.HIDE); } },
+      { value: (this.archiveFilter === DesktopArchiveFilter.ALL ? '✓ ' : '') + '全部对话（显示已归档）',
+        icon: $r('app.media.dsh_queue_queue_outline'),
+        action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ALL); } },
+      { value: (this.archiveFilter === DesktopArchiveFilter.ONLY ? '✓ ' : '') + '仅显示已归档',
+        icon: $r('app.media.dsh_session_archive_check_outline'),
+        action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); } }
+    ];
+  }
+
+  private showArchiveNotice(id: string, stopped: boolean): void {
+    this.archiveNotice = { id: id, stopped: stopped };
+    this.pauseArchiveNotice(false);
+  }
+
+  private pauseArchiveNotice(paused: boolean): void {
+    if (this.archiveNoticeTimer !== -1) {
+      clearTimeout(this.archiveNoticeTimer);
+      this.archiveNoticeTimer = -1;
+    }
+    if (!paused && this.archiveNotice !== undefined) {
+      this.archiveNoticeTimer = setTimeout((): void => { this.dismissArchiveNotice(); }, 6000);
+    }
+  }
+
+  private dismissArchiveNotice(): void {
+    this.pauseArchiveNotice(true);
+    this.archiveNotice = undefined;
+  }
+
+  @Builder
+  private ArchiveNoticeContent(notice: DesktopArchiveNotice) {
+    Row({ space: 5 }) {
+      Text(notice.stopped ? '已停止并归档，可' : '会话已归档，可')
+        .key('desktopArchiveNoticeText').fontSize(13).fontColor($r('sys.color.font_primary'))
+      Button('撤销', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopArchiveUndo')
+        .height(30).padding({ left: 5, right: 5 }).enabled(!this.workspaceBusy)
+        .onFocus((): void => this.pauseArchiveNotice(true)).onBlur((): void => this.pauseArchiveNotice(false))
+        .onClick((): void => { this.restoreSession(notice.id); })
+      if (this.archiveFilter === DesktopArchiveFilter.HIDE) {
+        Text('或').fontSize(13).fontColor($r('sys.color.font_primary'))
+        Button('筛选已归档会话', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopArchiveNoticeFilter')
+          .height(30).padding({ left: 5, right: 5 })
+          .onFocus((): void => this.pauseArchiveNotice(true)).onBlur((): void => this.pauseArchiveNotice(false))
+          .onClick((): void => {
+            this.setArchiveFilter(DesktopArchiveFilter.ALL, notice.id);
+            this.dismissArchiveNotice();
+          })
+      }
+    }.padding({ left: 14, right: 10, top: 4, bottom: 4 }).constraintSize({ maxWidth: '95%' })
+      .borderRadius(14).margin({ bottom: 28 })
+      .backgroundColor(controlMaterial() === undefined ? $r('app.color.workspace_panel') : undefined)
+      .systemMaterial(controlMaterial()).shadow({ radius: 14, color: '#26000000', offsetY: 4 })
+      .onHover((hovered: boolean): void => this.pauseArchiveNotice(hovered))
   }
 
   private unreadSession(sessionId: string): DesktopUnreadSession | undefined {
@@ -464,14 +631,21 @@ struct DesktopWorkspace {
 
   private workspaceShortcut(key: string): void {
     if (!this.pageActive || this.renameOpen || this.accountOpening || this.accountDialog >= 0 ||
-      this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0) { return; }
+      this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0 || this.archiveRequest !== undefined) {
+      return;
+    }
     if (key === 'N') { this.newSession(); return; }
     if (key === 'K') { this.focusSearch(); return; }
     if (key === 'O') { this.addWorkspace(); return; }
-    if (this.panel !== 'session' || this.archiveOpen || !this.sessionId) { return; }
+    if (this.panel !== 'session' || !this.sessionId) { return; }
     const session = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
       group.id === this.workspaceId)?.sessions.find((row: SessionListItem): boolean => row.id === this.sessionId);
-    if (session === undefined || session.blank) { return; }
+    if (session === undefined || this.archivedIds.includes(session.id)) { return; }
+    if (key === 'A') {
+      this.archiveSession(session.id, this.accessibilityLabel(this.sessionLabel(session)));
+      return;
+    }
+    if (session.blank) { return; }
     const detailOpen = this.planSession === session.id || this.filesSession === session.id ||
       this.changesTarget?.sessionId === session.id || this.terminalSession === session.id;
     if (key === 'F') {
@@ -486,14 +660,15 @@ struct DesktopWorkspace {
   private filterGroups(value: string): void {
     this.query = value;
     const needle = value.trim().toLowerCase();
-    if (needle.length === 0) {
-      this.visibleGroups = this.groups;
-      return;
-    }
+    const archived = new Set<string>(this.archivedIds);
     const matches: DesktopWorkspaceGroup[] = [];
     this.groups.forEach((group: DesktopWorkspaceGroup): void => {
-      const sessions = group.sessions.filter((row: SessionListItem): boolean => row.title.toLowerCase().includes(needle));
-      if (sessions.length > 0) {
+      const sessions = group.sessions.filter((row: SessionListItem): boolean => {
+        const isArchived = archived.has(row.id);
+        return (this.archiveFilter === DesktopArchiveFilter.ALL ||
+          isArchived === (this.archiveFilter === DesktopArchiveFilter.ONLY)) && row.title.toLowerCase().includes(needle);
+      });
+      if (sessions.length > 0 || (!needle && this.archiveFilter !== DesktopArchiveFilter.ONLY && group.id)) {
         matches.push({ id: group.id, title: group.title, sessions: sessions });
       }
     });
@@ -1040,6 +1215,12 @@ struct DesktopWorkspace {
   }
 
   private openSessionById(id: string, notifyMissing: boolean = true): boolean {
+    if (this.archivedIds.includes(id)) {
+      if (notifyMissing) {
+        this.getUIContext().getPromptAction().showToast({ message: '已归档对话暂时无法查看，请取消归档后查看' });
+      }
+      return false;
+    }
     for (const group of this.groups) {
       const row = group.sessions.find((session: SessionListItem): boolean => session.id === id);
       if (row !== undefined) {
@@ -1116,14 +1297,15 @@ struct DesktopWorkspace {
       { value: $r('app.string.desktop_workspace_settings'), action: (): void => { this.openSettings(); } },
       { value: $r('app.string.desktop_experiment_plugins'), action: (): void => { this.panel = 'plugins'; } },
       { value: $r('app.string.desktop_experiment_schedule'), action: (): void => { this.panel = 'schedule'; } },
-      { value: '已归档会话', action: (): void => { this.archiveOpen = true; } }
+      { value: '已归档会话', action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); } }
     ];
   }
 
   private groupKey(group: DesktopWorkspaceGroup): string {
     const title = typeof group.title === 'string' ? group.title : '';
     const rows = group.sessions.map((session: SessionListItem): string =>
-      JSON.stringify([session.id, session.title, session.running, this.pinned.includes(session.id)]));
+      JSON.stringify([session.id, session.title, session.running,
+        this.pinned.includes(session.id), this.archivedIds.includes(session.id)]));
     return JSON.stringify([group.id, title, ...rows]);
   }
 
@@ -1269,22 +1451,23 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private SessionRow(group: DesktopWorkspaceGroup, session: SessionListItem) {
+  private SessionRow(group: DesktopWorkspaceGroup, session: SessionListItem, archived: boolean) {
     Row() {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 6 }) {
           Stack() {
-            if (session.running) {
+            if (session.running && !archived) {
               LoadingProgress().width(13).height(13).color($r('sys.color.brand'))
-            } else if (!session.blank && this.unreadSession(session.id) !== undefined) {
+            } else if (!archived && !session.blank && this.unreadSession(session.id) !== undefined) {
               Circle().width(7).height(7).fill(this.unreadSession(session.id)?.failed === true ?
                 $r('sys.color.warning') : $r('sys.color.brand')).key('desktopSessionUnread-' + session.id)
                 .accessibilityText(this.unreadSession(session.id)?.failed === true ? '失败' : '未读')
             }
           }.width(14)
-          Text(this.sessionLabel(session)).fontSize(14).fontColor($r('sys.color.font_primary'))
+          Text(this.sessionLabel(session)).fontSize(14).fontColor(archived ?
+            $r('sys.color.font_tertiary') : $r('sys.color.font_primary'))
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (this.pinned.includes(session.id)) {
+          if (!archived && this.pinned.includes(session.id)) {
             Image($r('app.media.dsh_session_pin_fill')).width(14).height(14).supportSvg2(true)
               .draggable(false).accessibilityText('已置顶')
           }
@@ -1294,12 +1477,21 @@ struct DesktopWorkspace {
       .layoutWeight(1).height(32).padding({ left: 10, right: 4 }).borderRadius(8)
       .backgroundColor(Color.Transparent).focusOnTouch(false)
       .accessibilityText(this.accessibilityLabel(this.sessionLabel(session)))
+      .accessibilityDescription(archived ? '已归档' : '')
       .accessibilitySelected(this.sessionId === session.id)
       .onClick((): void => {
+        if (archived) { this.openSessionById(session.id); return; }
         this.selectSession(group, session);
         this.panel = 'session';
-        this.archiveOpen = false;
       })
+      if (archived) {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.dsh_session_unarchive_outline')).width(14).height(14).supportSvg2(true)
+            .draggable(false).accessibilityLevel('no')
+        }.key('desktopRestoreSession-' + session.id).width(30).height(30).padding(0).borderRadius(7)
+          .enabled(!this.workspaceBusy).focusOnTouch(false).accessibilityText('取消归档')
+          .onClick((): void => { this.restoreSession(session.id); })
+      }
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         this.MenuDots()
       }
@@ -1339,48 +1531,16 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private Archive() {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Text('已归档会话').fontSize(24).layoutWeight(1)
-        Button('返回', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.archiveOpen = false; })
-      }
-      .width('100%')
-      if (this.archived.length === 0) {
-        Text('暂无已归档会话').fontColor($r('sys.color.font_secondary'))
-      }
-      List({ space: 6 }) {
-        ForEach(this.archived, (session: SessionListItem) => {
-          ListItem() {
-            Row({ space: 10 }) {
-              Text(this.sessionLabel(session)).fontSize(15).layoutWeight(1).maxLines(1)
-              Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-                Row({ space: 6 }) {
-                  Image($r('app.media.dsh_session_unarchive_outline')).width(16).height(16).supportSvg2(true)
-                    .draggable(false).accessibilityLevel('no')
-                  Text('恢复会话')
-                }
-              }.enabled(!this.workspaceBusy).accessibilityText('恢复会话')
-                .onClick((): void => { this.manage('workspace/unarchiveSession', { 'sessionId': session.id }); })
-              this.RowMenu('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)), [
-                { value: '复制 Session ID', icon: $r('app.media.dsh_session_copy'),
-                  action: (): void => { this.copySessionId(session.id); } }
-              ])
-            }
-            .width('100%').padding(8).borderRadius(8).backgroundColor($r('app.color.workspace_panel'))
-          }
-        }, (session: SessionListItem): string => session.id)
-      }
-      .layoutWeight(1).width('100%')
-    }
-    .layoutWeight(1).height('100%').padding(20).alignItems(HorizontalAlign.Start)
-  }
-
-  @Builder
   private WorkspaceTree() {
     Row() {
       Text($r('app.string.desktop_experiment_workspaces'))
         .fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Image($r('app.media.dsh_session_sliders_two_outline')).width(16).height(16)
+          .supportSvg2(true).accessibilityLevel('no')
+      }.key('desktopWorkspaceArchiveFilter').width(32).height(32).padding(0).borderRadius(7)
+        .focusOnTouch(false).accessibilityText('视图选项').enabled(this.ready)
+        .bindMenu(this.archiveFilterActions(), desktopMenuOptions(Placement.BottomRight))
       this.IconButton($r('sys.symbol.magnifyingglass'), $r('app.string.desktop_experiment_search'),
         (): void => {
           this.searchOpen = !this.searchOpen;
@@ -1407,7 +1567,7 @@ struct DesktopWorkspace {
           if (this.isExpanded(group.id)) {
             ForEach(group.sessions, (session: SessionListItem): void => {
               ListItem() {
-                this.SessionRow(group, session)
+                this.SessionRow(group, session, this.archivedIds.includes(session.id))
               }
             }, (session: SessionListItem): string => session.id)
           }
@@ -1416,8 +1576,14 @@ struct DesktopWorkspace {
           ListItem() {
             Column({ space: 8 }) {
               SymbolGlyph($r('sys.symbol.folder')).fontSize(24).fontColor([$r('sys.color.font_tertiary')])
-              Text(this.query.length > 0 ? $r('app.string.desktop_experiment_search_empty') :
-                $r('app.string.desktop_experiment_empty')).fontSize(14).fontColor($r('sys.color.font_secondary'))
+              if (!this.query && this.archiveFilter === DesktopArchiveFilter.ONLY) {
+                Text('暂无已归档会话').fontSize(14).fontColor($r('sys.color.font_secondary'))
+                Button('查看其他会话', { buttonStyle: ButtonStyleMode.TEXTUAL })
+                  .onClick((): void => { this.setArchiveFilter(DesktopArchiveFilter.HIDE); })
+              } else {
+                Text(this.query.length > 0 ? $r('app.string.desktop_experiment_search_empty') :
+                  $r('app.string.desktop_experiment_empty')).fontSize(14).fontColor($r('sys.color.font_secondary'))
+              }
             }
             .width('100%').padding({ top: 36, bottom: 24 })
           }
@@ -1453,6 +1619,7 @@ struct DesktopWorkspace {
         .accessibilityText(this.sidebarCollapsed ? $r('app.string.desktop_experiment_expand_sidebar') :
           $r('app.string.desktop_experiment_collapse_sidebar'))
         .onClick((): void => { this.sidebarCollapsed = !this.sidebarCollapsed; })
+        .keyboardShortcut('A', [ModifierKey.CTRL, ModifierKey.SHIFT], (): void => this.workspaceShortcut('A'))
       }
       .width('100%').height(64).padding({ left: this.sidebarCollapsed ? 0 : 6 })
       .justifyContent(this.sidebarCollapsed ? FlexAlign.Center : FlexAlign.Start)
@@ -1711,40 +1878,44 @@ struct DesktopWorkspace {
       colorMode: this.appearance === 'dark' ? ThemeColorMode.DARK :
         this.appearance === 'light' ? ThemeColorMode.LIGHT : ThemeColorMode.SYSTEM
     }) {
-      Column() {
-        this.TopBar()
-        Row() {
-          this.Sidebar()
-          if (this.archiveOpen) {
-            this.Archive()
-          } else if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
-            DesktopPluginsPane({
-              host: this.data.actions,
-              onWeb: (): void => { this.openWeb(false, 'plugins'); }
-            })
-          } else if (this.panel === 'schedule' && this.ready && this.data !== undefined) {
-            DesktopSchedulePane({
-              host: this.data.actions,
-              sessionId: this.sessionId,
-              workspacePath: this.data.workspacePath(this.workspaceId),
-              onOpenSession: (id: string): void => { this.openSessionById(id); },
-              onWeb: (): void => { this.openWeb(false, 'schedule'); }
-            })
-          } else if (this.panel !== 'session') {
-            Column() {
-              Text(this.error || this.hostError || $r('app.string.desktop_experiment_loading'))
-                .fontColor($r('sys.color.font_secondary'))
+      Stack({ alignContent: Alignment.Bottom }) {
+        Column() {
+          this.TopBar()
+          Row() {
+            this.Sidebar()
+            if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
+              DesktopPluginsPane({
+                host: this.data.actions,
+                onWeb: (): void => { this.openWeb(false, 'plugins'); }
+              })
+            } else if (this.panel === 'schedule' && this.ready && this.data !== undefined) {
+              DesktopSchedulePane({
+                host: this.data.actions,
+                sessionId: this.sessionId,
+                workspacePath: this.data.workspacePath(this.workspaceId),
+                onOpenSession: (id: string): void => { this.openSessionById(id); },
+                onWeb: (): void => { this.openWeb(false, 'schedule'); }
+              })
+            } else if (this.panel !== 'session') {
+              Column() {
+                Text(this.error || this.hostError || $r('app.string.desktop_experiment_loading'))
+                  .fontColor($r('sys.color.font_secondary'))
+              }
+              .layoutWeight(1).height('100%').justifyContent(FlexAlign.Center)
+            } else {
+              this.SessionContent()
             }
-            .layoutWeight(1).height('100%').justifyContent(FlexAlign.Center)
-          } else {
-            this.SessionContent()
           }
+          .width('100%').layoutWeight(1)
+          .keyboardShortcut('U', [ModifierKey.CTRL, ModifierKey.SHIFT], (): void => this.workspaceShortcut('U'))
         }
-        .width('100%').layoutWeight(1)
-        .keyboardShortcut('U', [ModifierKey.CTRL, ModifierKey.SHIFT], (): void => this.workspaceShortcut('U'))
+        .width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
+        .keyboardShortcut('N', [ModifierKey.CTRL], (): void => this.workspaceShortcut('N'))
+        if (this.archiveNotice !== undefined) {
+          this.ArchiveNoticeContent(this.archiveNotice)
+        }
       }
-      .width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
-      .keyboardShortcut('N', [ModifierKey.CTRL], (): void => this.workspaceShortcut('N'))
+      .width('100%').height('100%')
       .onAreaChange((_, area: Area): void => {
         this.workbenchWidth = Number(area.width);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));

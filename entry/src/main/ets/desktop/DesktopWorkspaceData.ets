@@ -28,7 +28,7 @@ export interface DesktopWorkspaceRow {
 export interface DesktopWorkspaceSnapshot {
   workspaces: DesktopWorkspaceRow[];
   sessions: SessionListItem[];
-  archived: SessionListItem[];
+  archivedIds: string[];
   pinned: string[];
   ready: boolean;
   error: string;
@@ -310,8 +310,8 @@ export class DesktopWorkspaceData {
     if (this.active) {
       this.listener({
         workspaces: this.workspaces,
-        sessions: this.sessions.filter((row: SessionListItem): boolean => !this.archivedIds.has(row.id)),
-        archived: this.sessions.filter((row: SessionListItem): boolean => this.archivedIds.has(row.id)),
+        sessions: this.sessions,
+        archivedIds: Array.from(this.archivedIds),
         pinned: this.pinnedIds,
         ready: this.workspaceReady && this.sessionsReady,
         error: this.workspaceError || this.sessionError
