@@ -1,15 +1,16 @@
 import { ComponentContent, promptAction, uiMaterial } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { immersiveMaterialOf } from 'platform';
-import { buildWebPickerMenu, buildWebPickerPanel, WebPickerPage, WebPickerPanelParams, WebPickerRow } from './WebPickerPanel';
+import { buildWebPickerMenu, WebPickerPage, WebPickerPanelParams, WebPickerPanelState, WebPickerRow } from './WebPickerPanel';
 
 interface ActivePicker {
   id: number;
-  content: ComponentContent<WebPickerPanelParams>;
+  menuContent: ComponentContent<WebPickerPanelParams> | undefined;
+  panel: WebPickerPanelState | undefined;
+  panelId: number;
   params: WebPickerPanelParams;
   ui: UIContext;
   send: (id: number, event: string, value: string) => void;
-  menu: boolean;
   opened: boolean;
   closing: boolean;
   event: string;
@@ -54,14 +55,14 @@ function canUsePickerMenu(page: WebPickerPage): boolean {
     page.rows.every((row: WebPickerRow): boolean => row.group.length === 0 && !row.stay && !row.drill);
 }
 
-function pickerMaterial(menu: boolean): uiMaterial.ImmersiveMaterial | undefined {
+function pickerMaterial(): uiMaterial.ImmersiveMaterial | undefined {
   if (deviceInfo.sdkApiVersion < 26) return undefined;
   try {
     if (uiMaterial.isImmersiveMaterialSupported()) {
-      return immersiveMaterialOf(menu ? uiMaterial.ImmersiveStyle.THICK : uiMaterial.ImmersiveStyle.THIN, false);
+      return immersiveMaterialOf(uiMaterial.ImmersiveStyle.THICK, false);
     }
   } catch (e) {
-    // Use the platform's default menu or dialog background.
+    // Use the system's default overlay background when material is unavailable.
   }
   return undefined;
 }
@@ -72,6 +73,19 @@ export interface WebPickerViewport {
   dark: boolean;
 }
 
+type BuildPickerPanel = (params: WebPickerPanelParams, model: WebPickerPanelState) => void;
+
+export function disposeOverlayContent<T extends Object>(content: ComponentContent<T>): void {
+  // The framework finishes detaching an overlay after its disappear callback.
+  setTimeout((): void => {
+    try {
+      content.dispose();
+    } catch (e) {
+      // Window destruction can release the content first.
+    }
+  }, 0);
+}
+
 export class DesktopWebPicker {
   private active: ActivePicker | undefined;
 
@@ -80,7 +94,7 @@ export class DesktopWebPicker {
   }
 
   open(ui: UIContext, id: number, x: number, top: number, bottom: number, viewport: WebPickerViewport,
-    payload: string, sender: (id: number, event: string, value: string) => void): boolean {
+    payload: string, sender: (id: number, event: string, value: string) => void, buildPanel: BuildPickerPanel): boolean {
     if (this.active !== undefined || !Number.isSafeInteger(id) || id <= 0 ||
       !Number.isFinite(x) || !Number.isFinite(top) || !Number.isFinite(bottom) ||
       x < 0 || x > 1 || top < 0 || top > bottom || bottom > 1 || viewport.width < 220 || viewport.height < 200) {
@@ -97,28 +111,29 @@ export class DesktopWebPicker {
       const placeBelow: boolean = below >= 330 || below >= topVp - 8;
       const room: number = Math.min(430, Math.max(110, placeBelow ? below : topVp - 8));
       const height: number = Math.max(64, room - 100);
+      const menu: boolean = canUsePickerMenu(page);
       const params: WebPickerPanelParams = {
-        page: page, width: width, height: height, themeDark: viewport.dark,
+        page: page, width: width, height: height, themeDark: viewport.dark, material: pickerMaterial(),
         search: (value: string): void => this.search(id, value),
         select: (key: string): void => this.select(id, key)
       };
-      const menu: boolean = canUsePickerMenu(page);
-      const content = new ComponentContent<WebPickerPanelParams>(ui,
-        menu ? wrapBuilder(buildWebPickerMenu) : wrapBuilder(buildWebPickerPanel), params);
+      const content = menu ? new ComponentContent<WebPickerPanelParams>(ui, wrapBuilder(buildWebPickerMenu), params) : undefined;
       const dialog: ActivePicker = {
-        id: id, content: content, params: params, ui: ui, send: sender, menu: menu,
+        id: id, menuContent: content, panel: menu ? undefined : new WebPickerPanelState(page), panelId: -1,
+        params: params, ui: ui, send: sender,
         opened: false, closing: false, event: 'dismiss', value: ''
       };
       const left: number = Math.min(Math.max(8, x * viewport.width), viewport.width - width - 8);
       this.active = dialog;
-      const opening: Promise<void> = menu
-        ? this.openMenu(dialog, left, Math.max(8, placeBelow ? bottomVp + 6 : topVp - room - 6))
+      const openingY: number = Math.max(8, placeBelow ? bottomVp + 6 : topVp - room - 6);
+      const opening: Promise<void> = content !== undefined
+        ? this.openMenu(dialog, content, left, openingY)
         : this.openPanel(dialog, ui.px2vp(anchor.windowOffset.x) + left,
-          ui.px2vp(anchor.windowOffset.y) + Math.max(8, placeBelow ? bottomVp + 6 : topVp - room - 6));
+          ui.px2vp(anchor.windowOffset.y) + openingY, buildPanel);
       opening.then((): void => {
         if (this.active !== dialog) return;
         dialog.opened = true;
-        if (dialog.closing) this.dismiss(dialog);
+        if (dialog.closing && (dialog.menuContent === undefined || dialog.event !== 'select')) this.dismiss(dialog);
       }).catch((): void => {
         if (!dialog.closing) dialog.event = 'fallback';
         this.finish(dialog);
@@ -134,23 +149,28 @@ export class DesktopWebPicker {
     }
   }
 
-  private openMenu(dialog: ActivePicker, x: number, y: number): Promise<void> {
+  private openMenu(dialog: ActivePicker, content: ComponentContent<WebPickerPanelParams>, x: number, y: number): Promise<void> {
     // A plain choice list uses the same system menu surface as the account menu.
     const options: MenuOptions = {
       anchorPosition: { x: x, y: y },
-      systemMaterial: pickerMaterial(true),
+      systemMaterial: dialog.params.material,
       onDisappear: (): void => this.finish(dialog)
     };
-    return dialog.ui.getPromptAction().openMenu(dialog.content, { id: 'dshm-web-menu-anchor' }, options);
+    return dialog.ui.getPromptAction().openMenu(content, { id: 'dshm-web-menu-anchor' }, options);
   }
 
-  private openPanel(dialog: ActivePicker, x: number, y: number): Promise<void> {
-    const options: promptAction.BaseDialogOptions = {
+  private openPanel(dialog: ActivePicker, x: number, y: number, buildPanel: BuildPickerPanel): Promise<void> {
+    const panel = dialog.panel;
+    if (panel === undefined) return Promise.reject(new Error('Missing picker panel'));
+    // The builder overload keeps ArkUI in charge of the material backplate.
+    const options: promptAction.CustomDialogOptions = {
+      builder: (): void => buildPanel(dialog.params, panel),
       alignment: DialogAlignment.TopStart,
       offset: { dx: x, dy: y },
+      width: dialog.params.width,
       autoCancel: true,
       maskColor: Color.Transparent,
-      systemMaterial: pickerMaterial(false),
+      systemMaterial: dialog.params.material,
       onWillDismiss: (action: DismissDialogAction): void => {
         if (!dialog.closing && action.reason === DismissReason.PRESS_BACK &&
           dialog.params.page.rows.some((row: WebPickerRow): boolean => row.key === 'back' && row.stay)) {
@@ -161,21 +181,26 @@ export class DesktopWebPicker {
       },
       onDidDisappear: (): void => this.finish(dialog)
     };
-    return dialog.ui.getPromptAction().openCustomDialog(dialog.content, options);
+    return dialog.ui.getPromptAction().openCustomDialog(options).then((panelId: number): void => {
+      dialog.panelId = panelId;
+    });
   }
 
   update(id: number, payload: string): boolean {
     const dialog = this.active;
-    if (dialog === undefined || dialog.id !== id || dialog.closing) return false;
+    // An update can cross the native exit callback. Keep the Web portal hidden
+    // until its own request receives the outcome of that exit.
+    if (dialog === undefined || dialog.id !== id || dialog.closing) return true;
     const page: WebPickerPage | undefined = decodePicker(payload);
-    if (page === undefined || (dialog.menu && !canUsePickerMenu(page))) return false;
+    if (page === undefined || (dialog.menuContent !== undefined && !canUsePickerMenu(page))) return false;
     const current = dialog.params;
     const params: WebPickerPanelParams = {
-      page: page, width: current.width, height: current.height, themeDark: current.themeDark,
+      page: page, width: current.width, height: current.height, themeDark: current.themeDark, material: current.material,
       search: current.search, select: current.select
     };
     try {
-      dialog.content.update(params);
+      if (dialog.menuContent !== undefined) dialog.menuContent.update(params);
+      if (dialog.panel !== undefined) dialog.panel.page = page;
       dialog.params = params;
       return true;
     } catch (e) {
@@ -208,7 +233,12 @@ export class DesktopWebPicker {
     }
     dialog.event = 'select';
     dialog.value = key;
-    this.dismiss(dialog);
+    if (dialog.menuContent !== undefined) {
+      // MenuItem already dismisses its system menu. Dispatch from onDisappear.
+      dialog.closing = true;
+    } else {
+      this.dismiss(dialog);
+    }
   }
 
   private dismiss(dialog: ActivePicker): void {
@@ -216,8 +246,11 @@ export class DesktopWebPicker {
     if (!dialog.opened) return;
     try {
       const prompt = dialog.ui.getPromptAction();
-      const closing: Promise<void> = dialog.menu ? prompt.closeMenu(dialog.content) : prompt.closeCustomDialog(dialog.content);
-      closing.catch((): void => this.finish(dialog));
+      if (dialog.menuContent !== undefined) {
+        prompt.closeMenu(dialog.menuContent).catch((): void => this.finish(dialog));
+      } else {
+        prompt.closeCustomDialog(dialog.panelId);
+      }
     } catch (e) {
       this.finish(dialog);
     }
@@ -226,11 +259,7 @@ export class DesktopWebPicker {
   private finish(dialog: ActivePicker): void {
     if (this.active !== dialog) return;
     this.active = undefined;
-    try {
-      dialog.content.dispose();
-    } catch (e) {
-      // Window destruction can release the content first.
-    }
+    if (dialog.menuContent !== undefined) disposeOverlayContent(dialog.menuContent);
     if (dialog.event.length > 0) dialog.send(dialog.id, dialog.event, dialog.value);
   }
 }

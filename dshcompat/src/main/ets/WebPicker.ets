@@ -64,25 +64,32 @@ export const WEB_PICKER_SHIM_JS: string = `(function () {
   // A layout effect picks the presentation before its Web portal can mount.
   function usePicker(React, open, anchor, getPage, onClose) {
     var session = React.useRef(0);
+    var phase = React.useRef('');
     var latestClose = React.useRef(onClose);
     latestClose.current = onClose;
-    var state = React.useState('');
-    var phase = state[0];
-    var setPhase = state[1];
+    var state = React.useState(false);
+    var showWeb = state[0];
+    var setShowWeb = state[1];
+
+    function fallbackToWeb() {
+      phase.current = 'web';
+      session.current = 0;
+      setShowWeb(true);
+    }
 
     React.useLayoutEffect(function () {
       if (!open) {
         close(session.current);
         session.current = 0;
-        if (phase) { setPhase(''); }
+        phase.current = '';
+        if (showWeb) { setShowWeb(false); }
         return;
       }
-      if (phase) { return; }
+      if (phase.current) { return; }
       var page = getPage();
       if (!page) {
         close(session.current);
-        session.current = 0;
-        setPhase('web');
+        fallbackToWeb();
         return;
       }
       if (session.current) {
@@ -90,21 +97,19 @@ export const WEB_PICKER_SHIM_JS: string = `(function () {
         return;
       }
       session.current = show(anchor(), page, function () {
+        // Stop stale layout effects before scheduling React state changes.
+        phase.current = 'closed';
         session.current = 0;
-        setPhase('closed');
         latestClose.current();
-      }, function () {
-        session.current = 0;
-        setPhase('web');
-      });
-      if (!session.current) { setPhase('web'); }
+      }, fallbackToWeb);
+      if (!session.current) { fallbackToWeb(); }
     });
 
     React.useLayoutEffect(function () {
       return function () { close(session.current); session.current = 0; };
     }, []);
 
-    return open && phase === 'web';
+    return open && showWeb;
   }
 
   window.__DSHM_NATIVE_PICKERS__ = {

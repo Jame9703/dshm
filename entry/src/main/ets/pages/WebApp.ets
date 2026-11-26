@@ -52,7 +52,8 @@ import { DESKTOP_PROGRESSIVE_STARTUP, DESKTOP_WEB_LOADED, DESKTOP_WEB_NETWORK_LO
 import { DesktopStartupProgress } from '../common/DesktopStartupProgress';
 import { BRAND_SHIM_JS } from 'dshcompat';
 import { WEB_ACTION_MENU_SHIM_JS, WEB_PICKER_SHIM_JS } from 'dshcompat';
-import { DesktopWebPicker, WebPickerViewport } from '../common/DesktopWebPicker';
+import { DesktopWebPicker, disposeOverlayContent, WebPickerViewport } from '../common/DesktopWebPicker';
+import { buildWebPickerPanel, WebPickerPanelParams, WebPickerPanelState } from '../common/WebPickerPanel';
 // Web 权限裁决的纯逻辑（真机 bug 修复：getOrigin() 带结尾斜杠）
 import { isLoopbackOrigin, shouldGrantWebPermission } from 'appstate';
 // 语音音频换算（路线 A）：HMS 只收 16k/单声道/16位，且 writeAudio 只收 640/1280 字节
@@ -7696,6 +7697,8 @@ struct WebApp {
   private webMenuContent: ComponentContent<WebContextMenuPanelParams> | undefined = undefined;
   private webMenuResult: WebContextMenuResult | undefined = undefined;
   private webMenuClosed: boolean = true;
+  private webMenuItemSelected: boolean = false;
+  private webMenuPost: (() => void) | undefined = undefined;
   private webActionMenu: WebActionMenu | undefined = undefined;
   private desktopWebPicker: DesktopWebPicker = new DesktopWebPicker();
 
@@ -7708,6 +7711,11 @@ struct WebApp {
     } catch (e) {
       return false;
     }
+  }
+
+  @Builder
+  private webPickerPanel(params: WebPickerPanelParams, model: WebPickerPanelState) {
+    buildWebPickerPanel(params, model)
   }
 
   private openWebPicker(id: number, x: number, top: number, bottom: number, payload: string): boolean {
@@ -7724,7 +7732,7 @@ struct WebApp {
         } catch (e) {
           // Navigation can dispose the old document before the native dialog finishes.
         }
-      });
+      }, (params: WebPickerPanelParams, model: WebPickerPanelState): void => this.webPickerPanel(params, model));
   }
 
   private openWebActionMenu(id: number, x: number, y: number, category: string, rows: string): boolean {
@@ -7782,13 +7790,12 @@ struct WebApp {
     }
     menu.action = action;
     this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `native action menu select ${action}`);
-    this.dismissWebActionMenu(menu);
   }
 
   private closeWebActionMenu(): void {
     const menu = this.webActionMenu;
     this.webActionMenu = undefined;
-    if (menu !== undefined) {
+    if (menu !== undefined && menu.action < 0) {
       this.dismissWebActionMenu(menu);
     }
   }
@@ -7808,11 +7815,7 @@ struct WebApp {
       return;
     }
     menu.disposed = true;
-    try {
-      menu.content.dispose();
-    } catch (e) {
-      // 窗口销毁时系统可能已释放内容。
-    }
+    disposeOverlayContent(menu.content);
     if (this.webActionMenu !== menu) {
       return;
     }
@@ -7827,7 +7830,7 @@ struct WebApp {
 
   /**
    * 收菜单（幂等）：告诉 ArkWeb「菜单已关」（closeContextMenu），网页恢复交互。
-   * webMenuClosed 防「菜单项点击」与「onDisappear」双路径重入。
+   * webMenuClosed 让正常退场和打开失败的清理共享同一条路径。
    */
   private dismissWebContextMenu(): void {
     if (this.webMenuClosed) {
@@ -7849,21 +7852,21 @@ struct WebApp {
   private disposeWebMenuContent(): void {
     const c: ComponentContent<WebContextMenuPanelParams> | undefined = this.webMenuContent;
     this.webMenuContent = undefined;
+    this.webMenuItemSelected = false;
+    this.webMenuPost = undefined;
     if (c !== undefined) {
-      try {
-        c.dispose();
-      } catch (e) {
-        // 已释放
-      }
+      disposeOverlayContent(c);
     }
   }
 
   /**
-   * 菜单项点击的统一收尾：ArkWeb 动作 → closeContextMenu → closeMenu → 后置动作。
-   * 顺序依据 web.d.ts：result 里没有别的调用时须主动 closeContextMenu 收菜单；
-   * 我们自己的 openMenu 菜单由 closeMenu 收，onDisappear 再做幂等清场。
+   * 保留 ArkWeb 选区供当前操作使用。MenuItem 自己收起系统菜单，退场后释放
+   * ArkWeb 的菜单结果并执行打开链接、剪贴板等后置操作。
    */
   private runWebMenuItem(label: string, action?: () => void, post?: () => void): void {
+    if (this.webMenuItemSelected) return;
+    this.webMenuItemSelected = true;
+    this.webMenuPost = post;
     this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `item ${label}`);
     if (action !== undefined) {
       try {
@@ -7871,18 +7874,6 @@ struct WebApp {
       } catch (e) {
         // 动作失败也照常收菜单
       }
-    }
-    this.dismissWebContextMenu();
-    const c: ComponentContent<WebContextMenuPanelParams> | undefined = this.webMenuContent;
-    if (c !== undefined) {
-      try {
-        this.getUIContext().getPromptAction().closeMenu(c);
-      } catch (e) {
-        // 菜单已在关闭中
-      }
-    }
-    if (post !== undefined) {
-      post();
     }
   }
 
@@ -8059,8 +8050,10 @@ struct WebApp {
         },
         onDisappear: (): void => {
           this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', 'dismiss');
+          const post: (() => void) | undefined = this.webMenuPost;
           this.dismissWebContextMenu();
           this.disposeWebMenuContent();
+          if (post !== undefined) post();
         }
       };
       if (mat !== undefined) {

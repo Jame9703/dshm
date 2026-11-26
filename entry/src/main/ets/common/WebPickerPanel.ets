@@ -1,3 +1,5 @@
+import { uiMaterial } from '@kit.ArkUI';
+
 export interface WebPickerRow {
   key: string;
   label: string;
@@ -23,15 +25,23 @@ export interface WebPickerPanelParams {
   width: number;
   height: number;
   themeDark: boolean;
+  material: uiMaterial.ImmersiveMaterial | undefined;
   search: (value: string) => void;
   select: (key: string) => void;
 }
 
-const EMPTY_PAGE: WebPickerPage = { title: '', search: '', query: '', status: '', empty: '', rows: [] };
+@Observed
+export class WebPickerPanelState {
+  page: WebPickerPage;
+
+  constructor(page: WebPickerPage) {
+    this.page = page;
+  }
+}
 
 @Component
 struct WebPickerPanel {
-  @Prop page: WebPickerPage = EMPTY_PAGE;
+  @ObjectLink model: WebPickerPanelState;
   @Prop panelWidth: number = 320;
   @Prop panelHeight: number = 320;
   search: (value: string) => void = () => {};
@@ -39,7 +49,7 @@ struct WebPickerPanel {
 
   @Builder
   pickerRow(row: WebPickerRow, index: number) {
-    if (row.group.length > 0 && (index === 0 || this.page.rows[index - 1].group !== row.group)) {
+    if (row.group.length > 0 && (index === 0 || this.model.page.rows[index - 1].group !== row.group)) {
       Text(row.group)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
@@ -85,23 +95,23 @@ struct WebPickerPanel {
 
   build() {
     Column({ space: 6 }) {
-      if (this.page.title.length > 0) {
-        Text(this.page.title)
+      if (this.model.page.title.length > 0) {
+        Text(this.model.page.title)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('sys.color.font_primary'))
           .width('100%')
           .padding({ left: 10, right: 10, top: 4 })
       }
-      if (this.page.search.length > 0) {
-        TextInput({ text: this.page.query, placeholder: this.page.search })
+      if (this.model.page.search.length > 0) {
+        TextInput({ text: this.model.page.query, placeholder: this.model.page.search })
           .type(InputType.Normal)
           .height(36)
           .maxLength(300)
           .onChange((value: string): void => this.search(value))
       }
-      if (this.page.status.length > 0) {
-        Text(this.page.status)
+      if (this.model.page.status.length > 0) {
+        Text(this.model.page.status)
           .fontSize(12)
           .fontColor($r('sys.color.font_secondary'))
           .width('100%')
@@ -109,10 +119,10 @@ struct WebPickerPanel {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .padding({ left: 10, right: 10 })
       }
-      if (this.page.rows.length > 0) {
+      if (this.model.page.rows.length > 0) {
         Scroll() {
           Column() {
-            ForEach(this.page.rows, (row: WebPickerRow, index: number): void => {
+            ForEach(this.model.page.rows, (row: WebPickerRow, index: number): void => {
               this.pickerRow(row, index)
             }, (row: WebPickerRow): string => row.key)
           }
@@ -122,8 +132,8 @@ struct WebPickerPanel {
         .width('100%')
         .constraintSize({ maxHeight: this.panelHeight })
         .scrollBar(BarState.Auto)
-      } else if (this.page.empty.length > 0 && this.page.status.length === 0) {
-        Text(this.page.empty)
+      } else if (this.model.page.empty.length > 0 && this.model.page.status.length === 0) {
+        Text(this.model.page.empty)
           .fontSize(14)
           .fontColor($r('sys.color.font_secondary'))
           .width('100%')
@@ -137,10 +147,10 @@ struct WebPickerPanel {
 }
 
 @Builder
-export function buildWebPickerPanel(params: WebPickerPanelParams) {
+export function buildWebPickerPanel(params: WebPickerPanelParams, model: WebPickerPanelState) {
   WithTheme({ colorMode: params.themeDark ? ThemeColorMode.DARK : ThemeColorMode.LIGHT }) {
     WebPickerPanel({
-      page: params.page, panelWidth: params.width, panelHeight: params.height,
+      model: model, panelWidth: params.width, panelHeight: params.height,
       search: params.search, select: params.select
     })
   }

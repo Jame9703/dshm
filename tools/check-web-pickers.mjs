@@ -21,9 +21,58 @@ for (const state of [{ search: 'Search' }, { status: 'Loading' }, { title: 'Mode
   { rows: [{ ...choice.rows[0], stay: true, drill: true }] }]) {
   assert.equal(canUsePickerMenu({ ...choice, ...state }), false);
 }
-assert.match(nativePicker, /\? this\.openMenu\(dialog, left,[^]*?: this\.openPanel\(dialog,/);
-assert.match(nativePicker, /systemMaterial:\s*pickerMaterial\(true\),[^]*?getPromptAction\(\)\.openMenu\(dialog\.content/);
+assert.match(nativePicker, /\? this\.openMenu\(dialog, content, left,[^]*?: this\.openPanel\(dialog,/);
+assert.match(nativePicker, /systemMaterial:\s*dialog\.params\.material,[^]*?getPromptAction\(\)\.openMenu\(content/);
 assert.match(nativePanel, /MenuItem\(\{ content: row\.detail\.length > 0 \? row\.label \+ '\\n' \+ row\.detail : row\.label \}\)/);
+const openPanel = nativePicker.match(/private openPanel\([^]*?\n  \}/)[0];
+assert.match(openPanel, /promptAction\.CustomDialogOptions[^]*?builder:[^]*?systemMaterial:\s*dialog\.params\.material,[^]*?\.openCustomDialog\(options\)/);
+assert.match(nativePanel, /@ObjectLink model: WebPickerPanelState/);
+assert.match(nativePicker, /dialog\.panel\.page = page/);
+assert.doesNotMatch(shell.match(/private selectWebActionMenuItem\([^]*?\n  \}/)[0], /dismissWebActionMenu/);
+assert.doesNotMatch(shell.match(/private runWebMenuItem\([^]*?\n  \}/)[0], /closeMenu|dismissWebContextMenu/);
+
+const desktopScript = stripTypeScriptTypes(nativePicker.replace(/^import .*;$|^export /gm, ''));
+const pendingDisposals = [];
+const DesktopWebPicker = runInNewContext(desktopScript + '\nDesktopWebPicker', {
+  setTimeout: callback => pendingDisposals.push(callback)
+});
+for (const menu of [true, false]) {
+  const picker = new DesktopWebPicker();
+  const calls = [];
+  const dialog = {
+    id: 1, opened: true, closing: false, panelId: 42,
+    params: { page: { rows: [{ key: 'item', disabled: false, stay: false }] } },
+    panel: menu ? undefined : { page: { title: 'Options' } },
+    menuContent: menu ? { dispose() { calls.push('dispose'); } } : undefined,
+    ui: { getPromptAction: () => ({
+      closeMenu() { calls.push('close-menu'); return Promise.resolve(); },
+      closeCustomDialog(id) { assert.equal(id, 42); calls.push('close-panel'); }
+    }) },
+    send(_id, event, value) { calls.push(event + ':' + value); }
+  };
+  picker.active = dialog;
+  if (!menu) {
+    const panel = dialog.panel;
+    assert.equal(picker.update(1, 'Model list||||\n0|item|Model||'), true);
+    assert.equal(dialog.panel, panel);
+    assert.equal(panel.page.title, 'Model list');
+    assert.deepEqual(calls, []);
+  }
+  picker.select(1, 'item');
+  picker.select(1, 'item');
+  picker.close(1);
+  assert.equal(picker.update(1, 'late while closing'), true);
+  assert.deepEqual(calls, menu ? [] : ['close-panel']);
+  picker.finish(dialog);
+  picker.finish(dialog);
+  assert.equal(picker.update(1, 'late after closing'), true);
+  assert.deepEqual(calls, [...(menu ? [] : ['close-panel']), 'select:item']);
+  assert.equal(pendingDisposals.length, menu ? 1 : 0);
+  if (menu) {
+    pendingDisposals.shift()();
+    assert.equal(calls.at(-1), 'dispose');
+  }
+}
 
 function fixture(script, accept = true) {
   const events = [];
@@ -84,6 +133,7 @@ function fixture(script, accept = true) {
       }
       throw new Error('Native picker layout did not settle');
     },
+    replayLayout() { frame[0](); },
     unmount() { cleanups.forEach(cleanup => cleanup()); }
   };
 }
@@ -127,7 +177,16 @@ function verify(sourceLiteral) {
   picker.controller.event(id, 'select', 'a|b');
   assert.deepEqual(chosen, ['drill', 'model']);
   assert.equal(closed, 1);
-  assert.deepEqual(picker.render(false, models, close), [false, false]);
+  assert.deepEqual(picker.render(false, models, close), [false]);
+
+  const reentrant = fixture(script);
+  const leaf = { rows: [{ key: 'done', label: 'Done', run: () => {} }] };
+  reentrant.render(true, leaf, () => reentrant.replayLayout());
+  reentrant.controller.event(reentrant.events[0].id, 'select', 'done');
+  assert.deepEqual(reentrant.events.map(event => event.type), ['open'], 'A stale layout must not reopen a closing picker');
+  reentrant.render(false, leaf, close);
+  reentrant.render(true, leaf, close);
+  assert.deepEqual(reentrant.events.map(event => event.type), ['open', 'open'], 'A new user gesture can open another picker');
 
   const rejection = fixture(script, false);
   assert.deepEqual(rejection.render(true, models, close), [false, true]);
@@ -152,7 +211,8 @@ for (const method of ['openWebPicker', 'updateWebPicker', 'closeWebPicker']) {
 verify(literal);
 if (process.argv.includes('--self-test')) {
   for (const mutation of [
-    literal.replace("return open && phase === 'web';", 'return open;'),
+    literal.replace('return open && showWeb;', 'return open;'),
+    literal.replace("phase.current = 'closed';", ''),
     literal.replace('entry.id !== id', 'false'),
     literal.replace('active.wire === payload', 'false')
   ]) {
