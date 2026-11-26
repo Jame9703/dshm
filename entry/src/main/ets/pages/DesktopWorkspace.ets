@@ -1,8 +1,11 @@
-import { parseTarget } from 'connection';
+import { common } from '@kit.AbilityKit';
+import { getString, parseTarget } from 'connection';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
+import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { dialogMaterial, PickOutcome, pickDocument, pickFolder } from 'platform';
+import { dialogMaterial, PickOutcome, pickDocument, pickFolder, readDocumentUri, uriFromPath } from 'platform';
 import { harmonySheetOptions } from '../view/NativePrimitives';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
@@ -41,8 +44,9 @@ struct DesktopWorkspace {
   @State private expandedIds: string[] = [];
   @State private sidebarCollapsed: boolean = false;
   @State private sidebarWidth: number = 280;
-  @State private terminalWidth: number = 340;
+  @State private rightPaneWidth: number = 340;
   @State private terminalSession: string = '';
+  @State private filesSession: string = '';
   @State private searchOpen: boolean = false;
   @State private query: string = '';
   @State private selectedWorkspaceTitle: ResourceStr = '';
@@ -97,6 +101,10 @@ struct DesktopWorkspace {
   }
 
   onBackPress(): boolean {
+    if (this.filesSession.length > 0 && this.filesSession === this.sessionId && this.panel === 'session') {
+      this.filesSession = '';
+      return true;
+    }
     if (this.terminalSession.length > 0 && this.terminalSession === this.sessionId && this.panel === 'session') {
       this.terminalSession = '';
       return true;
@@ -418,6 +426,41 @@ struct DesktopWorkspace {
       } catch (_) {
         return '无法读取所选文件';
       }
+    });
+  }
+
+  private attachWorkspaceFile(path: string, name: string): void {
+    const data = this.data;
+    if (data === undefined) {
+      return;
+    }
+    this.chatAction(async (id: string): Promise<string> => {
+      const response = await data.actions.call('workspaceFiles/stat', {
+        'workspaceFileScopeId': id, 'path': path
+      });
+      if (!response.ok) {
+        return desktopHostProblem(response);
+      }
+      const absolutePath = getString(response.value, 'absolutePath') ?? '';
+      const uri = absolutePath.startsWith('/') ? uriFromPath(absolutePath) : '';
+      if (!uri) {
+        return '无法访问宿主返回的文件';
+      }
+      const file = await readDocumentUri(uri);
+      if (file.outcome !== PickOutcome.PICKED) {
+        return file.reason;
+      }
+      if (data !== this.data) {
+        return '';
+      }
+      const uploaded = await data.conversation.upload(id, name, file.base64, file.bytes, file.mediaType);
+      if (typeof uploaded === 'string') {
+        return uploaded;
+      }
+      if (data === this.data) {
+        this.setAttachments(id, [...(this.attachmentsBySession.get(id) ?? []), uploaded]);
+      }
+      return '';
     });
   }
 
@@ -986,9 +1029,15 @@ struct DesktopWorkspace {
           onStop: (): void => this.stopMessage(),
           onEarlier: (): void => this.data?.conversation.loadEarlier(),
           onWeb: (): void => { this.openWeb(false); },
+          filesOpen: this.filesSession === this.sessionId,
+          onFiles: (): void => {
+            this.filesSession = this.filesSession === this.sessionId ? '' : this.sessionId;
+            this.terminalSession = '';
+          },
           terminalOpen: this.terminalSession === this.sessionId,
           onTerminal: (): void => {
             this.terminalSession = this.terminalSession === this.sessionId ? '' : this.sessionId;
+            this.filesSession = '';
           },
           onModel: (selection: ModelSelection): void => this.chooseModel(selection),
           onPermission: (preset: string): void => {
@@ -999,7 +1048,18 @@ struct DesktopWorkspace {
           }
         })
         .layoutWeight(1)
-        if (this.terminalSession === this.sessionId && this.data !== undefined) {
+        if (this.filesSession === this.sessionId && this.data !== undefined) {
+          Column() {
+            DesktopFilesPane({
+              host: this.data.actions,
+              ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
+              sessionId: this.sessionId,
+              onHide: (): void => { this.filesSession = ''; },
+              onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); }
+            })
+          }
+          .width(this.rightPaneWidth).height('100%')
+        } else if (this.terminalSession === this.sessionId && this.data !== undefined) {
           Column() {
             DesktopTerminalPane({
               host: this.data.actions,
@@ -1008,7 +1068,7 @@ struct DesktopWorkspace {
               onHidePanel: (): void => { this.terminalSession = ''; }
             })
           }
-          .width(this.terminalWidth).height('100%')
+          .width(this.rightPaneWidth).height('100%')
         }
       } else {
         this.SessionPane()
@@ -1106,7 +1166,7 @@ struct DesktopWorkspace {
       .onAreaChange((_, area: Area): void => {
         this.workbenchWidth = Number(area.width);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
-        this.terminalWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
+        this.rightPaneWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })
       .bindSheet(this.renameOpen, this.RenameSheet(), harmonySheetOptions((): void => {
         this.renameOpen = false;

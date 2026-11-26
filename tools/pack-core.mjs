@@ -1578,6 +1578,16 @@ function ensureRipgrepPlatformPackage() {
   rmSync(dst, { recursive: true, force: true });
   cpSync(srcPkg, dst, { recursive: true, force: true });
   rmSync(tmp, { recursive: true, force: true });
+  const resolver = join(STAGE, 'node_modules', '@vscode', 'ripgrep', 'lib', 'index.js');
+  const upstream = 'const platformPkg = `@vscode/ripgrep-${process.platform}-${arch}`;';
+  const mapped = upstream.replace('process.platform', "(process.platform === 'openharmony' ? 'linux' : process.platform)");
+  const source = readFileSync(resolver, 'utf8');
+  if (!source.includes(mapped)) {
+    if (source.split(upstream).length !== 2) {
+      die('ripgrep 平台解析补丁：未找到唯一的上游平台包名');
+    }
+    writeFileSync(resolver, source.replace(upstream, mapped), 'utf8');
+  }
   log('[pack-core]   ripgrep 平台包已注入：@vscode/ripgrep-linux-arm64/bin/rg'
     + `（${rgSizeMb} MB 静态 ELF，fs-search 的 spawn 目标）`);
 }

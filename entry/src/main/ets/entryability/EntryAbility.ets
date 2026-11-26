@@ -1615,6 +1615,9 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
     // 每个 WindowStage 各有一份，后开的会话窗不会覆盖主窗的启动角色。
     const pageStorage: LocalStorage = new LocalStorage();
     pageStorage.setOrCreate<boolean>('dshStartupMainWindow', this.launchParams.kind === WindowKind.MAIN);
+    if (desktopForced && this.launchParams.kind === WindowKind.MAIN) {
+      pageStorage.setOrCreate<common.UIAbilityContext>('dshDesktopPreviewContext', this.context);
+    }
     const nativeWorkspace: boolean = desktopForced && this.launchParams.kind === WindowKind.MAIN &&
       this.launchParams.action.length === 0 && this.launchParams.routeJson.length === 0 &&
       desktopWorkspaceEnabled(this.context);

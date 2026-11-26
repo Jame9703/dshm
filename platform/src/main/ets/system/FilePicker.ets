@@ -847,11 +847,11 @@ export async function pickDocument(context: common.Context): Promise<PickedFile>
   if (uris.length === 0) {
     return outcomeOf(PickOutcome.CANCELLED, '', '');
   }
-  return await readPickedFile(uris[0]);
+  return await readDocumentUri(uris[0]);
 }
 
-/** 读取一个已选中的 URI 并把内容编码成 base64。 */
-async function readPickedFile(uri: string): Promise<PickedFile> {
+/** 读取一个已获访问权限的文件 URI 并把内容编码成 base64。 */
+export async function readDocumentUri(uri: string): Promise<PickedFile> {
   const name: string = nameOfUri(uri);
   let file: fs.File | undefined = undefined;
   try {

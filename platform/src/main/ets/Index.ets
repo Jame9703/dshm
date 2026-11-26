@@ -91,6 +91,7 @@ export {
   MAX_ATTACHMENT_BYTES,
   PickOutcome,
   pickDocument,
+  readDocumentUri,
   pickFolder,
   // 【2026-10-03】"用户可见目录 + agent 可读写删"用到的两件设备能力
   // （见 dsh-移植研究/30-DSHM文件能力植入-侦察与设计.md）。

@@ -15,6 +15,7 @@ export struct DesktopConversationPane {
   @Prop attachments: PendingAttachment[] = [];
   @Prop busy: boolean = false;
   @Prop terminalOpen: boolean = false;
+  @Prop filesOpen: boolean = false;
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
   onDraft: (value: string) => void = () => {};
@@ -25,6 +26,7 @@ export struct DesktopConversationPane {
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
   onTerminal: () => void = () => {};
+  onFiles: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
   onPermission: (preset: string) => void = () => {};
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
@@ -210,6 +212,11 @@ export struct DesktopConversationPane {
           }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          SymbolGlyph($r('sys.symbol.folder')).fontSize(18).fontColor([$r('sys.color.font_primary')])
+        }
+          .key('desktopWorkspaceFiles').width(34).height(34).padding(0).focusOnTouch(false)
+          .accessibilityText('工作区文件').accessibilitySelected(this.filesOpen).onClick(this.onFiles)
         Button('终端', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(34).focusOnTouch(false)
           .accessibilitySelected(this.terminalOpen)
