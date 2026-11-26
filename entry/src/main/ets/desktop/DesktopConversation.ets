@@ -55,6 +55,8 @@ export interface DesktopConversationSnapshot {
   loading: boolean;
   hasEarlier: boolean;
   running: boolean;
+  historyLoaded: boolean;
+  receivedTurn: number;
   waitingForInput: boolean;
   models: ModelOption[];
   modelsLoading: boolean;
@@ -117,6 +119,8 @@ export class DesktopConversation {
   private cursor: number = -1;
   private earliest: number = -1;
   private running: boolean = false;
+  private historyLoaded: boolean = false;
+  private receivedTurn: number = 0;
   private waitingForInput: boolean = false;
   private attempt: string = '';
   private partial: string = '';
@@ -189,6 +193,8 @@ export class DesktopConversation {
     this.pageLoading = false;
     this.error = '';
     this.running = false;
+    this.historyLoaded = false;
+    this.receivedTurn = 0;
     this.waitingForInput = false;
     this.attempt = '';
     this.partial = '';
@@ -527,6 +533,7 @@ export class DesktopConversation {
     this.pageLoading = false;
     if (result?.ok) {
       const page: SessionPageValue = projectSessionPage(result.value);
+      this.historyLoaded = true;
       const cursor = getNumber(result.value, 'cursor') ?? -1;
       if (earlier || cursor >= this.cursor) {
         this.addRecords(page.records, earlier || !this.loading, page.hasMore);
@@ -562,6 +569,11 @@ export class DesktopConversation {
         this.earliest = seq;
       }
       const event = getRecord(record, 'event');
+      const eventType = getString(event, 'type');
+      if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
+        const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
+        this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
+      }
       observeDesktopArtifacts(this.turnArtifacts, event);
       this.toolLog.observe(record);
       observeDesktopCommand(this.commandRecords, event);
@@ -771,6 +783,7 @@ export class DesktopConversation {
   private onFrame(frame: Object): void {
     const type = getString(frame, 'type');
     if (type === 'snapshot') {
+      this.historyLoaded = true;
       const cursor = getNumber(frame, 'cursor') ?? -1;
       if (cursor >= this.cursor) {
         this.addRecords(getArray(frame, 'records') ?? [], !this.loading, getBoolean(frame, 'hasMore') === true);
@@ -862,6 +875,7 @@ export class DesktopConversation {
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
+      historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,
       models: this.models, modelsLoading: this.modelsLoading, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,

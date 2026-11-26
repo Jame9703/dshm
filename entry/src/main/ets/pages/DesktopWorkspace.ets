@@ -1,4 +1,6 @@
 import { common } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
+import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getString, parseTarget } from 'connection';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
@@ -16,13 +18,13 @@ import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
   readDocumentUri, uriFromPath } from 'platform';
-import { harmonySheetOptions } from '../view/NativePrimitives';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
 import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, PendingAttachment, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
 import type { DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
@@ -70,16 +72,20 @@ struct DesktopWorkspace {
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
-  @State private panel: string = 'session';
+  @State @Watch('syncReading') private panel: string = 'session';
   @State private workspaceBusy: boolean = false;
   @State private forking: boolean = false;
   private pendingForkId: string = '';
   private pendingForkSource: string = '';
   @State private archived: SessionListItem[] = [];
   @State private pinned: string[] = [];
-  @State private archiveOpen: boolean = false;
+  @State @Watch('syncReading') private archiveOpen: boolean = false;
+  @State private unreadSessions: DesktopUnreadSession[] = [];
+  @State private readingReady: boolean = false;
   @State private renameOpen: boolean = false;
   @State private renameDraft: string = '';
+  private renameDialog: number = -1;
+  private renameDialogVersion: number = 0;
   private renameId: string = '';
   private renameWorkspace: boolean = false;
   @State private chat: DesktopConversationSnapshot | undefined = undefined;
@@ -108,11 +114,21 @@ struct DesktopWorkspace {
   private accountOpening: boolean = false;
   private accountDialog: number = -1;
   private pageActive: boolean = false;
+  private pageVisible: boolean = false;
+  private readingWindow?: window.Window;
+  private readingFocused: boolean = false;
+  private readonly readingWindowEvent = (event: window.WindowEventType): void => {
+    this.readingFocused = event === window.WindowEventType.WINDOW_ACTIVE ||
+      (event === window.WindowEventType.WINDOW_SHOWN && this.readingWindow?.isFocused() === true);
+    this.syncReading();
+  };
   private measured: boolean = false;
 
   aboutToAppear(): void {
     this.active = true;
     this.pageActive = true;
+    this.pageVisible = true;
+    this.attachReadingWindow();
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
       this.appearance = desktopWorkspaceAppearance(context);
@@ -120,14 +136,49 @@ struct DesktopWorkspace {
     this.onHostChanged();
   }
 
+  private attachReadingWindow(): void {
+    if (this.readingWindow !== undefined) { return; }
+    const name = this.getUIContext().getWindowName();
+    if (name !== undefined) {
+      try {
+        const owner = window.findWindow(name);
+        owner.on('windowEvent', this.readingWindowEvent);
+        this.readingWindow = owner;
+        this.readingFocused = owner.isFocused();
+      } catch (_) {}
+    }
+  }
+
   aboutToDisappear(): void {
     this.active = false;
     this.pageActive = false;
+    this.pageVisible = false;
+    try { this.readingWindow?.off('windowEvent', this.readingWindowEvent); } catch (_) {}
+    this.readingWindow = undefined;
     this.closeAccount();
     this.closeLogDialog();
     this.closeFeedback();
+    this.closeRename();
     this.data?.stop();
     this.data = undefined;
+  }
+
+  onPageShow(): void {
+    this.pageVisible = true;
+    this.attachReadingWindow();
+    this.syncReading();
+  }
+
+  onPageHide(): void {
+    this.pageVisible = false;
+    this.syncReading();
+  }
+
+  private syncReading(): void {
+    const chat = this.chat?.sessionId === this.sessionId ? this.chat : undefined;
+    const visible = this.pageActive && this.pageVisible && this.panel === 'session' && !this.archiveOpen &&
+      this.readingFocused;
+    this.data?.reading.show(this.sessionId, chat?.historyLoaded === true, chat?.receivedTurn ?? 0, visible);
   }
 
   onBackPress(): boolean {
@@ -175,6 +226,8 @@ struct DesktopWorkspace {
     this.error = '';
     this.chat = undefined;
     this.interactions = [];
+    this.unreadSessions = [];
+    this.readingReady = false;
     this.shownPlanReviews.clear();
     this.closePlan();
     this.closeFiles();
@@ -197,6 +250,7 @@ struct DesktopWorkspace {
       this.ready = true;
     }, (snapshot: DesktopConversationSnapshot): void => {
       this.chat = snapshot;
+      this.syncReading();
     }, (items: DesktopInteraction[]): void => {
       this.interactions = items;
       const review = items.find((row: DesktopInteraction): boolean =>
@@ -205,6 +259,11 @@ struct DesktopWorkspace {
         this.shownPlanReviews.add(review.id);
         this.showPlan(review.planReview.document);
       }
+    }, (items: DesktopUnreadSession[], ready: boolean): void => {
+      this.unreadSessions = items;
+      this.readingReady = ready;
+    }, (run: () => void): void => {
+      this.getUIContext().postFrameCallback(new StartupFrameCallback(run));
     });
     this.data.start(this.hostUrl);
   }
@@ -262,10 +321,43 @@ struct DesktopWorkspace {
   }
 
   private showRename(id: string, workspace: boolean, title: ResourceStr): void {
+    if (this.renameOpen || this.workspaceBusy) { return; }
     this.renameId = id;
     this.renameWorkspace = workspace;
     this.renameDraft = this.accessibilityLabel(title);
     this.renameOpen = true;
+    this.openRename();
+  }
+
+  private async openRename(): Promise<void> {
+    const version = ++this.renameDialogVersion;
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    try {
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.RenameDialog(); },
+        alignment: DialogAlignment.Center, width: Math.max(220, Math.min(440, this.workbenchWidth - 32)),
+        autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          if (version === this.renameDialogVersion) {
+            this.renameDialog = -1;
+            this.renameOpen = false;
+            this.renameDialogVersion++;
+          }
+        } });
+      if (this.pageActive && version === this.renameDialogVersion) { this.renameDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (version === this.renameDialogVersion) { this.renameOpen = false; }
+    }
+  }
+
+  private closeRename(): void {
+    const id = this.renameDialog;
+    this.renameDialogVersion++;
+    this.renameDialog = -1;
+    this.renameOpen = false;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
   }
 
   private async rename(): Promise<void> {
@@ -275,9 +367,10 @@ struct DesktopWorkspace {
     }
     const id = this.renameId;
     const workspace = this.renameWorkspace;
+    const version = this.renameDialogVersion;
     if (await this.manage(workspace ? 'workspace/rename' : 'session/rename', workspace ?
       { 'workspaceId': id, 'title': title } : { 'sessionId': id, 'title': title })) {
-      this.renameOpen = false;
+      if (version === this.renameDialogVersion) { this.closeRename(); }
     }
   }
 
@@ -318,17 +411,76 @@ struct DesktopWorkspace {
 
   private sessionActions(session: SessionListItem): MenuElement[] {
     const pinned = this.pinned.includes(session.id);
+    const unread = this.unreadSession(session.id) !== undefined;
     return [
-      { value: '重命名会话', action: (): void => { this.showRename(session.id, false, this.sessionLabel(session)); } },
-      { value: pinned ? '取消置顶' : '置顶会话', action: (): void => {
+      { value: pinned ? '取消置顶' : '置顶会话',
+        icon: pinned ? $r('app.media.dsh_session_pin_fill') : $r('app.media.dsh_session_pin_outline'), action: (): void => {
         this.manage(pinned ? 'workspace/unpinSession' : 'workspace/pinSession', { 'sessionId': session.id });
       } },
+      { value: '重命名会话', icon: $r('app.media.dsh_dock_edit'),
+        action: (): void => { this.showRename(session.id, false, this.sessionLabel(session)); } },
+      { value: unread ? '标为已读' : '标为未读', enabled: this.readingReady,
+        icon: unread ? $r('app.media.dsh_session_mail_read_outline') : $r('app.media.dsh_session_mail_unread_outline'),
+        action: (): void => { this.markReading(session.id); } },
       { value: '分叉会话', icon: $r('app.media.dsh_session_branch_outline'),
         action: (): void => { this.forkFrom(session.id); } },
-      { value: '归档会话', action: (): void => {
+      { value: '复制 Session ID', icon: $r('app.media.dsh_session_copy'),
+        action: (): void => { this.copySessionId(session.id); } },
+      { value: '归档会话', icon: $r('app.media.dsh_session_archive_outline'), action: (): void => {
         this.manage('workspace/archiveSession', { 'sessionId': session.id });
       } }
     ];
+  }
+
+  private unreadSession(sessionId: string): DesktopUnreadSession | undefined {
+    return this.unreadSessions.find((item: DesktopUnreadSession): boolean => item.id === sessionId);
+  }
+
+  private async markReading(sessionId: string): Promise<void> {
+    const data = this.data;
+    if (data === undefined) { return; }
+    const problem = await data.reading.mark(sessionId);
+    if (problem && this.data === data && this.pageActive) {
+      this.getUIContext().getPromptAction().showToast({ message: problem });
+    }
+  }
+
+  private async copySessionId(sessionId: string): Promise<void> {
+    const copied = await copyText(sessionId);
+    if (this.pageActive) {
+      this.getUIContext().getPromptAction().showToast({ message: copied ? 'Session ID 已复制' : '复制失败，请重试' });
+    }
+  }
+
+  private focusSearch(): void {
+    this.sidebarCollapsed = false;
+    this.searchOpen = true;
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      if (this.pageActive && this.searchOpen) {
+        this.getUIContext().getFocusController().requestFocus('desktopWorkspaceSearch');
+      }
+    }));
+  }
+
+  private workspaceShortcut(key: string): void {
+    if (!this.pageActive || this.renameOpen || this.accountOpening || this.accountDialog >= 0 ||
+      this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0) { return; }
+    if (key === 'N') { this.newSession(); return; }
+    if (key === 'K') { this.focusSearch(); return; }
+    if (key === 'O') { this.addWorkspace(); return; }
+    if (this.panel !== 'session' || this.archiveOpen || !this.sessionId) { return; }
+    const session = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
+      group.id === this.workspaceId)?.sessions.find((row: SessionListItem): boolean => row.id === this.sessionId);
+    if (session === undefined || session.blank) { return; }
+    const detailOpen = this.planSession === session.id || this.filesSession === session.id ||
+      this.changesTarget?.sessionId === session.id || this.terminalSession === session.id;
+    if (key === 'F') {
+      this.forkFrom(session.id);
+    } else if (key === 'G' && !detailOpen) {
+      this.showRename(session.id, false, this.sessionLabel(session));
+    } else if (key === 'U' && !detailOpen && this.readingReady) {
+      this.markReading(session.id);
+    }
   }
 
   private filterGroups(value: string): void {
@@ -1085,9 +1237,11 @@ struct DesktopWorkspace {
       .width(28).height(24).borderRadius(5).backgroundColor(Color.Transparent).focusOnTouch(false)
       .accessibilityText($r('app.string.desktop_experiment_title'))
       .bindMenu(this.sidebarActions(true), desktopMenuOptions(Placement.BottomLeft))
+      .keyboardShortcut('O', [ModifierKey.CTRL], (): void => this.workspaceShortcut('O'))
       Blank()
     }
     .width('100%').height(38).padding({ left: 10, right: 132 })
+    .keyboardShortcut('F', [ModifierKey.CTRL, ModifierKey.ALT], (): void => this.workspaceShortcut('F'))
   }
 
   @Builder
@@ -1119,15 +1273,25 @@ struct DesktopWorkspace {
     Row() {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 6 }) {
+          Stack() {
+            if (session.running) {
+              LoadingProgress().width(13).height(13).color($r('sys.color.brand'))
+            } else if (!session.blank && this.unreadSession(session.id) !== undefined) {
+              Circle().width(7).height(7).fill(this.unreadSession(session.id)?.failed === true ?
+                $r('sys.color.warning') : $r('sys.color.brand')).key('desktopSessionUnread-' + session.id)
+                .accessibilityText(this.unreadSession(session.id)?.failed === true ? '失败' : '未读')
+            }
+          }.width(14)
           Text(this.sessionLabel(session)).fontSize(14).fontColor($r('sys.color.font_primary'))
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (session.running) {
-            LoadingProgress().width(13).height(13).color($r('sys.color.brand'))
+          if (this.pinned.includes(session.id)) {
+            Image($r('app.media.dsh_session_pin_fill')).width(14).height(14).supportSvg2(true)
+              .draggable(false).accessibilityText('已置顶')
           }
         }
         .width('100%')
       }
-      .layoutWeight(1).height(32).padding({ left: 30, right: 4 }).borderRadius(8)
+      .layoutWeight(1).height(32).padding({ left: 10, right: 4 }).borderRadius(8)
       .backgroundColor(Color.Transparent).focusOnTouch(false)
       .accessibilityText(this.accessibilityLabel(this.sessionLabel(session)))
       .accessibilitySelected(this.sessionId === session.id)
@@ -1136,7 +1300,12 @@ struct DesktopWorkspace {
         this.panel = 'session';
         this.archiveOpen = false;
       })
-      this.RowMenu('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)), this.sessionActions(session))
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        this.MenuDots()
+      }
+      .width(32).height(32).borderRadius(7).backgroundColor(Color.Transparent)
+      .focusOnTouch(false).accessibilityText('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)))
+      .enabled(!this.workspaceBusy).bindMenu(this.sessionActions(session), desktopMenuOptions(Placement.BottomRight))
     }
     .width('100%').borderRadius(8)
     .backgroundColor(this.sessionId === session.id ? $r('app.color.workspace_selection') : Color.Transparent)
@@ -1153,20 +1322,20 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private RenameSheet() {
+  private RenameDialog() {
     Column({ space: 12 }) {
       Text(this.renameWorkspace ? '重命名工作区' : '重命名会话').fontSize(20).fontWeight(FontWeight.Medium)
-      TextInput({ text: this.renameDraft, placeholder: '名称' })
+      TextInput({ text: this.renameDraft, placeholder: '名称' }).key('desktopWorkspaceRenameInput').defaultFocus(true)
         .onChange((value: string): void => { this.renameDraft = value; })
         .onSubmit((): void => { this.rename(); })
       Row({ space: 8 }) {
         Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.workspaceBusy)
-          .onClick((): void => { this.renameOpen = false; })
+          .onClick((): void => { this.closeRename(); })
         Button('保存').enabled(!this.workspaceBusy && this.renameDraft.trim().length > 0)
           .onClick((): void => { this.rename(); })
       }
     }
-    .width('100%').padding(18)
+    .width('100%').padding(22)
   }
 
   @Builder
@@ -1185,8 +1354,18 @@ struct DesktopWorkspace {
           ListItem() {
             Row({ space: 10 }) {
               Text(this.sessionLabel(session)).fontSize(15).layoutWeight(1).maxLines(1)
-              Button('恢复会话', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.workspaceBusy)
+              Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+                Row({ space: 6 }) {
+                  Image($r('app.media.dsh_session_unarchive_outline')).width(16).height(16).supportSvg2(true)
+                    .draggable(false).accessibilityLevel('no')
+                  Text('恢复会话')
+                }
+              }.enabled(!this.workspaceBusy).accessibilityText('恢复会话')
                 .onClick((): void => { this.manage('workspace/unarchiveSession', { 'sessionId': session.id }); })
+              this.RowMenu('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)), [
+                { value: '复制 Session ID', icon: $r('app.media.dsh_session_copy'),
+                  action: (): void => { this.copySessionId(session.id); } }
+              ])
             }
             .width('100%').padding(8).borderRadius(8).backgroundColor($r('app.color.workspace_panel'))
           }
@@ -1215,6 +1394,7 @@ struct DesktopWorkspace {
     .width('100%').padding({ left: 8 }).margin({ top: 14 })
     if (this.searchOpen) {
       TextInput({ text: this.query, placeholder: $r('app.string.desktop_experiment_search') })
+        .key('desktopWorkspaceSearch')
         .height(32).borderRadius(8).fontSize(14).backgroundColor($r('app.color.workspace_selection'))
         .onChange((value: string): void => this.filterGroups(value))
     }
@@ -1276,6 +1456,7 @@ struct DesktopWorkspace {
       }
       .width('100%').height(64).padding({ left: this.sidebarCollapsed ? 0 : 6 })
       .justifyContent(this.sidebarCollapsed ? FlexAlign.Center : FlexAlign.Start)
+      .keyboardShortcut('G', [ModifierKey.CTRL, ModifierKey.ALT], (): void => this.workspaceShortcut('G'))
       this.SidebarShortcut($r('sys.symbol.plus_circle'), $r('app.string.action_new_session'),
         (): void => { this.newSession(); }, true)
       Blank().height(12)
@@ -1298,6 +1479,7 @@ struct DesktopWorkspace {
     .padding({ left: this.sidebarCollapsed ? 8 : 10, right: this.sidebarCollapsed ? 8 : 10, bottom: 8 })
     .backgroundColor($r('app.color.workspace_sidebar'))
     .border({ width: { right: 1 }, color: $r('app.color.workspace_border') })
+    .keyboardShortcut('K', [ModifierKey.CTRL], (): void => this.workspaceShortcut('K'))
   }
 
   @Builder
@@ -1559,16 +1741,15 @@ struct DesktopWorkspace {
           }
         }
         .width('100%').layoutWeight(1)
+        .keyboardShortcut('U', [ModifierKey.CTRL, ModifierKey.SHIFT], (): void => this.workspaceShortcut('U'))
       }
       .width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
+      .keyboardShortcut('N', [ModifierKey.CTRL], (): void => this.workspaceShortcut('N'))
       .onAreaChange((_, area: Area): void => {
         this.workbenchWidth = Number(area.width);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
         this.rightPaneWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })
-      .bindSheet(this.renameOpen, this.RenameSheet(), harmonySheetOptions((): void => {
-        this.renameOpen = false;
-      }, SheetSize.MEDIUM))
     }
   }
 }

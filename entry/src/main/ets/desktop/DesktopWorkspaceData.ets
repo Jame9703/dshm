@@ -10,6 +10,8 @@ import type { DesktopInteraction } from './DesktopInteractions';
 import { DesktopConversation } from './DesktopConversation';
 import type { DesktopConversationSnapshot } from './DesktopConversation';
 import { desktopForkTitle } from './DesktopReplyTimeline';
+import { DesktopSessionReading } from './DesktopSessionReading';
+import type { DesktopUnreadSession } from './DesktopSessionReading';
 
 export interface DesktopForkResult {
   id: string;
@@ -50,6 +52,7 @@ export class DesktopWorkspaceData {
   readonly conversation: DesktopConversation;
   readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
+  readonly reading: DesktopSessionReading;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private active: boolean = true;
   private workspaceReady: boolean = false;
@@ -65,8 +68,10 @@ export class DesktopWorkspaceData {
 
   constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
     onConversation: (snapshot: DesktopConversationSnapshot) => void,
-    onInteractions: (items: DesktopInteraction[]) => void) {
+    onInteractions: (items: DesktopInteraction[]) => void,
+    onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void) {
     this.listener = listener;
+    this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.conversation = new DesktopConversation(this.connection, onConversation,
       (): void => { this.refreshSessions(); }, this.interactions, this.actions);
@@ -84,6 +89,7 @@ export class DesktopWorkspaceData {
     const eventSink: EventSink = {
       onReady: (): void => {
         this.openWorkspaceStream();
+        this.reading.connect();
         this.conversation.invalidateCommands();
         this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
@@ -109,6 +115,7 @@ export class DesktopWorkspaceData {
     }
     if (opened) {
       this.openWorkspaceStream();
+      this.reading.connect();
     }
   }
 
@@ -208,6 +215,7 @@ export class DesktopWorkspaceData {
 
   stop(): void {
     this.active = false;
+    this.reading.close();
     this.conversation.close();
     this.interactions.select('');
     this.interactions.resetEvents();
