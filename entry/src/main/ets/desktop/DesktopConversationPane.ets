@@ -18,6 +18,9 @@ import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalett
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { activeDesktopReference, desktopReferenceChoices, desktopReferenceCrumbs, desktopReferenceText,
+  desktopSettledReference } from './DesktopReferences';
+import type { DesktopReferenceChoice, DesktopReferenceCrumb, DesktopReferenceToken } from './DesktopReferences';
 import { DesktopGoalBar } from './DesktopGoalBar';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
@@ -33,6 +36,7 @@ export struct DesktopConversationPane {
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
+  @Prop sessionDirectory: string = '';
   @Prop draft: string = '';
   @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: DesktopDraftAttachment[] = [];
@@ -103,7 +107,16 @@ export struct DesktopConversationPane {
   private readonly composer: TextAreaController = new TextAreaController();
   private readonly paletteScroller: Scroller = new Scroller();
   private slashFrame: number = -1;
+  private triggerText?: string;
+  private triggerCaret?: number;
   private slashToken?: DesktopSlashToken;
+  private referenceToken?: DesktopReferenceToken;
+  private referenceTimer: number = -1;
+  private referenceVersion: number = 0;
+  @State private referenceRows: DesktopReferenceChoice[] = [];
+  @State private referenceTrail: DesktopReferenceCrumb[] = [];
+  @State private referenceLoading: boolean = false;
+  @State private referenceError: string = '';
   private paletteDraft: string = '';
   private dismissedDraft?: string;
   @State private palette: string = '';
@@ -117,6 +130,7 @@ export struct DesktopConversationPane {
 
   aboutToDisappear(): void {
     this.cancelSlashRefresh();
+    this.cancelReferenceLookup();
     if (this.scrollTimer !== -1) {
       clearTimeout(this.scrollTimer);
       this.scrollTimer = -1;
@@ -154,29 +168,132 @@ export struct DesktopConversationPane {
     this.cancelSlashRefresh();
     this.palette = '';
     this.slashToken = undefined;
+    this.closeReferences();
     this.riskPreset = '';
     this.agreed = false;
   }
 
-  private cancelSlashRefresh(): void {
-    if (this.slashFrame !== -1) { clearTimeout(this.slashFrame); this.slashFrame = -1; }
+  private cancelReferenceLookup(): void {
+    this.referenceVersion++;
+    if (this.referenceTimer !== -1) {
+      clearTimeout(this.referenceTimer);
+      this.referenceTimer = -1;
+    }
   }
 
-  private refreshSlash(): void {
-    if (this.slashFrame !== -1 || this.palette === 'model' || this.palette === 'permission') { return; }
-    // ArkUI may report selection before updating the bound draft in the current input frame.
+  private closeReferences(): void {
+    if (this.referenceToken === undefined) { return; }
+    this.cancelReferenceLookup();
+    this.referenceToken = undefined;
+    this.referenceRows = [];
+    this.referenceTrail = [];
+    this.referenceLoading = false;
+    this.referenceError = '';
+  }
+
+  private showReferences(text: string, token: DesktopReferenceToken): void {
+    const previous = this.referenceToken;
+    const changed = this.palette !== 'reference' || previous?.query !== token.query || previous?.quoted !== token.quoted;
+    if (previous?.start !== token.start) { this.referenceTrail = []; }
+    this.referenceToken = token;
+    this.slashToken = undefined;
+    this.paletteDraft = text;
+    this.palette = 'reference';
+    if (changed) {
+      this.queryReferences(token);
+    }
+  }
+
+  private queryReferences(token: DesktopReferenceToken): void {
+    const host = this.host;
+    const session = this.sessionId;
+    if (host === undefined || !session) { return; }
+    this.cancelReferenceLookup();
+    const version = this.referenceVersion;
+    this.highlight = 0;
+    this.referenceRows = [];
+    this.referenceError = '';
+    this.referenceLoading = true;
+    this.referenceTimer = setTimeout(async (): Promise<void> => {
+      this.referenceTimer = -1;
+      const result = await desktopReferenceChoices(host, session, token);
+      if (version === this.referenceVersion && session === this.sessionId && this.palette === 'reference') {
+        this.referenceRows = result.rows;
+        this.referenceError = result.error;
+        this.referenceLoading = false;
+      }
+    }, 100);
+  }
+
+  private referenceInDraft(): DesktopReferenceToken | undefined {
+    const previous = this.referenceToken;
+    if (previous === undefined || this.paletteDraft === this.draft) { return previous; }
+    const current = activeDesktopReference(this.draft, this.composer.getCaretOffset().index);
+    return current?.start === previous.start ? current : undefined;
+  }
+
+  private pickReference(id: string, drill: boolean = false): void {
+    const row = this.referenceRows.find((item: DesktopReferenceChoice): boolean => item.id === id);
+    const token = this.referenceInDraft();
+    if (row === undefined || token === undefined || this.busy) { return; }
+    if (drill && row.kind === 'directory') {
+      this.drillReference(desktopReferenceText(row.path + '/', token.quoted, false));
+      return;
+    }
+    const mention = desktopSettledReference(row, this.sessionDirectory, token.quoted);
+    if (!mention) { return; }
+    const original = this.draft;
+    const spacer = /^\s/u.test(original.slice(token.end)) ? '' : ' ';
+    this.closePalette();
+    this.replaceComposerRange(original, token.start, token.end, mention + spacer, true);
+  }
+
+  private drillReference(replacement: string): void {
+    const token = this.referenceInDraft();
+    const original = this.draft;
+    if (!replacement || token === undefined || this.busy) { return; }
+    const next = original.slice(0, token.start) + replacement + original.slice(token.end);
+    const nextToken = activeDesktopReference(next, token.start + replacement.length);
+    if (nextToken === undefined) { return; }
+    this.showReferences(next, nextToken);
+    this.referenceTrail = desktopReferenceCrumbs(nextToken);
+    this.replaceComposerRange(original, token.start, token.end, replacement, true, true);
+  }
+
+  private cancelSlashRefresh(): void {
+    if (this.slashFrame !== -1) { clearTimeout(this.slashFrame); this.slashFrame = -1; }
+    this.triggerText = undefined;
+    this.triggerCaret = undefined;
+  }
+
+  private refreshSlash(text?: string, caret?: number): void {
+    if (this.palette === 'model' || this.palette === 'permission') { return; }
+    if (text !== undefined) { this.triggerText = text; }
+    if (caret !== undefined) { this.triggerCaret = caret; }
+    if (this.slashFrame !== -1) { return; }
+    // The input event carries the updated text before the bound prop is refreshed.
     this.slashFrame = setTimeout((): void => {
       this.slashFrame = -1;
-      this.detectSlash(this.draft, this.composer.getCaretOffset().index);
+      const next = this.triggerText ?? this.draft;
+      const position = Math.min(next.length, this.triggerCaret ?? this.composer.getCaretOffset().index);
+      this.triggerText = undefined;
+      this.triggerCaret = undefined;
+      this.detectTrigger(next, position);
     }, 16);
   }
 
-  private detectSlash(text: string, caret: number): void {
+  private detectTrigger(text: string, caret: number): void {
     if (this.palette === 'model' || this.palette === 'permission') { return; }
     if (text === this.dismissedDraft || this.busy || this.snapshot?.loading !== false) {
       this.closePalette();
       return;
     }
+    const reference = activeDesktopReference(text, caret);
+    if (reference !== undefined) {
+      this.showReferences(text, reference);
+      return;
+    }
+    this.closeReferences();
     const token = activeDesktopSlash(text, caret);
     if (token === undefined) { this.closePalette(); return; }
     const refresh = this.palette !== 'commands' || this.query !== token.query || this.leading !== token.leading;
@@ -200,6 +317,15 @@ export struct DesktopConversationPane {
   }
 
   private paletteRows(): DesktopPaletteRow[] {
+    if (this.palette === 'reference') {
+      return this.referenceRows.map((row: DesktopReferenceChoice): DesktopPaletteRow => ({
+        id: row.id, title: row.label + (row.kind === 'directory' ? '/' : ''),
+        detail: this.referenceTrail.length && row.kind !== 'session' ? '' : row.detail,
+        section: row.kind === 'session' ? '会话' : '文件', token: '', drill: row.kind === 'directory',
+        icon: row.kind === 'session' ? $r('app.media.dsh_reference_session') :
+          row.kind === 'directory' ? $r('app.media.dsh_reference_folder') : $r('app.media.dsh_reference_file')
+      }));
+    }
     if (this.palette === 'commands') {
       return this.paletteCommands().map((row: DesktopCommand): DesktopPaletteRow => {
         return { id: row.name, title: row.label, detail: row.description, token: `/${row.alias}`,
@@ -223,16 +349,21 @@ export struct DesktopConversationPane {
   }
 
   private replaceSlash(original: string, token: DesktopSlashToken, replacement: string, refocus: boolean = true): void {
+    this.replaceComposerRange(original, token.start, token.end, replacement, refocus);
+  }
+
+  private replaceComposerRange(original: string, start: number, end: number, replacement: string, refocus: boolean,
+    keepOpen: boolean = false): void {
     if (this.draft !== original) { return; }
-    const text = original.slice(0, token.start) + replacement + original.slice(token.end);
-    this.dismissedDraft = text;
+    const text = original.slice(0, start) + replacement + original.slice(end);
+    this.dismissedDraft = keepOpen ? undefined : text;
     this.onDraft(text);
     if (!refocus) { return; }
     const session = this.sessionId;
     this.getUIContext().getFocusController().requestFocus('desktopSlashComposer');
     setTimeout((): void => {
       if (session === this.sessionId && text === this.draft) {
-        this.composer.caretPosition(token.start + replacement.length);
+        this.composer.caretPosition(start + replacement.length);
       }
     }, 0);
   }
@@ -247,6 +378,7 @@ export struct DesktopConversationPane {
   }
 
   private async pickPalette(id: string): Promise<void> {
+    if (this.palette === 'reference') { this.pickReference(id); return; }
     const token = this.slashToken;
     const original = this.paletteDraft;
     if (token === undefined || original !== this.draft || this.busy) { return; }
@@ -372,6 +504,18 @@ export struct DesktopConversationPane {
     event.setResult(DragResult.DRAG_FAILED);
   }
 
+  private scrollToReference(rows: DesktopPaletteRow[]): void {
+    let offset = 0;
+    for (let index = 0; index <= this.highlight; index++) {
+      if (index === 0 || rows[index - 1].section !== rows[index].section) { offset += 24; }
+      if (index < this.highlight) { offset += 34; }
+    }
+    const top = this.paletteScroller.currentOffset().yOffset;
+    if (offset < top || offset + 34 > top + 244) {
+      this.paletteScroller.scrollTo({ xOffset: 0, yOffset: offset < top ? offset : offset + 34 - 244 });
+    }
+  }
+
   private paletteKey(event: KeyEvent): boolean {
     if (event.type !== KeyType.Down) { return false; }
     if (this.palette && event.keyCode === KeyCode.KEYCODE_ESCAPE) {
@@ -384,13 +528,26 @@ export struct DesktopConversationPane {
     const up = event.keyCode === KeyCode.KEYCODE_DPAD_UP;
     if (rows.length > 0 && (up || event.keyCode === KeyCode.KEYCODE_DPAD_DOWN)) {
       this.highlight = (this.highlight + (up ? -1 : 1) + rows.length) % rows.length;
-      this.paletteScroller.scrollToIndex(this.highlight, false, ScrollAlign.AUTO);
+      if (this.palette === 'reference') { this.scrollToReference(rows); }
+      else { this.paletteScroller.scrollToIndex(this.highlight, false, ScrollAlign.AUTO); }
       return true;
+    }
+    const item = rows[this.highlight] ?? rows[0];
+    if (this.palette === 'reference' && event.keyCode === KeyCode.KEYCODE_TAB) {
+      if (event.getModifierKeyState?.(['Shift']) === true) {
+        this.dismissedDraft = this.draft;
+        this.closePalette();
+        return true;
+      }
+      if (item !== undefined) {
+        this.pickReference(item.id, item.drill === true);
+        return true;
+      }
     }
     if (event.keyCode !== KeyCode.KEYCODE_ENTER || event.getModifierKeyState?.(['Shift'])) {
       return false;
     }
-    const item = rows[this.highlight] ?? rows[0];
+    if (this.palette === 'reference' && this.referenceLoading) { return true; }
     const accelerated = event.getModifierKeyState?.(['Ctrl']) === true;
     if (item !== undefined) { this.pickPalette(item.id); }
     else if (accelerated && this.canSteerQueue() && !this.palette) { this.onSteerQueue(); }
@@ -403,13 +560,21 @@ export struct DesktopConversationPane {
     DesktopCommandPalette({ rows: this.paletteRows(), viewMode: this.palette, filter: this.paletteFilter,
       highlight: this.highlight, scroller: this.paletteScroller, agreed: this.agreed,
       riskName: this.snapshot?.permissions.find((row: DesktopPermissionOption): boolean =>
-        row.value === this.riskPreset)?.title ?? '', loading: this.palette === 'commands' ?
-        this.snapshot?.commandLoading === true : (this.palette === 'model' && this.snapshot?.modelsLoading === true),
-      error: this.palette === 'commands' ? this.snapshot?.commandError ?? '' : '',
+        row.value === this.riskPreset)?.title ?? '', loading: this.palette === 'reference' ? this.referenceLoading :
+        this.palette === 'commands' ? this.snapshot?.commandLoading === true :
+          (this.palette === 'model' && this.snapshot?.modelsLoading === true),
+      error: this.palette === 'reference' ? this.referenceError : this.palette === 'commands' ?
+        this.snapshot?.commandError ?? '' : '',
+      crumbs: this.referenceTrail,
       onPick: (id: string): void => { this.pickPalette(id); },
+      onDrill: (id: string): void => { this.pickReference(id, true); },
+      onCrumb: (text: string): void => { this.drillReference(text); },
       onAgree: (value: boolean): void => { this.agreed = value; },
       onFilter: (value: string): void => { this.paletteFilter = value; this.highlight = 0; },
-      onRetry: (): void => { this.onLoadCommands(); },
+      onRetry: (): void => {
+        if (this.palette === 'reference' && this.referenceToken !== undefined) { this.queryReferences(this.referenceToken); }
+        else { this.onLoadCommands(); }
+      },
       onModelsSettings: (): void => { this.closePalette(); this.onModelsSettings(); },
       onBack: (): void => { this.riskPreset = ''; this.agreed = false; },
       onKey: (event: KeyEvent): boolean => this.paletteKey(event) })
@@ -626,15 +791,16 @@ export struct DesktopConversationPane {
           this.paletteNotice = '';
           this.onDraft(text);
           if (text !== this.dismissedDraft) { this.dismissedDraft = undefined; }
-          this.refreshSlash();
+          this.refreshSlash(text);
         })
         .onTextSelectionChange((start: number, end: number): void => {
-          if (start === end) { this.refreshSlash(); }
+          if (start === end) { this.refreshSlash(undefined, end); }
+          else if (this.palette === 'reference') { this.closePalette(); }
         })
         .onKeyPreIme((event: KeyEvent): boolean => this.composerKey(event))
         .onSubmit((): void => { if (this.hasDraft()) { this.handleSend(); } })
         .bindPopup(this.palette !== '', { builder: this.CommandPopup(), placement: Placement.TopLeft,
-          enableArrow: false, mask: false, focusable: this.palette !== 'commands',
+          enableArrow: false, mask: false, focusable: this.palette === 'model' || this.palette === 'permission',
           systemMaterial: desktopMenuOptions(Placement.TopLeft).systemMaterial,
           onStateChange: (event): void => {
             if (!event.isVisible && this.palette) { this.dismissedDraft = this.draft; this.closePalette(); }

@@ -1,9 +1,13 @@
+import type { DesktopReferenceCrumb } from './DesktopReferences';
+
 export interface DesktopPaletteRow {
   id: string;
   title: string;
   detail: string;
   token: string;
   section: string;
+  icon?: Resource;
+  drill?: boolean;
 }
 
 @Component
@@ -11,6 +15,7 @@ export struct DesktopCommandPalette {
   @Prop rows: DesktopPaletteRow[] = [];
   @Prop highlight: number = 0;
   @Prop viewMode: string = '';
+  @Prop crumbs: DesktopReferenceCrumb[] = [];
   @Prop filter: string = '';
   @Prop loading: boolean = false;
   @Prop error: string = '';
@@ -18,12 +23,47 @@ export struct DesktopCommandPalette {
   @Prop agreed: boolean = false;
   scroller: Scroller = new Scroller();
   onPick: (id: string) => void = (_id: string): void => {};
+  onDrill: (id: string) => void = (_id: string): void => {};
+  onCrumb: (text: string) => void = (_text: string): void => {};
   onFilter: (value: string) => void = (_value: string): void => {};
   onRetry: () => void = (): void => {};
   onModelsSettings: () => void = (): void => {};
   onBack: () => void = (): void => {};
   onAgree: (value: boolean) => void = (_value: boolean): void => {};
   onKey: (event: KeyEvent) => boolean = (_event: KeyEvent): boolean => false;
+
+  @Builder
+  private ReferenceRow(row: DesktopPaletteRow, index: number) {
+    Column() {
+      if (index === 0 || this.rows[index - 1].section !== row.section) {
+        Text(row.section).height(24).fontSize(11).width('100%')
+          .fontColor($r('sys.color.font_secondary')).padding({ left: 5 })
+      }
+      Row({ space: 2 }) {
+        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 7 }) {
+            Image(row.icon).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
+            Text(row.title).fontSize(13).fontColor($r('sys.color.font_primary')).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+            if (row.detail) {
+              Text(row.detail).fontSize(11).fontColor($r('sys.color.font_secondary')).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 95 })
+            }
+          }.width('100%')
+        }.key('desktopPaletteChoice-' + index).layoutWeight(1).height(34)
+          .padding({ left: 7, right: 7 }).borderRadius(7).focusOnTouch(false)
+          .onClick((): void => { this.onPick(row.id); })
+        if (row.drill === true) {
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12)
+              .fontColor([$r('sys.color.font_secondary')]).accessibilityLevel('no')
+          }.key('desktopReferenceDrill-' + index).width(28).height(28).padding(0).focusOnTouch(false)
+            .accessibilityText('打开文件夹 ' + row.title).onClick((): void => { this.onDrill(row.id); })
+        }
+      }.width('100%').borderRadius(7)
+        .backgroundColor(this.highlight === index ? $r('app.color.workspace_selection') : Color.Transparent)
+    }.width('100%')
+  }
 
   build() {
     Column({ space: 4 }) {
@@ -41,7 +81,21 @@ export struct DesktopCommandPalette {
           Button('启用').enabled(this.agreed).onClick((): void => { this.onPick('confirm'); })
         }.width('100%')
       } else {
-        if (this.viewMode !== 'commands') {
+        if (this.viewMode === 'reference' && this.crumbs.length > 0) {
+          Scroll() {
+            Row({ space: 2 }) {
+              ForEach(this.crumbs, (crumb: DesktopReferenceCrumb, index: number): void => {
+                if (index > 0) {
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10).accessibilityLevel('no')
+                }
+                Button(crumb.label, { buttonStyle: ButtonStyleMode.TEXTUAL }).height(26).fontSize(11).padding(4)
+                  .focusOnTouch(false).enabled(index < this.crumbs.length - 1)
+                  .onClick((): void => { this.onCrumb(crumb.text); })
+              }, (crumb: DesktopReferenceCrumb): string => crumb.text)
+            }
+          }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        }
+        if (this.viewMode === 'model' || this.viewMode === 'permission') {
           TextInput({ text: this.filter, placeholder: this.viewMode === 'model' ? '搜索模型' : '搜索权限预设' })
             .height(35).width('100%').fontSize(13).key('desktopSlashSearch')
             .onChange(this.onFilter).onKeyPreIme(this.onKey)
@@ -59,10 +113,19 @@ export struct DesktopCommandPalette {
             Button($r('app.string.desktop_chat_model_settings'), { buttonStyle: ButtonStyleMode.TEXTUAL })
               .onClick(this.onModelsSettings)
           } else {
-            Text('无匹配选项').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(8)
+            Text(this.viewMode === 'reference' ? '没有匹配的引用' : '无匹配选项').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(8)
           }
         }
-        if (this.rows.length > 0) {
+        if (this.rows.length > 0 && this.viewMode === 'reference') {
+          Scroll(this.scroller) {
+            Column() {
+              ForEach(this.rows, (row: DesktopPaletteRow, index: number): void => {
+                this.ReferenceRow(row, index)
+              }, (row: DesktopPaletteRow): string => row.id + ':' + row.detail)
+            }.width('100%')
+          }.width('100%').constraintSize({ maxHeight: 244 }).scrollBar(BarState.Auto)
+          .align(Alignment.TopStart)
+        } else if (this.rows.length > 0) {
           List({ scroller: this.scroller }) {
             ForEach(this.rows, (row: DesktopPaletteRow, index: number): void => {
               ListItem() {
@@ -91,7 +154,7 @@ export struct DesktopCommandPalette {
                   .onClick((): void => { this.onPick(row.id); })
                 }.width('100%')
               }
-            }, (row: DesktopPaletteRow): string => `${row.id}:${row.section}:${row.detail}`)
+            }, (row: DesktopPaletteRow): string => row.id + ':' + row.section + ':' + row.detail)
           }.width('100%').constraintSize({ maxHeight: 244 }).scrollBar(BarState.Auto)
         }
       }

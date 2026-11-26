@@ -77,6 +77,7 @@ struct DesktopWorkspace {
   @State private selectedWorkspaceTitle: ResourceStr = '';
   @State private appearance: string = 'system';
   @State private selectedTitle: ResourceStr = '';
+  @State private selectedSessionDirectory: string = '';
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
@@ -710,6 +711,7 @@ struct DesktopWorkspace {
     this.sessionId = session.id;
     this.workspaceId = group.id;
     this.selectedTitle = this.sessionLabel(session);
+    this.selectedSessionDirectory = session.cwd;
     this.selectedWorkspaceTitle = group.title;
     this.data?.conversation.open(session.id);
   }
@@ -1823,6 +1825,7 @@ struct DesktopWorkspace {
           onChanges: (target: DesktopChangeTarget): void => { this.showChanges(target); },
           title: this.selectedTitle,
           workspaceTitle: this.selectedWorkspaceTitle,
+          sessionDirectory: this.selectedSessionDirectory,
           draft: this.draft,
           attachments: this.attachments,
           onAddAttachment: (): void => this.attachDocument(),
