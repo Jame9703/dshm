@@ -305,20 +305,8 @@
       "value": "工作区"
     },
     {
-      "name": "desktop_experiment_all_sessions",
-      "value": "全部会话"
-    },
-    {
-      "name": "desktop_experiment_sessions",
-      "value": "会话"
-    },
-    {
       "name": "desktop_experiment_empty",
       "value": "暂无会话"
-    },
-    {
-      "name": "desktop_experiment_select",
-      "value": "请选择会话"
     },
     {
       "name": "desktop_experiment_loading",
@@ -343,6 +331,62 @@
     {
       "name": "desktop_experiment_open_failed",
       "value": "旧 WebUI 中未找到该会话"
+    },
+    {
+      "name": "desktop_experiment_more",
+      "value": "更多"
+    },
+    {
+      "name": "desktop_experiment_footer_menu",
+      "value": "工作台菜单"
+    },
+    {
+      "name": "desktop_experiment_ungrouped",
+      "value": "未分组"
+    },
+    {
+      "name": "desktop_experiment_search",
+      "value": "搜索会话"
+    },
+    {
+      "name": "desktop_experiment_search_empty",
+      "value": "没有匹配的会话"
+    },
+    {
+      "name": "desktop_experiment_add_workspace",
+      "value": "添加工作区"
+    },
+    {
+      "name": "desktop_experiment_open_web_home",
+      "value": "打开 WebUI"
+    },
+    {
+      "name": "desktop_experiment_expand_sidebar",
+      "value": "展开侧边栏"
+    },
+    {
+      "name": "desktop_experiment_collapse_sidebar",
+      "value": "收起侧边栏"
+    },
+    {
+      "name": "desktop_experiment_plugins",
+      "value": "插件"
+    },
+    {
+      "name": "desktop_experiment_schedule",
+      "value": "自动化任务"
+    },
+    {
+      "name": "desktop_experiment_action_failed",
+      "value": "请在 WebUI 中打开此入口"
+    },
+    {
+      "name": "desktop_experiment_choose_workspace",
+      "value": "选择工作区"
+    },
+    {
+      "name": "desktop_experiment_welcome",
+      "value": "Let's Vibe Coding"
     }
   ]
 }

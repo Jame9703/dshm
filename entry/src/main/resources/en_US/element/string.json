@@ -285,20 +285,8 @@
       "value": "Workspaces"
     },
     {
-      "name": "desktop_experiment_all_sessions",
-      "value": "All sessions"
-    },
-    {
-      "name": "desktop_experiment_sessions",
-      "value": "Sessions"
-    },
-    {
       "name": "desktop_experiment_empty",
       "value": "No sessions yet"
-    },
-    {
-      "name": "desktop_experiment_select",
-      "value": "Select a session"
     },
     {
       "name": "desktop_experiment_loading",
@@ -323,6 +311,62 @@
     {
       "name": "desktop_experiment_open_failed",
       "value": "The session couldn't be opened in WebUI."
+    },
+    {
+      "name": "desktop_experiment_more",
+      "value": "More"
+    },
+    {
+      "name": "desktop_experiment_footer_menu",
+      "value": "Workspace menu"
+    },
+    {
+      "name": "desktop_experiment_ungrouped",
+      "value": "Ungrouped"
+    },
+    {
+      "name": "desktop_experiment_search",
+      "value": "Search sessions"
+    },
+    {
+      "name": "desktop_experiment_search_empty",
+      "value": "No matching sessions"
+    },
+    {
+      "name": "desktop_experiment_add_workspace",
+      "value": "Add workspace"
+    },
+    {
+      "name": "desktop_experiment_open_web_home",
+      "value": "Open WebUI"
+    },
+    {
+      "name": "desktop_experiment_expand_sidebar",
+      "value": "Expand sidebar"
+    },
+    {
+      "name": "desktop_experiment_collapse_sidebar",
+      "value": "Collapse sidebar"
+    },
+    {
+      "name": "desktop_experiment_plugins",
+      "value": "Plugins"
+    },
+    {
+      "name": "desktop_experiment_schedule",
+      "value": "Scheduled tasks"
+    },
+    {
+      "name": "desktop_experiment_action_failed",
+      "value": "Open this item from WebUI."
+    },
+    {
+      "name": "desktop_experiment_choose_workspace",
+      "value": "Choose workspace"
+    },
+    {
+      "name": "desktop_experiment_welcome",
+      "value": "Let's Vibe Coding"
     }
   ]
 }

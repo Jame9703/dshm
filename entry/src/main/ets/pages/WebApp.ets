@@ -2980,6 +2980,29 @@ const NEW_SESSION_SCRIPT: string = `(function () {
     return 'error:' + (e && e.message ? e.message : String(e));
   }
 })()`;
+function buildDesktopWorkspaceActionScript(action: string): string {
+  if (action === 'new-session') {
+    return '(' + NEW_SESSION_SCRIPT + ').startsWith("clicked:")';
+  }
+  return `(function () {
+    var action = ${JSON.stringify(action)};
+    var labels = action === 'plugins' ? ['插件', 'Plugins'] :
+      action === 'schedule' ? ['自动化任务', 'Scheduled tasks', 'Automations'] : ['添加工作区', 'Add workspace'];
+    var selector = action === 'add-workspace' ? '[data-sidebar-workspace-header] button[aria-label]' :
+      'nav button[aria-label]';
+    var buttons = document.querySelectorAll(selector);
+    for (var i = 0; i < buttons.length; i++) {
+      if (labels.includes(buttons[i].getAttribute('aria-label')) && buttons[i].getClientRects().length > 0) {
+        buttons[i].click();
+        return true;
+      }
+    }
+    var sidebar = globalThis.__DSHM_SIDEBAR__;
+    if (sidebar && sidebar.state() === 'collapsed') sidebar.toggle();
+    return false;
+  })()`;
+}
+
 function buildDesktopWorkspaceSessionScript(sessionId: string, workspaceId: string): string {
   return `(function () {
     var id = ${JSON.stringify(sessionId)};
@@ -4188,6 +4211,7 @@ struct WebApp {
   @LocalStorageProp('dshStartupMainWindow') private startupMainWindow: boolean = false;
   @LocalStorageLink('dshDesktopWebSessionId') private desktopWebSessionId: string = '';
   @LocalStorageLink('dshDesktopWebWorkspaceId') private desktopWebWorkspaceId: string = '';
+  @LocalStorageLink('dshDesktopWebAction') private desktopWebAction: string = '';
   private desktopWorkspaceSwitching: boolean = false;
   @StorageProp(KEY_DESKTOP_HOST_STARTUP) private startupHostStage: number = DesktopHostStartupStage.WaitingForFolders;
   private startupProgressVisible: boolean = false;
@@ -5915,13 +5939,37 @@ struct WebApp {
 
   private openDesktopWorkspaceSession(): void {
     const id: string = this.desktopWebSessionId;
-    if (id.length === 0) {
-      return;
-    }
     const workspaceId: string = this.desktopWebWorkspaceId;
+    const action: string = this.desktopWebAction;
     this.desktopWebSessionId = '';
     this.desktopWebWorkspaceId = '';
-    const script: string = buildDesktopWorkspaceSessionScript(id, workspaceId);
+    this.desktopWebAction = '';
+    if (id.length === 0) {
+      this.openDesktopWorkspaceAction(action);
+      return;
+    }
+    this.runDesktopWorkspaceScript(buildDesktopWorkspaceSessionScript(id, workspaceId), (opened: boolean): void => {
+      if (opened) {
+        hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');
+        this.openDesktopWorkspaceAction(action);
+      } else {
+        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
+      }
+    });
+  }
+
+  private openDesktopWorkspaceAction(action: string): void {
+    if (action !== 'new-session' && action !== 'plugins' && action !== 'schedule' && action !== 'add-workspace') {
+      return;
+    }
+    this.runDesktopWorkspaceScript(buildDesktopWorkspaceActionScript(action), (opened: boolean): void => {
+      if (!opened) {
+        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
+      }
+    });
+  }
+
+  private runDesktopWorkspaceScript(script: string, done: (opened: boolean) => void): void {
     const retry = (attempts: number): void => {
       if (!this.startupPageActive) {
         return;
@@ -5931,11 +5979,11 @@ struct WebApp {
           return;
         }
         if (!error && result === 'true') {
-          hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');
+          done(true);
         } else if (attempts > 0) {
           setTimeout((): void => retry(attempts - 1), 100);
         } else {
-          this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
+          done(false);
         }
       });
     };
@@ -7733,6 +7781,22 @@ struct WebApp {
     }
   }
 
+  private async desktopWorkspaceAppearance(): Promise<string> {
+    if (this.webReady) {
+      try {
+        // Ask for the durable preference, so a system-following WebUI still follows the system in ArkUI.
+        const value = await this.controller.runJavaScript("document.documentElement.getAttribute('data-ds-theme-source')");
+        const appearance = value.replaceAll('"', '');
+        if (appearance === 'light' || appearance === 'dark') {
+          return appearance;
+        }
+      } catch (_) {
+        // A legacy Host may omit the preference attribute.
+      }
+    }
+    return 'system';
+  }
+
   private async openDesktopWorkspace(): Promise<void> {
     if (this.desktopWorkspaceSwitching) {
       return;
@@ -7744,7 +7808,7 @@ struct WebApp {
       if (context === undefined) {
         throw new Error('工作台设置不可用');
       }
-      await setDesktopWorkspaceEnabled(context, true);
+      await setDesktopWorkspaceEnabled(context, true, await this.desktopWorkspaceAppearance());
       await ui.getRouter().replaceUrl({ url: DESKTOP_WORKSPACE_PAGE });
     } catch (_) {
       this.desktopWorkspaceSwitching = false;

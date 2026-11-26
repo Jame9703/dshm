@@ -3,6 +3,30 @@
     {
       "name": "start_window_background",
       "value": "#FFFFFF"
+    },
+    {
+      "name": "workspace_canvas",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "workspace_sidebar",
+      "value": "#F9FAFB"
+    },
+    {
+      "name": "workspace_panel",
+      "value": "#F4F5F6"
+    },
+    {
+      "name": "workspace_selection",
+      "value": "#ECEEF0"
+    },
+    {
+      "name": "workspace_action",
+      "value": "#E8EBF0"
+    },
+    {
+      "name": "workspace_border",
+      "value": "#1A191C20"
     }
   ]
 }
