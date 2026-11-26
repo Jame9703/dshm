@@ -2,7 +2,9 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { uiMaterial } from '@kit.ArkUI';
 import { immersiveMaterialOf } from 'platform';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import type { SessionListItem } from 'appstate';
+import type { ModelSelection, SessionListItem } from 'appstate';
+import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import type { DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
@@ -41,6 +43,12 @@ struct DesktopWorkspace {
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
+  @State private chat: DesktopConversationSnapshot | undefined = undefined;
+  @State private draft: string = '';
+  @State private chatError: string = '';
+  @State private creating: boolean = false;
+  @State private busySessions: string[] = [];
+  private readonly drafts: Map<string, string> = new Map<string, string>();
 
   @State private groups: DesktopWorkspaceGroup[] = [];
   private data?: DesktopWorkspaceData;
@@ -76,6 +84,10 @@ struct DesktopWorkspace {
     this.selectedTitle = '';
     this.ready = false;
     this.error = '';
+    this.chat = undefined;
+    this.chatError = '';
+    this.creating = false;
+    this.busySessions = [];
     if (this.hostUrl.length === 0) {
       return;
     }
@@ -86,6 +98,8 @@ struct DesktopWorkspace {
       }
       this.updateGroups(snapshot.workspaces, snapshot.sessions);
       this.ready = true;
+    }, (snapshot: DesktopConversationSnapshot): void => {
+      this.chat = snapshot;
     });
     this.data.start(this.hostUrl);
   }
@@ -115,8 +129,7 @@ struct DesktopWorkspace {
       this.groups.push(ungrouped);
     }
     if (!sessions.some((session: SessionListItem): boolean => session.id === this.sessionId)) {
-      this.sessionId = '';
-      this.selectedTitle = '';
+      this.clearSession();
       this.selectedWorkspaceTitle =
         this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
     }
@@ -159,10 +172,114 @@ struct DesktopWorkspace {
   }
 
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
+    if (this.sessionId !== session.id) {
+      this.draft = this.drafts.get(session.id) ?? '';
+      this.chatError = '';
+    }
     this.sessionId = session.id;
     this.workspaceId = group.id;
     this.selectedTitle = this.sessionLabel(session);
     this.selectedWorkspaceTitle = group.title;
+    this.data?.conversation.open(session.id);
+  }
+
+  private changeDraft(value: string): void {
+    if (this.sessionId.length > 0) {
+      this.draft = value;
+      if (value.length > 0) {
+        this.drafts.set(this.sessionId, value);
+      } else {
+        this.drafts.delete(this.sessionId);
+      }
+    }
+  }
+
+  private clearSession(): void {
+    this.sessionId = '';
+    this.selectedTitle = '';
+    this.draft = '';
+    this.chatError = '';
+    this.data?.conversation.open('');
+  }
+
+  private async newSession(): Promise<void> {
+    const data = this.data;
+    if (data === undefined || !this.ready || this.creating) {
+      return;
+    }
+    const workspace = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
+      group.id.length > 0 && group.id === this.workspaceId) ??
+      this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id.length > 0);
+    if (workspace === undefined) {
+      this.openWeb(false, 'add-workspace');
+      return;
+    }
+    this.creating = true;
+    this.chatError = '';
+    const previousWorkspace = this.workspaceId;
+    const previousSession = this.sessionId;
+    const id = await data.createSession(workspace.id);
+    if (!this.pageActive || this.data !== data) {
+      return;
+    }
+    this.creating = false;
+    if (id.length === 0) {
+      this.chatError = this.accessibilityLabel($r('app.string.desktop_chat_create_failed'));
+      return;
+    }
+    const group = this.groups.find((item: DesktopWorkspaceGroup): boolean => item.id === workspace.id);
+    const session = group?.sessions.find((item: SessionListItem): boolean => item.id === id);
+    if (group !== undefined && session !== undefined && previousWorkspace === this.workspaceId &&
+      previousSession === this.sessionId) {
+      this.pickWorkspace(group);
+      this.selectSession(group, session);
+    }
+  }
+
+  private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string): Promise<void> {
+    const id = this.sessionId;
+    const data = this.data;
+    if (id.length === 0 || data === undefined || this.busySessions.includes(id)) {
+      return;
+    }
+    this.busySessions = [...this.busySessions, id];
+    this.chatError = '';
+    const error = await run(id);
+    if (!this.pageActive || this.data !== data) {
+      return;
+    }
+    this.busySessions = this.busySessions.filter((other: string): boolean => other !== id);
+    if (error.length === 0 && sentDraft !== undefined && this.drafts.get(id) === sentDraft) {
+      this.drafts.delete(id);
+      if (this.sessionId === id) {
+        this.draft = '';
+      }
+    }
+    if (this.sessionId === id) {
+      this.chatError = error;
+    }
+  }
+
+  private sendMessage(): void {
+    const conversation = this.data?.conversation;
+    const text = this.draft;
+    if (conversation !== undefined && text.trim().length > 0) {
+      this.chatAction((id: string): Promise<string> => conversation.send(id, text), text);
+    }
+  }
+
+  private stopMessage(): void {
+    const conversation = this.data?.conversation;
+    if (conversation !== undefined) {
+      this.chatAction((id: string): Promise<string> => conversation.cancel(id));
+    }
+  }
+
+  private chooseModel(selection: ModelSelection): void {
+    const conversation = this.data?.conversation;
+    if (conversation !== undefined) {
+      this.chatAction((id: string): Promise<string> => conversation.selectModel(id, selection));
+    }
   }
 
   private workspaceMenu(): Array<MenuElement> {
@@ -173,8 +290,7 @@ struct DesktopWorkspace {
 
   private pickWorkspace(group: DesktopWorkspaceGroup): void {
     if (group.id !== this.workspaceId) {
-      this.sessionId = '';
-      this.selectedTitle = '';
+      this.clearSession();
     }
     this.workspaceId = group.id;
     this.selectedWorkspaceTitle = group.title;
@@ -208,6 +324,13 @@ struct DesktopWorkspace {
       { value: $r('app.string.desktop_experiment_plugins'), action: (): void => { this.openWeb(false, 'plugins'); } },
       { value: $r('app.string.desktop_experiment_schedule'), action: (): void => { this.openWeb(false, 'schedule'); } }
     ];
+  }
+
+  private groupKey(group: DesktopWorkspaceGroup): string {
+    const title = typeof group.title === 'string' ? group.title : '';
+    const rows = group.sessions.map((session: SessionListItem): string =>
+      JSON.stringify([session.id, session.title, session.running ? 'running' : 'idle']));
+    return JSON.stringify([group.id, title, ...rows]);
   }
 
   private markSidebarVisible(ready: boolean): void {
@@ -395,7 +518,7 @@ struct DesktopWorkspace {
               }
             }, (session: SessionListItem): string => session.id)
           }
-        }, (group: DesktopWorkspaceGroup): string => group.id)
+        }, (group: DesktopWorkspaceGroup): string => this.groupKey(group))
         if (this.visibleGroups.length === 0) {
           ListItem() {
             Column({ space: 8 }) {
@@ -441,7 +564,7 @@ struct DesktopWorkspace {
       .width('100%').height(64).padding({ left: this.sidebarCollapsed ? 0 : 6 })
       .justifyContent(this.sidebarCollapsed ? FlexAlign.Center : FlexAlign.Start)
       this.SidebarShortcut($r('sys.symbol.plus_circle'), $r('app.string.action_new_session'),
-        (): void => { this.openWeb(false, 'new-session'); }, true)
+        (): void => { this.newSession(); }, true)
       Blank().height(12)
       this.SidebarShortcut($r('sys.symbol.square_grid_2x2'), $r('app.string.desktop_experiment_plugins'),
         (): void => { this.openWeb(false, 'plugins'); }, false)
@@ -460,6 +583,32 @@ struct DesktopWorkspace {
     .padding({ left: this.sidebarCollapsed ? 8 : 10, right: this.sidebarCollapsed ? 8 : 10, bottom: 8 })
     .backgroundColor($r('app.color.workspace_sidebar'))
     .border({ width: { right: 1 }, color: $r('app.color.workspace_border') })
+  }
+
+  @Builder
+  private SessionContent() {
+    Column() {
+      if (this.sessionId.length > 0) {
+        DesktopConversationPane({
+          snapshot: this.chat,
+          title: this.selectedTitle,
+          workspaceTitle: this.selectedWorkspaceTitle,
+          draft: this.draft,
+          busy: this.busySessions.includes(this.sessionId),
+          commandError: this.chatError,
+          menuOptions: this.menuOptions(Placement.TopLeft),
+          onDraft: (value: string): void => this.changeDraft(value),
+          onSend: (): void => this.sendMessage(),
+          onStop: (): void => this.stopMessage(),
+          onEarlier: (): void => this.data?.conversation.loadEarlier(),
+          onWeb: (): void => { this.openWeb(false); },
+          onModel: (selection: ModelSelection): void => this.chooseModel(selection)
+        })
+      } else {
+        this.SessionPane()
+      }
+    }
+    .height('100%').layoutWeight(1)
   }
 
   @Builder
@@ -492,21 +641,23 @@ struct DesktopWorkspace {
         .width('100%').padding({ left: 4 })
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 12 }) {
-            Text(this.sessionId.length > 0 ? $r('app.string.desktop_experiment_open_web') :
-              $r('app.string.desktop_experiment_open_web_home'))
+            Text($r('app.string.action_new_session'))
               .fontSize(15).fontColor($r('sys.color.font_primary')).layoutWeight(1)
               .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            SymbolGlyph($r('sys.symbol.arrow_up_right')).fontSize(17).fontColor([$r('sys.color.font_primary')])
+            SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor([$r('sys.color.font_primary')])
           }
           .width('100%')
         }
         .width('100%').constraintSize({ minHeight: 76 }).padding({ left: 16, right: 16 }).borderRadius(21)
-        .backgroundColor($r('app.color.workspace_panel')).focusOnTouch(false).enabled(!this.switching)
-        .onClick((): void => { this.openWeb(false); })
+        .backgroundColor($r('app.color.workspace_panel')).focusOnTouch(false).enabled(this.ready && !this.creating)
+        .onClick((): void => { this.newSession(); })
       }
       .width('100%').constraintSize({ maxWidth: 712 })
+      if (this.chatError.length > 0) {
+        Text(this.chatError).fontSize(13).fontColor($r('sys.color.warning'))
+      }
     }
-    .height('100%').layoutWeight(1).padding({ left: 26, right: 26 }).justifyContent(FlexAlign.Center)
+    .width('100%').height('100%').padding({ left: 26, right: 26 }).justifyContent(FlexAlign.Center)
   }
 
   build() {
@@ -518,7 +669,7 @@ struct DesktopWorkspace {
         this.TopBar()
         Row() {
           this.Sidebar()
-          this.SessionPane()
+          this.SessionContent()
         }
         .width('100%').layoutWeight(1)
       }

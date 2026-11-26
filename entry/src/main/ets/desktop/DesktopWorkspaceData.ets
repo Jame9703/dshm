@@ -1,8 +1,10 @@
-import { projectSessionList, sessionListEndpoint, sessionListPayload } from 'appstate';
+import { projectSessionCreate, projectSessionList, sessionCreatePayload, sessionListEndpoint, sessionListPayload } from 'appstate';
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { StreamSink } from 'connection';
-import { argsFor, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { argsFor, SESSION_CREATE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { DesktopConversation } from './DesktopConversation';
+import type { DesktopConversationSnapshot } from './DesktopConversation';
 
 export interface DesktopWorkspaceRow {
   id: string;
@@ -33,6 +35,7 @@ function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
 
 export class DesktopWorkspaceData {
   private readonly connection: Connection = new Connection();
+  readonly conversation: DesktopConversation;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private active: boolean = true;
   private workspaceReady: boolean = false;
@@ -45,8 +48,11 @@ export class DesktopWorkspaceData {
   private archivedIds: Set<string> = new Set<string>();
   private stopWorkspace?: () => void;
 
-  constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void) {
+  constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
+    onConversation: (snapshot: DesktopConversationSnapshot) => void) {
     this.listener = listener;
+    this.conversation = new DesktopConversation(this.connection, onConversation,
+      (): void => { this.refreshSessions(); });
   }
 
   async start(url: string): Promise<void> {
@@ -80,8 +86,25 @@ export class DesktopWorkspaceData {
     }
   }
 
+  async createSession(workspaceId: string): Promise<string> {
+    const args = sessionCreatePayload(workspaceId, '', '', '');
+    if (args === undefined) {
+      return '';
+    }
+    const result = await this.connection.call(SESSION_CREATE_ENDPOINT, args);
+    if (!this.active || !result.ok) {
+      return '';
+    }
+    const id = projectSessionCreate(result.value)?.sessionId ?? '';
+    if (id.length > 0) {
+      await this.refreshSessions();
+    }
+    return id;
+  }
+
   stop(): void {
     this.active = false;
+    this.conversation.close();
     this.stopWorkspace?.();
     this.connection.stop();
   }

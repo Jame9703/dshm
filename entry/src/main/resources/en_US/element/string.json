@@ -367,6 +367,42 @@
     {
       "name": "desktop_experiment_welcome",
       "value": "Let's Vibe Coding"
+    },
+    {
+      "name": "desktop_chat_placeholder",
+      "value": "Write a message"
+    },
+    {
+      "name": "desktop_chat_select_model",
+      "value": "Choose model"
+    },
+    {
+      "name": "desktop_chat_model_settings",
+      "value": "Configure models in WebUI"
+    },
+    {
+      "name": "desktop_chat_effort",
+      "value": "Reasoning effort"
+    },
+    {
+      "name": "desktop_chat_send",
+      "value": "Send message"
+    },
+    {
+      "name": "desktop_chat_stop",
+      "value": "Stop current turn"
+    },
+    {
+      "name": "desktop_chat_earlier",
+      "value": "Load earlier messages"
+    },
+    {
+      "name": "desktop_chat_pending",
+      "value": "This turn needs input. Open it in WebUI."
+    },
+    {
+      "name": "desktop_chat_create_failed",
+      "value": "Couldn't create the session. Try again."
     }
   ]
 }

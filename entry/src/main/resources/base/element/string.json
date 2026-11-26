@@ -387,6 +387,42 @@
     {
       "name": "desktop_experiment_welcome",
       "value": "Let's Vibe Coding"
+    },
+    {
+      "name": "desktop_chat_placeholder",
+      "value": "输入消息"
+    },
+    {
+      "name": "desktop_chat_select_model",
+      "value": "请选择模型"
+    },
+    {
+      "name": "desktop_chat_model_settings",
+      "value": "在 WebUI 配置模型"
+    },
+    {
+      "name": "desktop_chat_effort",
+      "value": "推理等级"
+    },
+    {
+      "name": "desktop_chat_send",
+      "value": "发送消息"
+    },
+    {
+      "name": "desktop_chat_stop",
+      "value": "停止当前轮次"
+    },
+    {
+      "name": "desktop_chat_earlier",
+      "value": "加载更早消息"
+    },
+    {
+      "name": "desktop_chat_pending",
+      "value": "本轮需要确认，打开 WebUI 处理"
+    },
+    {
+      "name": "desktop_chat_create_failed",
+      "value": "无法新建会话，请重试"
     }
   ]
 }
