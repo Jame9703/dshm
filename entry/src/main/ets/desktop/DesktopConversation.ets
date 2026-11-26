@@ -14,6 +14,7 @@ import {
 import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument, isDesktopPlanCommand } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
+import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
 
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
@@ -30,12 +31,14 @@ export interface DesktopTranscriptItem {
   message?: TrajectoryItem;
   plan?: DesktopPlanDocument;
   artifacts?: DesktopTurnArtifacts;
+  process?: DesktopProcessGroup;
 }
 
 export interface DesktopConversationSnapshot {
   sessionId: string;
   transcript: DesktopTranscriptItem[];
   partial: string;
+  preparingTool: string;
   loading: boolean;
   hasEarlier: boolean;
   running: boolean;
@@ -66,6 +69,7 @@ export class DesktopConversation {
   private timer: number = -1;
   private transcript: DesktopTranscriptItem[] = [];
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
+  private readonly toolLog: DesktopToolLog = new DesktopToolLog();
   private planMode?: boolean;
   private planAsOf: number = -1;
   private models: ModelOption[] = [];
@@ -82,6 +86,7 @@ export class DesktopConversation {
   private waitingForInput: boolean = false;
   private attempt: string = '';
   private partial: string = '';
+  private preparingTool: string = '';
   private permissions: DesktopPermissionOption[] = [];
   private permission: string = '';
   private permissionsRequested: boolean = false;
@@ -125,6 +130,7 @@ export class DesktopConversation {
     this.interactions.select(sessionId);
     this.transcript = [];
     this.turnArtifacts.clear();
+    this.toolLog.clear();
     this.planMode = undefined;
     this.planAsOf = -1;
     this.model = undefined;
@@ -139,6 +145,7 @@ export class DesktopConversation {
     this.waitingForInput = false;
     this.attempt = '';
     this.partial = '';
+    this.preparingTool = '';
     this.publish();
     if (sessionId.length === 0) {
       return;
@@ -288,6 +295,7 @@ export class DesktopConversation {
       this.stopFollow = undefined;
       this.attempt = '';
       this.partial = '';
+      this.preparingTool = '';
       this.publish();
     }
   }
@@ -325,12 +333,13 @@ export class DesktopConversation {
     const result: Map<string, DesktopTranscriptItem> = new Map<string, DesktopTranscriptItem>();
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
-        if (item.artifacts === undefined) {
+        if (item.artifacts === undefined && item.process === undefined) {
           result.set(item.id, item);
         }
       });
     } else {
       this.turnArtifacts.clear();
+      this.toolLog.clear();
     }
     for (const record of records) {
       const seq = getNumber(getRecord(record, 'event'), 'seq') ?? -1;
@@ -339,6 +348,7 @@ export class DesktopConversation {
       }
       const event = getRecord(record, 'event');
       observeDesktopArtifacts(this.turnArtifacts, event);
+      this.toolLog.observe(record);
       const plan = desktopSubmittedPlan(event);
       if (plan !== undefined) {
         const id = 'plan:' + plan.callId;
@@ -353,7 +363,8 @@ export class DesktopConversation {
         continue;
       }
       const message = projectWireRecord(record);
-      if (message !== undefined && message.kind === TrajectoryKind.MESSAGE && !message.internal && message.speaker !== Speaker.SYSTEM && message.body.length > 0) {
+      if (message !== undefined && message.kind === TrajectoryKind.MESSAGE && !message.internal && message.speaker !== Speaker.SYSTEM &&
+        (message.body.length > 0 || message.reasoning.length > 0)) {
         result.set(message.id, { id: message.id, sequence: seq, message: message });
       }
     }
@@ -363,8 +374,24 @@ export class DesktopConversation {
         result.set(id, { id: id, sequence: row.closeSequence, artifacts: row });
       }
     });
-    this.transcript = Array.from(result.values()).sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
+    for (const process of this.toolLog.groups()) {
+      const id = `process:${this.sessionId}:${process.id}`;
+      result.set(id, { id: id, sequence: process.sequence, process: process });
+    }
+    const ordered = Array.from(result.values()).sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
       a.sequence - b.sequence);
+    const transcript: DesktopTranscriptItem[] = [];
+    for (const current of ordered) {
+      const previous = transcript[transcript.length - 1]?.process;
+      const process = current.process;
+      if (previous !== undefined && process !== undefined && previous.turn === process.turn) {
+        previous.steps.push(...process.steps);
+        previous.version += ':' + process.version;
+      } else {
+        transcript.push(current);
+      }
+    }
+    this.transcript = transcript;
     this.hasEarlier = hasEarlier;
   }
 
@@ -514,6 +541,9 @@ export class DesktopConversation {
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
+      if (eventType === 'tool/call' || eventType === EVENT_TURN_END || eventType === 'assistant/message') {
+        this.preparingTool = '';
+      }
       if (eventType?.startsWith('user-question/') || eventType === 'tool/result' || eventType === 'user/message' ||
         eventType === 'plan/mode' || eventType === 'command/done') {
         this.loadSelection(this.generation);
@@ -545,13 +575,17 @@ export class DesktopConversation {
         this.running = true;
         this.attempt = getString(update, 'attemptId') ?? '';
         this.partial = '';
+        this.preparingTool = '';
       } else if (this.attempt.length > 0 && getString(update, 'attemptId') === this.attempt) {
         const chunk = getRecord(update, 'chunk');
         if (kind === 'chunk' && getString(chunk, 'type') === 'text-delta') {
           this.partial += getString(chunk, 'text') ?? '';
+        } else if (kind === 'chunk' && getString(chunk, 'type') === 'tool-call-delta') {
+          this.preparingTool = getString(chunk, 'name') || this.preparingTool;
         } else if (kind === 'end' && getString(getRecord(update, 'outcome'), 'kind') === 'abandoned') {
           this.partial = '';
           this.attempt = '';
+          this.preparingTool = '';
         }
       }
     } else {
@@ -566,7 +600,7 @@ export class DesktopConversation {
     }
     const selection = this.model ?? this.defaultModel;
     this.listener({
-      sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, loading: this.loading,
+      sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       models: this.models, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,

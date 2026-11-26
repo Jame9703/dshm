@@ -8,6 +8,8 @@ import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopArtifactsPane } from './DesktopArtifactsPane';
 import { DesktopChangeTarget } from './DesktopArtifacts';
 import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopJobsControl } from './DesktopJobsControl';
+import { DesktopProcessPane } from './DesktopProcessPane';
 
 @Component
 export struct DesktopConversationPane {
@@ -52,6 +54,9 @@ export struct DesktopConversationPane {
   private messageCount: number = 0;
   private partial: string = '';
   private scrollTimer: number = -1;
+  @State private expandedProcesses: string[] = [];
+  @State private expandedReasoning: string[] = [];
+  @State private inspectedTool: string = '';
 
   aboutToDisappear(): void {
     if (this.scrollTimer !== -1) {
@@ -67,6 +72,9 @@ export struct DesktopConversationPane {
     if (id !== this.sessionId) {
       this.sessionId = id;
       this.following = true;
+      this.expandedProcesses = [];
+      this.expandedReasoning = [];
+      this.inspectedTool = '';
     } else if (count === this.messageCount && partial === this.partial) {
       return;
     }
@@ -147,7 +155,18 @@ export struct DesktopConversationPane {
           .constraintSize({ maxWidth: '82%' }).borderRadius(16)
           .backgroundColor($r('app.color.workspace_panel'))
       } else {
-        MarkdownRenderer({ text: item.body })
+        if (item.reasoning) {
+          Button(this.expandedReasoning.includes(item.id) ? '收起思考过程' : '思考过程',
+            { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .height(30).onClick((): void => {
+              this.expandedReasoning = this.expandedReasoning.includes(item.id) ?
+                this.expandedReasoning.filter((id: string): boolean => id !== item.id) : [...this.expandedReasoning, item.id];
+            })
+          if (this.expandedReasoning.includes(item.id)) {
+            MarkdownRenderer({ text: item.reasoning })
+          }
+        }
+        if (item.body) { MarkdownRenderer({ text: item.body }) }
       }
     }
     .width('100%').constraintSize({ maxWidth: 712 })
@@ -266,6 +285,9 @@ export struct DesktopConversationPane {
           }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if (this.snapshot?.sessionId) {
+          DesktopJobsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '' })
+        }
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           SymbolGlyph($r('sys.symbol.folder')).fontSize(18).fontColor([$r('sys.color.font_primary')])
         }
@@ -302,11 +324,19 @@ export struct DesktopConversationPane {
                 DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
                   artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
                   onReview: this.onChanges })
+              } else if (item.process !== undefined) {
+                DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
+                  inspected: this.inspectedTool, onFile: this.onArtifactFile,
+                  onToggle: (): void => {
+                    this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
+                      this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
+                  },
+                  onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
               }
             }
             .width('100%').justifyContent(FlexAlign.Center)
           }
-        }, (item: DesktopTranscriptItem): string => item.id)
+        }, (item: DesktopTranscriptItem): string => item.id + (item.process?.version ?? ''))
         if ((this.snapshot?.partial.length ?? 0) > 0) {
           ListItem() {
             Row() {
@@ -314,6 +344,14 @@ export struct DesktopConversationPane {
                 .width('100%').constraintSize({ maxWidth: 712 })
             }
             .width('100%').justifyContent(FlexAlign.Center)
+          }
+        }
+        if (this.snapshot?.preparingTool) {
+          ListItem() {
+            Row({ space: 7 }) {
+              LoadingProgress().width(16).height(16)
+              Text(`正在准备 ${this.snapshot?.preparingTool ?? ''}`).fontSize(13)
+            }.width('100%').constraintSize({ maxWidth: 712 }).padding({ left: 7 })
           }
         }
       }
