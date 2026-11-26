@@ -2,13 +2,19 @@ import { projectSessionCreate, projectSessionList, sessionCreatePayload, session
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { EventSink, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, SESSION_CREATE_ENDPOINT,
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT,
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopInteractions } from './DesktopInteractions';
 import type { DesktopInteraction } from './DesktopInteractions';
 import { DesktopConversation } from './DesktopConversation';
 import type { DesktopConversationSnapshot } from './DesktopConversation';
+import { desktopForkTitle } from './DesktopReplyTimeline';
+
+export interface DesktopForkResult {
+  id: string;
+  problem: string;
+}
 
 export interface DesktopWorkspaceRow {
   id: string;
@@ -148,6 +154,30 @@ export class DesktopWorkspaceData {
       await this.refreshSessions();
     }
     return id;
+  }
+
+  async forkSession(sessionId: string, atSeq?: number): Promise<DesktopForkResult> {
+    const source = this.sessions.find((session: SessionListItem): boolean => session.id === sessionId);
+    const request: Record<string, Object> = { 'sessionId': sessionId, 'allowMigration': atSeq !== undefined };
+    if (atSeq !== undefined) { request['atSeq'] = atSeq; }
+    const result = await this.actions.call(SESSION_FORK_ENDPOINT, request);
+    if (!this.active) { return { id: '', problem: '' }; }
+    if (!result.ok) {
+      if (result.error?.code === 'session/workspace-attach-failed') { await this.refreshSessions(); }
+      const code = result.error?.code;
+      return { id: '', problem: code === 'session/migration-required' ? '请先打开会话完成迁移，再分叉' :
+        (code === 'session/fork-unavailable' ? '会话没有可分叉的已完成回合' : result.error?.message || '分叉会话失败') };
+    }
+    const id = getString(result.value, 'sessionId') ?? '';
+    if (!id) { return { id: '', problem: '宿主未返回分叉会话' }; }
+    let problem = '';
+    if (source?.title) {
+      const taken = new Set<string>(this.sessions.map((session: SessionListItem): string => session.title));
+      const renamed = await this.actions.call('session/rename', { 'sessionId': id, 'title': desktopForkTitle(source.title, taken) });
+      if (!renamed.ok) { problem = '会话已分叉，但重命名失败'; }
+    }
+    await this.refreshSessions();
+    return { id: id, problem: problem };
   }
 
   async manage(endpoint: string, payload: Record<string, Object>): Promise<string> {

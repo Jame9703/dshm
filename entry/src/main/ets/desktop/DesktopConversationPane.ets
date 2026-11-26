@@ -37,6 +37,8 @@ export struct DesktopConversationPane {
   @Prop copyingTranscript: boolean = false;
   @Prop exportingLog: boolean = false;
   @Prop choosingFeedback: boolean = false;
+  @Prop forking: boolean = false;
+  onFork: (sessionId: string, atSeq: number) => void = (_sessionId: string, _atSeq: number): void => {};
   onDraft: (value: string) => void = () => {};
   onAddAttachment: () => void = () => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
@@ -634,10 +636,21 @@ export struct DesktopConversationPane {
               } else if (item.replyTail !== undefined) {
                 DesktopReplyActions({ messageId: item.replyTail.messageId, text: item.replyTail.text,
                   timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
+                  canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
+                  onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
                   choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
                   onRating: (messageId: string, rating: DesktopRating): void => {
                     this.onReplyRating(this.sessionId, messageId, rating);
                   } })
+              } else if (item.inheritedHistory === true) {
+                Row({ space: 8 }) {
+                  Divider().layoutWeight(1).color($r('app.color.workspace_border'))
+                  Image($r('app.media.dsh_session_branch_outline')).width(14).height(14)
+                    .supportSvg2(true).draggable(false).accessibilityLevel('no')
+                  Text('以上为继承的历史消息').key('desktopInheritedHistory')
+                    .fontSize(12).fontColor($r('sys.color.font_tertiary'))
+                  Divider().layoutWeight(1).color($r('app.color.workspace_border'))
+                }.width('100%').constraintSize({ maxWidth: 712 })
               } else if (item.message !== undefined) {
                 this.Message(item.message)
               } else if (item.artifacts !== undefined) {

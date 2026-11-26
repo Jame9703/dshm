@@ -72,6 +72,9 @@ struct DesktopWorkspace {
   @State private switching: boolean = false;
   @State private panel: string = 'session';
   @State private workspaceBusy: boolean = false;
+  @State private forking: boolean = false;
+  private pendingForkId: string = '';
+  private pendingForkSource: string = '';
   @State private archived: SessionListItem[] = [];
   @State private pinned: string[] = [];
   @State private archiveOpen: boolean = false;
@@ -246,6 +249,11 @@ struct DesktopWorkspace {
       this.expandedIds = first === undefined ? [] : [first.id];
     }
     this.filterGroups(this.query);
+    if (this.pendingForkId && (this.sessionId !== this.pendingForkSource || this.panel !== 'session' ||
+      this.openSessionById(this.pendingForkId, false))) {
+      this.pendingForkId = '';
+      this.pendingForkSource = '';
+    }
   }
 
   private pinRank(id: string): number {
@@ -315,6 +323,8 @@ struct DesktopWorkspace {
       { value: pinned ? '取消置顶' : '置顶会话', action: (): void => {
         this.manage(pinned ? 'workspace/unpinSession' : 'workspace/pinSession', { 'sessionId': session.id });
       } },
+      { value: '分叉会话', icon: $r('app.media.dsh_session_branch_outline'),
+        action: (): void => { this.forkFrom(session.id); } },
       { value: '归档会话', action: (): void => {
         this.manage('workspace/archiveSession', { 'sessionId': session.id });
       } }
@@ -855,16 +865,40 @@ struct DesktopWorkspace {
     }
   }
 
-  private openSessionById(id: string): void {
+  private async forkFrom(source: string, atSeq?: number): Promise<void> {
+    const data = this.data;
+    if (data === undefined || this.forking ||
+      (atSeq !== undefined && (source !== this.sessionId || !data.conversation.canForkAt(atSeq)))) {
+      return;
+    }
+    this.forking = true;
+    try {
+      const result = await data.forkSession(source, atSeq);
+      if (!this.pageActive || this.data !== data) { return; }
+      if (result.problem) {
+        this.getUIContext().getPromptAction().showToast({ message: result.problem });
+      } else if (atSeq !== undefined && result.id && this.sessionId === source && this.panel === 'session' &&
+        !this.openSessionById(result.id, false)) {
+        this.pendingForkId = result.id;
+        this.pendingForkSource = source;
+      }
+    } finally {
+      this.forking = false;
+    }
+  }
+
+  private openSessionById(id: string, notifyMissing: boolean = true): boolean {
     for (const group of this.groups) {
       const row = group.sessions.find((session: SessionListItem): boolean => session.id === id);
       if (row !== undefined) {
         this.selectSession(group, row);
         this.panel = 'session';
-        return;
+        if (!this.expandedIds.includes(group.id)) { this.expandedIds = [...this.expandedIds, group.id]; }
+        return true;
       }
     }
-    this.getUIContext().getPromptAction().showToast({ message: '会话暂不可用' });
+    if (notifyMissing) { this.getUIContext().getPromptAction().showToast({ message: '会话暂不可用' }); }
+    return false;
   }
 
   @Builder
@@ -1348,6 +1382,8 @@ struct DesktopWorkspace {
           copyingTranscript: this.copyingTranscript,
           exportingLog: this.exportingLog,
           choosingFeedback: this.choosingFeedback,
+          forking: this.forking,
+          onFork: (id: string, atSeq: number): void => { this.forkFrom(id, atSeq); },
           onSessionFeedback: (sessionId: string): Promise<string> => this.openSessionFeedback(sessionId),
           onWarmFeedback: (sessionId: string): void => { this.data?.conversation.feedback.ensure(sessionId); },
           onReplyRating: (sessionId: string, messageId: string, rating: DesktopRating): void => {

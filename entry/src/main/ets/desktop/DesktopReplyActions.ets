@@ -9,6 +9,9 @@ export struct DesktopReplyActions {
   @Prop timestamp: number = 0;
   @Prop feedbackRows: FeedbackRow[] = [];
   @Prop choosing: boolean = false;
+  @Prop canFork: boolean = false;
+  @Prop forking: boolean = false;
+  onFork: () => void = (): void => {};
   onWarm: () => void = (): void => {};
   onRating: (messageId: string, rating: DesktopRating) => void =
     (_messageId: string, _rating: DesktopRating): void => {};
@@ -62,6 +65,12 @@ export struct DesktopReplyActions {
         $r('app.media.dsh_feedback_like_fill'), '好的回答', 'desktopReplyLike')
       this.Rate(DesktopRating.NEGATIVE, $r('app.media.dsh_feedback_dislike_outline'),
         $r('app.media.dsh_feedback_dislike_fill'), '有问题的回答', 'desktopReplyDislike')
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        this.Icon($r('app.media.dsh_session_branch_outline'))
+      }.width(28).height(28).padding(0).borderRadius(7).focusOnTouch(false)
+        .enabled(this.canFork && !this.forking).key('desktopReplyFork-' + this.messageId)
+        .accessibilityText(this.canFork ? '在新对话中分支' : '仅可从已完成轮次的最后一条消息分支')
+        .onClick(this.onFork)
       if (this.timestamp > 0) {
         Text(this.clock()).fontSize(12).fontColor($r('sys.color.font_tertiary')).margin({ left: 4 })
       }
