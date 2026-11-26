@@ -57,6 +57,7 @@ export struct DesktopFilesPane {
   @Prop @Watch('reset') sessionId: string = '';
   @Prop @Watch('openRequested') requested: DesktopFileNavigation | undefined = undefined;
   onHide: () => void = (): void => {};
+  onReferenceWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onAttachWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
 
   @State private rows: FileRow[] = [];
@@ -390,6 +391,7 @@ export struct DesktopFilesPane {
       } }
     ];
     if (!row.directory) {
+      items.push({ value: '添加到对话', action: (): void => { this.onReferenceWorkspaceFile(row.path, row.name); } });
       items.push({ value: '添加为附件', action: (): void => { this.onAttachWorkspaceFile(row.path, row.name); } });
     }
     if (!row.directory && this.ability !== undefined) {

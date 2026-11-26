@@ -28,6 +28,9 @@ import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
+import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
+import { desktopReferenceText } from '../desktop/DesktopReferences';
 import { DesktopAttachmentViewer, desktopDraftGif } from '../desktop/DesktopAttachments';
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from '../desktop/DesktopAttachments';
 import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
@@ -78,6 +81,7 @@ struct DesktopWorkspace {
   @State private appearance: string = 'system';
   @State private selectedTitle: ResourceStr = '';
   @State private selectedSessionDirectory: string = '';
+  @State private referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
@@ -702,6 +706,7 @@ struct DesktopWorkspace {
 
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
     if (this.sessionId !== session.id) {
+      this.referenceOffer = undefined;
       this.closeFeedback();
       this.closeImagePreview();
       this.draft = this.drafts.get(session.id) ?? '';
@@ -731,6 +736,7 @@ struct DesktopWorkspace {
     this.closeFeedback();
     this.closeImagePreview();
     this.sessionId = '';
+    this.referenceOffer = undefined;
     this.selectedTitle = '';
     this.draft = '';
     this.attachments = [];
@@ -1212,6 +1218,58 @@ struct DesktopWorkspace {
       this.closeFiles();
       this.terminalSession = '';
       this.changesTarget = target;
+    }
+  }
+
+  private async referenceFileAction(action: DesktopReferenceAction, path: string, name: string): Promise<void> {
+    const sessionId = this.sessionId;
+    const host = this.data?.actions;
+    if (!sessionId || host === undefined) { return; }
+    const result = await host.call('workspaceFiles/stat', { 'workspaceFileScopeId': sessionId, 'path': path });
+    if (!this.pageActive || this.sessionId !== sessionId || this.data?.actions !== host) { return; }
+    const absolute = getString(result.value, 'absolutePath') ?? '';
+    const ability = this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext');
+    const toast = this.getUIContext().getPromptAction();
+    if (!result.ok || !absolute.startsWith('/')) {
+      toast.showToast({ message: '无法访问此文件' });
+      return;
+    }
+    try {
+      switch (action) {
+        case DesktopReferenceAction.ADD_TO_CHAT:
+          if (desktopReferenceText(absolute, false, true) && !this.busySessions.includes(sessionId) &&
+            this.chat?.sessionId === sessionId && this.chat?.loading === false) {
+            this.referenceOffer = { sessionId: sessionId, path: absolute };
+          } else {
+            toast.showToast({ message: '无法添加文件，请返回对话后重试' });
+          }
+          break;
+        case DesktopReferenceAction.COPY_PATH:
+          toast.showToast({ message: await copyText(absolute) ? '已复制' : '无法复制路径' });
+          break;
+        case DesktopReferenceAction.COPY_IMAGE:
+          await copyDesktopReferenceImage(absolute);
+          toast.showToast({ message: '已复制' });
+          break;
+        case DesktopReferenceAction.DOWNLOAD:
+          if (ability === undefined) { throw new Error('Missing context'); }
+          if (await saveDesktopReferenceFile(ability, absolute, name)) {
+            toast.showToast({ message: '已下载' });
+          }
+          break;
+        case DesktopReferenceAction.OPEN:
+          if (ability === undefined || !await openDesktopReferenceFile(ability, absolute, name)) {
+            toast.showToast({ message: '系统未能打开此文件' });
+          }
+          break;
+        case DesktopReferenceAction.REVEAL:
+          if (ability === undefined || openFileLocation(ability, absolute) !== 'ok') {
+            toast.showToast({ message: '无法在系统文件中定位' });
+          }
+          break;
+      }
+    } catch (_) {
+      toast.showToast({ message: action === DesktopReferenceAction.DOWNLOAD ? '无法保存文件' : '无法复制图片' });
     }
   }
 
@@ -1821,12 +1879,16 @@ struct DesktopWorkspace {
           onPlanPreview: (plan: DesktopPlanDocument): void => { this.showPlan(plan); },
           onPlanResume: (id: string): void => { this.data?.interactions.reopenPlanReview(id); },
           onArtifactFile: (path: string, name: string): void => { this.showArtifact(path, name); },
+          onReferenceFileAction: (action: DesktopReferenceAction, path: string, name: string): void => {
+            this.referenceFileAction(action, path, name);
+          },
           onArtifactAction: (path: string, name: string, reveal: boolean): void => { this.openArtifactAction(path, name, reveal); },
           onChanges: (target: DesktopChangeTarget): void => { this.showChanges(target); },
           title: this.selectedTitle,
           workspaceTitle: this.selectedWorkspaceTitle,
           sessionDirectory: this.selectedSessionDirectory,
           draft: this.draft,
+          referenceOffer: this.referenceOffer,
           attachments: this.attachments,
           onAddAttachment: (): void => this.attachDocument(),
           onDropAttachments: (files: DesktopDroppedFiles): void => { this.attachDroppedFiles(files); },
@@ -1927,7 +1989,10 @@ struct DesktopWorkspace {
               sessionId: this.sessionId,
               requested: this.requestedFile,
               onHide: (): void => { this.closeFiles(); },
-              onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); }
+              onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); },
+              onReferenceWorkspaceFile: (path: string, name: string): void => {
+                this.referenceFileAction(DesktopReferenceAction.ADD_TO_CHAT, path, name);
+              }
             })
           }
           .width(this.rightPaneWidth).height('100%')

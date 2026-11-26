@@ -53,6 +53,20 @@ export function desktopReferenceText(path: string, quoted: boolean, settling: bo
   return quoted || /\s/u.test(path) ? '@"' + path + (settling ? '"' : '') : '@' + path;
 }
 
+export interface DesktopReferenceInsertion {
+  position: number;
+  text: string;
+}
+
+export function desktopFileReferenceInsertion(draft: string, cursor: number, path: string): DesktopReferenceInsertion | undefined {
+  const mention = path.startsWith('/') ? desktopReferenceText(path, false, true) : '';
+  if (!mention) { return undefined; }
+  const position = cursor < 0 ? draft.length : Math.min(cursor, draft.length);
+  const before = position > 0 && !/\s/u.test(draft.charAt(position - 1)) ? ' ' : '';
+  const after = /\s/u.test(draft.charAt(position)) ? '' : ' ';
+  return { position: position, text: before + mention + after };
+}
+
 export function desktopSettledReference(row: DesktopReferenceChoice, cwd: string, quoted: boolean): string {
   if (row.kind === 'session') { return row.mention; }
   const suffix = row.kind === 'directory' ? '/' : '';

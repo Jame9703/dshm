@@ -1,4 +1,8 @@
+import { text } from '@kit.ArkGraphics2D';
+import { mimeTypeForName } from 'platform';
 import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopReferenceAction } from './DesktopReferenceActions';
+import { desktopMenuOptions } from './DesktopMenuOptions';
 
 export interface DesktopReferenceRun {
   kind: string;
@@ -67,7 +71,16 @@ export struct DesktopReferenceMessage {
   @Prop nodeKey: string = '';
   host?: DesktopHostActions;
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
+  @Prop canAddReference: boolean = false;
+  onAction: (action: DesktopReferenceAction, path: string, name: string) => void =
+    (_action: DesktopReferenceAction, _path: string, _name: string): void => {};
   @State private runs: DesktopReferenceRun[] = [];
+  @State private menuTarget: DesktopReferenceRun | undefined = undefined;
+  @State private menuShown: boolean = false;
+  @State private menuAnchor: Position = { x: 0, y: 0 };
+  private readonly controller: TextController = new TextController();
+  private readonly referenceGesture: string = 'fileReferenceContext';
+  private pendingMenuAction?: DesktopReferenceAction;
   @State private confirmed: string[] = [];
   private active: boolean = false;
   private visible: boolean = false;
@@ -82,6 +95,9 @@ export struct DesktopReferenceMessage {
   aboutToDisappear(): void {
     this.active = false;
     this.visible = false;
+    this.menuShown = false;
+    this.pendingMenuAction = undefined;
+    this.menuTarget = undefined;
     this.revision++;
   }
 
@@ -125,6 +141,90 @@ export struct DesktopReferenceMessage {
     if (this.active && this.confirmed.includes(run.path)) { this.onFile(run.path, run.label); }
   }
 
+  private showsChip(run: DesktopReferenceRun): boolean {
+    return run.kind === 'session' || (run.path !== '' && this.confirmed.includes(run.path));
+  }
+
+  private fileAt(x: number, y: number): DesktopReferenceRun | undefined {
+    if (!this.active) { return undefined; }
+    const context = this.getUIContext();
+    const pxX = context.vp2px(x);
+    const pxY = context.vp2px(y);
+    const layout = this.controller.getLayoutManager();
+    let start = 0;
+    for (const run of this.runs) {
+      const chip = this.showsChip(run);
+      // The inline image occupies one text position, followed by the label's leading space.
+      const end = start + (chip ? run.label.length + 2 : run.raw.length);
+      if (run.kind === 'file' && chip) {
+        const boxes = layout.getRectsForRange({ start: start, end: end }, text.RectWidthStyle.TIGHT, text.RectHeightStyle.MAX);
+        if (boxes.some((box: TextBox): boolean => pxX >= box.rect.left && pxX <= box.rect.right &&
+          pxY >= box.rect.top && pxY <= box.rect.bottom)) {
+          return run;
+        }
+      }
+      start = end;
+    }
+    return undefined;
+  }
+
+  private showMenuAt(x: number, y: number): boolean {
+    if (this.menuShown) { return false; }
+    const target = this.fileAt(x, y);
+    if (target === undefined) { return false; }
+    this.controller.closeSelectionMenu();
+    this.menuAnchor = { x: x, y: y };
+    this.menuTarget = target;
+    this.pendingMenuAction = undefined;
+    this.menuShown = true;
+    return true;
+  }
+
+  private invoke(action: DesktopReferenceAction): void {
+    if (this.menuShown) {
+      this.pendingMenuAction = action;
+    } else {
+      this.performMenuAction(action);
+    }
+  }
+
+  private closeFileMenu(): void {
+    this.menuShown = false;
+    const action = this.pendingMenuAction;
+    this.pendingMenuAction = undefined;
+    if (action !== undefined) { this.performMenuAction(action); }
+  }
+
+  private performMenuAction(action: DesktopReferenceAction): void {
+    const run = this.menuTarget;
+    if (run !== undefined && this.active) { this.onAction(action, run.path, run.label); }
+  }
+
+  @Builder
+  private FileMenu() {
+    Menu() {
+      MenuItemGroup() {
+        MenuItem({ content: '在文件夹显示', startIcon: $r('app.media.dsh_reference_menu_folder_open') })
+          .key('desktopReferenceReveal').onChange((_selected: boolean): void => { this.invoke(DesktopReferenceAction.REVEAL); })
+        MenuItem({ content: '使用默认应用打开', startIcon: $r('app.media.dsh_reference_menu_right_up') })
+          .key('desktopReferenceOpen').onChange((_selected: boolean): void => { this.invoke(DesktopReferenceAction.OPEN); })
+        MenuItem({ content: '复制文件路径', startIcon: $r('app.media.dsh_session_copy') })
+          .key('desktopReferenceCopyPath').onChange((_selected: boolean): void => { this.invoke(DesktopReferenceAction.COPY_PATH); })
+      }
+      MenuItemGroup() {
+        if (mimeTypeForName(this.menuTarget?.label ?? '').startsWith('image/')) {
+          MenuItem({ content: '复制图片', startIcon: $r('app.media.dsh_session_copy') })
+            .key('desktopReferenceCopyImage').onChange((_selected: boolean): void => { this.invoke(DesktopReferenceAction.COPY_IMAGE); })
+        }
+        MenuItem({ content: '下载', startIcon: $r('app.media.dsh_session_download') })
+          .key('desktopReferenceDownload').onChange((_selected: boolean): void => { this.invoke(DesktopReferenceAction.DOWNLOAD); })
+      }
+      MenuItem({ content: '添加到对话', startIcon: $r('app.media.dsh_reference_menu_plus') })
+        .key('desktopReferenceAddToChat').enabled(this.canAddReference)
+        .onChange((_selected: boolean): void => { this.invoke(DesktopReferenceAction.ADD_TO_CHAT); })
+    }.width(216)
+  }
+
   @Builder
   private Chip(run: DesktopReferenceRun) {
     if (run.kind === 'file') {
@@ -140,21 +240,46 @@ export struct DesktopReferenceMessage {
 
   build() {
     Column({ space: 4 }) {
-      Text() {
-        ForEach(this.runs, (run: DesktopReferenceRun): void => {
-          if (run.kind === 'session' || (run.path && this.confirmed.includes(run.path))) {
-            this.Chip(run)
-          } else {
-            Span(run.raw)
-          }
-        }, (run: DesktopReferenceRun): string => String(run.start) + ':' + run.raw)
-      }.key(this.nodeKey).fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
-        .padding({ left: 14, right: 14, top: 10, bottom: 10 }).borderRadius(16)
+      Stack({ alignContent: Alignment.TopStart }) {
+        Text(undefined, { controller: this.controller }) {
+          ForEach(this.runs, (run: DesktopReferenceRun): void => {
+            if (this.showsChip(run)) {
+              this.Chip(run)
+            } else {
+              Span(run.raw)
+            }
+          }, (run: DesktopReferenceRun): string => String(run.start) + ':' + run.raw)
+        }.key(this.nodeKey).fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
+          .onMouse((event: MouseEvent): void => {
+            if (event.button !== MouseButton.Right) { return; }
+            if (event.action === MouseAction.Press && this.fileAt(event.x, event.y) !== undefined) {
+              event.stopPropagation();
+            } else if (event.action === MouseAction.Release && this.showMenuAt(event.x, event.y)) {
+              event.stopPropagation();
+            }
+          })
+          .priorityGesture(LongPressGesture({ duration: 420 }).tag(this.referenceGesture).onAction((event: GestureEvent): void => {
+            const point = event.fingerList[0];
+            if (point !== undefined) { this.showMenuAt(point.localX, point.localY); }
+          }))
+          .onGestureJudgeBegin((info: GestureInfo, event: BaseGestureEvent): GestureJudgeResult => {
+            if (info.tag !== this.referenceGesture) { return GestureJudgeResult.CONTINUE; }
+            const point = event.fingerList[0];
+            return point !== undefined && this.fileAt(point.localX, point.localY) !== undefined ?
+              GestureJudgeResult.CONTINUE : GestureJudgeResult.REJECT;
+          })
+          .onVisibleAreaChange([0.01], (visible: boolean): void => {
+            this.visible = visible;
+            if (visible) { this.resolvePaths(); }
+          })
+        Row().width(1).height(1).position(this.menuAnchor).hitTestBehavior(HitTestMode.None)
+          .bindContextMenu(this.menuShown, this.FileMenu(), {
+            placement: Placement.BottomLeft,
+            systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial,
+            onDisappear: (): void => { this.closeFileMenu(); }
+          })
+      }.padding({ left: 14, right: 14, top: 10, bottom: 10 }).borderRadius(16)
         .backgroundColor($r('app.color.workspace_panel'))
-        .onVisibleAreaChange([0.01], (visible: boolean): void => {
-          this.visible = visible;
-          if (visible) { this.resolvePaths(); }
-        })
       if (this.referenceLabels.length > 0) {
         Text('引用会话 · ' + this.referenceLabels.join('、')).fontSize(12).fontColor($r('sys.color.font_secondary'))
           .padding({ left: 4, right: 4 })

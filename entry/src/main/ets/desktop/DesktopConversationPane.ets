@@ -19,12 +19,14 @@ import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDeskto
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { activeDesktopReference, desktopReferenceChoices, desktopReferenceCrumbs, desktopReferenceText,
-  desktopSettledReference } from './DesktopReferences';
+  desktopFileReferenceInsertion, desktopSettledReference } from './DesktopReferences';
 import type { DesktopReferenceChoice, DesktopReferenceCrumb, DesktopReferenceToken } from './DesktopReferences';
 import { DesktopGoalBar } from './DesktopGoalBar';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
 import { DesktopReferenceMessage } from './DesktopReferenceMessage';
+import { DesktopReferenceAction } from './DesktopReferenceActions';
+import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
 import { DesktopReplyActions } from './DesktopReplyActions';
 import { DesktopQueueDock } from './DesktopQueueDock';
 import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
@@ -39,6 +41,7 @@ export struct DesktopConversationPane {
   @Prop workspaceTitle: ResourceStr = '';
   @Prop sessionDirectory: string = '';
   @Prop draft: string = '';
+  @Prop @Watch('insertFileReference') referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
   @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: DesktopDraftAttachment[] = [];
   @Prop busy: boolean = false;
@@ -90,6 +93,8 @@ export struct DesktopConversationPane {
   onPlanPreview: (plan: DesktopPlanDocument) => void = (_plan: DesktopPlanDocument): void => {};
   onPlanDecision: (id: string, approve: boolean) => void = (_id: string, _approve: boolean): void => {};
   onPlanResume: (id: string) => void = (_id: string): void => {};
+  onReferenceFileAction: (action: DesktopReferenceAction, path: string, name: string) => void =
+    (_action: DesktopReferenceAction, _path: string, _name: string): void => {};
   onArtifactFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onArtifactAction: (path: string, name: string, reveal: boolean) => void =
     (_path: string, _name: string, _reveal: boolean): void => {};
@@ -106,6 +111,7 @@ export struct DesktopConversationPane {
   @State private expandedReasoning: string[] = [];
   @State private inspectedTool: string = '';
   private readonly composer: TextAreaController = new TextAreaController();
+  private composerSelectionEnd: number = -1;
   private readonly paletteScroller: Scroller = new Scroller();
   private slashFrame: number = -1;
   private triggerText?: string;
@@ -144,6 +150,7 @@ export struct DesktopConversationPane {
     const partial = this.snapshot?.partial ?? '';
     if (id !== this.sessionId) {
       this.sessionId = id;
+      this.composerSelectionEnd = -1;
       this.following = true;
       this.expandedProcesses = [];
       this.expandedReasoning = [];
@@ -347,6 +354,19 @@ export struct DesktopConversationPane {
       `${row.title} ${row.detail} ${row.value}`.toLowerCase().includes(needle))
       .map((row: DesktopPermissionOption): DesktopPaletteRow => ({ id: row.value, title: row.title, detail: row.detail,
         section: '', token: this.snapshot?.permission === row.value ? '✓' : '' }));
+  }
+
+  private insertFileReference(): void {
+    const offer = this.referenceOffer;
+    if (offer === undefined) { return; }
+    setTimeout((): void => {
+      if (offer.sessionId !== this.sessionId || !this.acceptsAttachments()) { return; }
+      const original = this.draft;
+      const insert = desktopFileReferenceInsertion(original, this.composerSelectionEnd, offer.path);
+      if (insert === undefined) { return; }
+      this.closePalette();
+      this.replaceComposerRange(original, insert.position, insert.position, insert.text, true);
+    }, 0);
   }
 
   private replaceSlash(original: string, token: DesktopSlashToken, replacement: string, refocus: boolean = true): void {
@@ -682,7 +702,7 @@ export struct DesktopConversationPane {
         if (item.body.includes('@') || referenceLabels.length > 0) {
           DesktopReferenceMessage({ text: item.body, referenceLabels: referenceLabels,
             sessionId: this.sessionId, host: this.host, nodeKey: 'desktopInlineReferences-' + item.id,
-            onFile: this.onArtifactFile })
+            canAddReference: this.acceptsAttachments(), onFile: this.onArtifactFile, onAction: this.onReferenceFileAction })
         } else if (item.body) {
           Text(item.body)
             .fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
@@ -799,6 +819,7 @@ export struct DesktopConversationPane {
           this.refreshSlash(text);
         })
         .onTextSelectionChange((start: number, end: number): void => {
+          this.composerSelectionEnd = end;
           if (start === end) { this.refreshSlash(undefined, end); }
           else if (this.palette === 'reference') { this.closePalette(); }
         })
