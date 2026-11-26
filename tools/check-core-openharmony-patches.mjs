@@ -1555,6 +1555,23 @@ const INJECTED_PATCHES = [
     }],
   },
 
+  {
+    key: '桌面 ArkUI 会话交接',
+    fn: 'patchDesktopWorkspaceSessionNavigation()',
+    note: '旧 WebUI 根据宿主会话 ID 打开原生侧栏所选会话，校验列表成员和归档状态。',
+    sites: [{
+      rel: 'node_modules/@deepseek-ai/dsh-client-ui-workspace/lib/client.js',
+      markers: [['globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ = openById', 1]],
+      forward: [
+        ['!sessions.list.getSnapshot().ids.includes(id)', '只接受宿主列表里的准确会话 ID'],
+        ['workspaces.list.getSnapshot().archivedSessionIds.includes(id)', '归档会话不参与交接'],
+        ['openSession(id);', '使用 WebUI 工作区服务打开会话'],
+        ['delete globalThis.__DSHM_OPEN_WORKSPACE_SESSION__', '插件释放时移除交接入口'],
+      ],
+      reverse: [],
+    }],
+  },
+
   /* ── ⑰ 默认工作区提示收口（2026-10-13，+dshm.38） ── */
   {
     key: '默认工作区提示',

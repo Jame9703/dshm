@@ -30,6 +30,7 @@
  * 与关于对话框同改为 DSHM，关于版本直接显示当前运行的 dsh 核心版本。
  */
 
+import { DESKTOP_WORKSPACE_PAGE, setDesktopWorkspaceEnabled } from '../desktop/DesktopWorkspacePreference';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { webview } from '@kit.ArkWeb';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
@@ -2979,6 +2980,38 @@ const NEW_SESSION_SCRIPT: string = `(function () {
     return 'error:' + (e && e.message ? e.message : String(e));
   }
 })()`;
+function buildDesktopWorkspaceSessionScript(sessionId: string, workspaceId: string): string {
+  return `(function () {
+    var id = ${JSON.stringify(sessionId)};
+    var workspace = ${JSON.stringify(workspaceId)};
+    var exactRow = function (key) {
+      return document.querySelector('[data-row-key="' + CSS.escape(key) + '"]');
+    };
+    if (typeof globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ === 'function') {
+      return globalThis.__DSHM_OPEN_WORKSPACE_SESSION__(id);
+    }
+    var row = exactRow('session:' + id);
+    if (row) {
+      if (row.getAttribute('aria-selected') === 'true') return true;
+      row.click();
+      return false;
+    }
+    var sidebar = globalThis.__DSHM_SIDEBAR__;
+    if (sidebar && sidebar.state() === 'collapsed') {
+      sidebar.toggle();
+      return false;
+    }
+    var group = exactRow('workspace:' + workspace);
+    if (group && group.getAttribute('aria-expanded') === 'false') {
+      group.click();
+      return false;
+    }
+    var more = exactRow('overflow:' + workspace);
+    if (more && more.getAttribute('aria-expanded') === 'false') more.click();
+    return false;
+  })()`;
+}
+
 /**
  * 卡片点击 →「直达当前会话」注入脚本（docs/178 第三轮增强）。
  *
@@ -4153,6 +4186,9 @@ const TABLET_STARTUP_REVEALED_BG: string = '#59' + SPLASH_BG.substring(1);
 @Component
 struct WebApp {
   @LocalStorageProp('dshStartupMainWindow') private startupMainWindow: boolean = false;
+  @LocalStorageLink('dshDesktopWebSessionId') private desktopWebSessionId: string = '';
+  @LocalStorageLink('dshDesktopWebWorkspaceId') private desktopWebWorkspaceId: string = '';
+  private desktopWorkspaceSwitching: boolean = false;
   @StorageProp(KEY_DESKTOP_HOST_STARTUP) private startupHostStage: number = DesktopHostStartupStage.WaitingForFolders;
   private startupProgressVisible: boolean = false;
   @State private desktopStartupComplete: boolean = false;
@@ -5875,6 +5911,35 @@ struct WebApp {
       return;
     }
     this.runNewSessionAction();
+  }
+
+  private openDesktopWorkspaceSession(): void {
+    const id: string = this.desktopWebSessionId;
+    if (id.length === 0) {
+      return;
+    }
+    const workspaceId: string = this.desktopWebWorkspaceId;
+    this.desktopWebSessionId = '';
+    this.desktopWebWorkspaceId = '';
+    const script: string = buildDesktopWorkspaceSessionScript(id, workspaceId);
+    const retry = (attempts: number): void => {
+      if (!this.startupPageActive) {
+        return;
+      }
+      this.controller.runJavaScript(script, (error: BusinessError, result: string): void => {
+        if (!this.startupPageActive) {
+          return;
+        }
+        if (!error && result === 'true') {
+          hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');
+        } else if (attempts > 0) {
+          setTimeout((): void => retry(attempts - 1), 100);
+        } else {
+          this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
+        }
+      });
+    };
+    retry(60);
   }
 
   /** 注入「直达会话」脚本（卡片点击用；失败 fail-closed 只留痕）。 */
@@ -7668,11 +7733,30 @@ struct WebApp {
     }
   }
 
+  private async openDesktopWorkspace(): Promise<void> {
+    if (this.desktopWorkspaceSwitching) {
+      return;
+    }
+    this.desktopWorkspaceSwitching = true;
+    const ui = this.getUIContext();
+    try {
+      const context = ui.getHostContext();
+      if (context === undefined) {
+        throw new Error('工作台设置不可用');
+      }
+      await setDesktopWorkspaceEnabled(context, true);
+      await ui.getRouter().replaceUrl({ url: DESKTOP_WORKSPACE_PAGE });
+    } catch (_) {
+      this.desktopWorkspaceSwitching = false;
+      ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_switch_failed') });
+    }
+  }
+
   /**
    * 「关于」菜单（bindMenu 数据）：版本信息 / 开源组件声明。
    *
    * 【2026-11-11 最终形态】顶栏只剩这一颗三点菜单 —— 「应用」菜单（主页 / 刷新）
-   * 及其实现在同一轮整体删除。点开只有两个子项，各自打开关于面板的对应单页；
+   * 及其实现在同一轮整体删除。版本信息和开源声明打开关于面板的对应单页；
    * 两个入口共用同一套面板容器（见 AboutPanel 头注）。
    */
   private aboutMenu(): Array<MenuElement> {
@@ -7686,6 +7770,9 @@ struct WebApp {
         this.aboutOpen = true;
       } }
     ];
+    if (this.desktopForced && this.startupMainWindow) {
+      items.push({ value: $r('app.string.desktop_experiment_title'), action: (): void => { this.openDesktopWorkspace(); } });
+    }
     return items;
   }
 
@@ -8572,6 +8659,7 @@ struct WebApp {
              * 「新建会话」按钮属于侧栏常驻 DOM，页面加载完成即可点；SPA 内部路由不影响它。
              */
             this.webReady = true;
+            this.openDesktopWorkspaceSession();
             this.scheduleViewportReconcile('page-end');
             this.schedulePostLoadSettle();
             if (this.pendingLaunchAction.length > 0) {

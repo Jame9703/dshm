@@ -4544,6 +4544,38 @@ function patchSidebarTabIdLeak() {
   log('[pack-core]   侧栏页签守卫补丁：sidebarRight.tabs.register() 取号失败回滚');
 }
 
+// Route by Host session ID, including a blank session hidden by the Web sidebar.
+function patchDesktopWorkspaceSessionNavigation() {
+  const target = join(STAGE, 'node_modules', '@deepseek-ai', 'dsh-client-ui-workspace', 'lib', 'client.js');
+  if (!existsSync(target)) die(`ArkUI 会话交接：找不到 ${target}`);
+  const text = readFileSync(target, 'utf8');
+  const name = '__DSHM_OPEN_WORKSPACE_SESSION__';
+  if (text.includes(name)) return;
+  const anchor = /const openSession\s*=\s*(?:\(sessionId\)|sessionId)\s*=>\s*\{\s*uiWorkspace\.openSession\(sessionId\);?\s*\};/g;
+  if ([...text.matchAll(anchor)].length !== 1) {
+    die('ArkUI 会话交接：WebUI 的会话导航接口已变化');
+  }
+  const bridge = `
+    ctx.effect(() => {
+      const openById = (id) => {
+        if (typeof id !== 'string' || !sessions.list.getSnapshot().ids.includes(id)
+            || workspaces.list.getSnapshot().archivedSessionIds.includes(id)) return false;
+        try {
+          openSession(id);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      };
+      globalThis.${name} = openById;
+      return () => {
+        if (globalThis.${name} === openById) delete globalThis.${name};
+      };
+    });
+`;
+  writeFileSync(target, text.replace(anchor, (source) => source + bridge), 'utf8');
+}
+
 /**
  * 首次启动「无法创建默认工作区」提示的收口（用户三条原话合起来）：
  *   「两边首次安装都提示，**无法创建默认工作区**，这个不需要提示，默认就是让用户自己去创建，
@@ -5515,6 +5547,7 @@ patchClientHmrPoll();
 patchWebToolDeepHtmlFallback();
 patchWebFetchHeaders();
 patchSidebarTabIdLeak();
+patchDesktopWorkspaceSessionNavigation();
 patchDefaultWorkspaceToast();
 patchNativeWebPickers(STAGE, log);
 ensureRipgrepPlatformPackage();

@@ -8,7 +8,7 @@
 
 </div>
 
-DSHM 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的**运行本体**装进一个鸿蒙应用：HAP 内自带 Node 运行时与 dsh 核心树，核心在本机 `127.0.0.1` 上起 Host，应用内的原生 ArkUI 页面就是这个本地 Host 的客户端。
+DSHM 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的**运行本体**装进一个鸿蒙应用：HAP 内自带 Node 运行时与 dsh 核心树，核心在本机 `127.0.0.1` 上起 Host，客户端默认通过 ArkWeb 加载本地 Host 的 WebUI。
 
 **它不是 PC 上 dsh 的遥控器**，也不需要在电脑上常驻任何服务：装上即用，数据只在本机应用沙箱内。
 
@@ -21,6 +21,12 @@ DSHM 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（d
 > 以及 **execve 受签名域管辖 ⇒ 所有端侧原生二进制必须构建期自签名**。
 
 ---
+
+## 桌面 ArkUI 实验工作台
+
+在桌面分档的主窗口，通过左上角 `…` → **ArkUI 实验工作台** 启用原生侧栏。侧栏从当前宿主读取工作区和会话。选中会话后，点 **用旧 WebUI 打开当前会话** 即可继续对话并使用 WebUI 插件。
+
+启用后，下次从应用图标启动会直接打开实验工作台。点 **退出实验** 恢复默认 WebUI。首次使用、普通平板和手机进入 WebUI。
 
 ## 为什么需要它：官方没有鸿蒙端
 

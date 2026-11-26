@@ -271,6 +271,58 @@
     {
       "name": "perm_running_lock_reason",
       "value": "Keep the CPU awake while a long task (core unpack, host startup, package install) runs, so it is not throttled or suspended halfway"
+    },
+    {
+      "name": "desktop_experiment_title",
+      "value": "ArkUI experimental workspace"
+    },
+    {
+      "name": "desktop_experiment_exit",
+      "value": "Exit experiment"
+    },
+    {
+      "name": "desktop_experiment_workspaces",
+      "value": "Workspaces"
+    },
+    {
+      "name": "desktop_experiment_all_sessions",
+      "value": "All sessions"
+    },
+    {
+      "name": "desktop_experiment_sessions",
+      "value": "Sessions"
+    },
+    {
+      "name": "desktop_experiment_empty",
+      "value": "No sessions yet"
+    },
+    {
+      "name": "desktop_experiment_select",
+      "value": "Select a session"
+    },
+    {
+      "name": "desktop_experiment_loading",
+      "value": "Loading workspaces…"
+    },
+    {
+      "name": "desktop_experiment_open_web",
+      "value": "Open current session in WebUI"
+    },
+    {
+      "name": "desktop_experiment_unnamed",
+      "value": "Untitled session"
+    },
+    {
+      "name": "desktop_experiment_retry",
+      "value": "Retry"
+    },
+    {
+      "name": "desktop_experiment_switch_failed",
+      "value": "Couldn't switch workspaces. Try again."
+    },
+    {
+      "name": "desktop_experiment_open_failed",
+      "value": "The session couldn't be opened in WebUI."
     }
   ]
 }

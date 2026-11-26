@@ -1,6 +1,7 @@
 {
   "src": [
     "pages/WebApp",
+    "pages/DesktopWorkspace",
     "pages/Index",
     "pages/Poc1",
     "pages/PetHost",

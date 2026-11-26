@@ -53,6 +53,7 @@ import { DESKTOP_PROGRESSIVE_STARTUP, DesktopHostStartupStage, KEY_DESKTOP_HOST_
   DESKTOP_WORKBENCH_PAINTED_EVENT, StartupFrameCallback } from '../common/DesktopStartup';
 // 桌面卡片推送器（docs/178）：轮询宿主写出的 card-state.json → formProvider.updateForm
 import { startCardStateWatcher } from '../system/CardStateWatcher';
+import { desktopWorkspaceEnabled, DESKTOP_WORKSPACE_PAGE, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
 // 系统托盘（PC 顶栏 / 托盘区状态图标）：运行时挂图标 + 左键唤回主窗（退出用系统自带菜单项）
 import { StatusBarTray } from '../system/StatusBarTray';
 import { KnockShareReceiver } from '../system/KnockShareReceiver';
@@ -1421,6 +1422,18 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
   }
 
 
+  private showWebForLaunchAction(): void {
+    if (this.launchParams.action.length === 0 && this.launchParams.routeJson.length === 0) {
+      return;
+    }
+    const ui = this.mainWindow?.getUIContext();
+    if (ui?.getSharedLocalStorage()?.get<boolean>('dshDesktopWorkspaceActive') === true) {
+      ui.getRouter().replaceUrl({ url: WEB_WORKSPACE_PAGE }).catch((): void => {
+        hilog.warn(DOMAIN, TAG, '无法切换到 WebUI 处理启动动作');
+      });
+    }
+  }
+
   /**
    * specified 模式**复用**已有实例时的入口——「第二次打开同一会话只聚焦、不新开」的落点。
    *
@@ -1432,6 +1445,7 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
     this.applyLaunchParams(want);
     this.handleSpeechProbeWant(want);
     this.handleAuthReturnWant(want);
+    this.showWebForLaunchAction();
     if (this.windowId.length > 0) {
       // 会话被改名后再从通知点进来，任务栏/诊断页里的标签要跟上
       relabelWindow(this.windowId, this.ledgerLabel());
@@ -1601,7 +1615,10 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
     // 每个 WindowStage 各有一份，后开的会话窗不会覆盖主窗的启动角色。
     const pageStorage: LocalStorage = new LocalStorage();
     pageStorage.setOrCreate<boolean>('dshStartupMainWindow', this.launchParams.kind === WindowKind.MAIN);
-    windowStage.loadContent('pages/WebApp', pageStorage, (err) => {
+    const nativeWorkspace: boolean = desktopForced && this.launchParams.kind === WindowKind.MAIN &&
+      this.launchParams.action.length === 0 && this.launchParams.routeJson.length === 0 &&
+      desktopWorkspaceEnabled(this.context);
+    windowStage.loadContent(nativeWorkspace ? DESKTOP_WORKSPACE_PAGE : WEB_WORKSPACE_PAGE, pageStorage, (err) => {
       if (this.decorStage !== windowStage) {
         return;
       }

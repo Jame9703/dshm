@@ -291,6 +291,58 @@
     {
       "name": "pet_topmost_reason",
       "value": "用于让 dsh-pet 桌面宠物窗口保持在其他应用窗口之上"
+    },
+    {
+      "name": "desktop_experiment_title",
+      "value": "ArkUI 实验工作台"
+    },
+    {
+      "name": "desktop_experiment_exit",
+      "value": "退出实验"
+    },
+    {
+      "name": "desktop_experiment_workspaces",
+      "value": "工作区"
+    },
+    {
+      "name": "desktop_experiment_all_sessions",
+      "value": "全部会话"
+    },
+    {
+      "name": "desktop_experiment_sessions",
+      "value": "会话"
+    },
+    {
+      "name": "desktop_experiment_empty",
+      "value": "暂无会话"
+    },
+    {
+      "name": "desktop_experiment_select",
+      "value": "请选择会话"
+    },
+    {
+      "name": "desktop_experiment_loading",
+      "value": "正在加载工作区…"
+    },
+    {
+      "name": "desktop_experiment_open_web",
+      "value": "用旧 WebUI 打开当前会话"
+    },
+    {
+      "name": "desktop_experiment_unnamed",
+      "value": "未命名会话"
+    },
+    {
+      "name": "desktop_experiment_retry",
+      "value": "重试"
+    },
+    {
+      "name": "desktop_experiment_switch_failed",
+      "value": "切换工作台失败，请重试"
+    },
+    {
+      "name": "desktop_experiment_open_failed",
+      "value": "旧 WebUI 中未找到该会话"
     }
   ]
 }
