@@ -13,6 +13,7 @@ import {
 
 import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument, isDesktopPlanCommand } from './DesktopPlan';
+import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
 
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
@@ -28,6 +29,7 @@ export interface DesktopTranscriptItem {
   sequence: number;
   message?: TrajectoryItem;
   plan?: DesktopPlanDocument;
+  artifacts?: DesktopTurnArtifacts;
 }
 
 export interface DesktopConversationSnapshot {
@@ -63,6 +65,7 @@ export class DesktopConversation {
   private stopFollow?: () => void;
   private timer: number = -1;
   private transcript: DesktopTranscriptItem[] = [];
+  private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private planMode?: boolean;
   private planAsOf: number = -1;
   private models: ModelOption[] = [];
@@ -121,6 +124,7 @@ export class DesktopConversation {
     this.sessionId = sessionId;
     this.interactions.select(sessionId);
     this.transcript = [];
+    this.turnArtifacts.clear();
     this.planMode = undefined;
     this.planAsOf = -1;
     this.model = undefined;
@@ -320,7 +324,13 @@ export class DesktopConversation {
   private addRecords(records: Object[], merge: boolean, hasEarlier: boolean): void {
     const result: Map<string, DesktopTranscriptItem> = new Map<string, DesktopTranscriptItem>();
     if (merge) {
-      this.transcript.forEach((item: DesktopTranscriptItem): void => { result.set(item.id, item); });
+      this.transcript.forEach((item: DesktopTranscriptItem): void => {
+        if (item.artifacts === undefined) {
+          result.set(item.id, item);
+        }
+      });
+    } else {
+      this.turnArtifacts.clear();
     }
     for (const record of records) {
       const seq = getNumber(getRecord(record, 'event'), 'seq') ?? -1;
@@ -328,6 +338,7 @@ export class DesktopConversation {
         this.earliest = seq;
       }
       const event = getRecord(record, 'event');
+      observeDesktopArtifacts(this.turnArtifacts, event);
       const plan = desktopSubmittedPlan(event);
       if (plan !== undefined) {
         const id = 'plan:' + plan.callId;
@@ -346,6 +357,12 @@ export class DesktopConversation {
         result.set(message.id, { id: message.id, sequence: seq, message: message });
       }
     }
+    this.turnArtifacts.forEach((row: DesktopTurnArtifacts): void => {
+      if (row.closeSequence >= 0 && (row.files.length > 0 || row.changeSequence >= 0 || row.applied.length > 0)) {
+        const id = `artifacts:${this.sessionId}:${row.turn}:${row.changeSequence}:${row.files.length}:${row.applied.length}`;
+        result.set(id, { id: id, sequence: row.closeSequence, artifacts: row });
+      }
+    });
     this.transcript = Array.from(result.values()).sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
       a.sequence - b.sequence);
     this.hasEarlier = hasEarlier;

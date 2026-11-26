@@ -27,6 +27,22 @@
     {
       "name": "workspace_border",
       "value": "#1A191C20"
+    },
+    {
+      "name": "desktop_diff_added",
+      "value": "#DDF4E3"
+    },
+    {
+      "name": "desktop_diff_deleted",
+      "value": "#FBE5E4"
+    },
+    {
+      "name": "desktop_diff_add_count",
+      "value": "#197237"
+    },
+    {
+      "name": "desktop_diff_delete_count",
+      "value": "#B33232"
     }
   ]
 }

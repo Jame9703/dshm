@@ -5,9 +5,13 @@ import { DesktopInteractionPane } from './DesktopInteractionPane';
 import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
+import { DesktopArtifactsPane } from './DesktopArtifactsPane';
+import { DesktopChangeTarget } from './DesktopArtifacts';
+import { DesktopHostActions } from './DesktopHostActions';
 
 @Component
 export struct DesktopConversationPane {
+  host?: DesktopHostActions;
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
@@ -37,6 +41,10 @@ export struct DesktopConversationPane {
   onPlanPreview: (plan: DesktopPlanDocument) => void = (_plan: DesktopPlanDocument): void => {};
   onPlanDecision: (id: string, approve: boolean) => void = (_id: string, _approve: boolean): void => {};
   onPlanResume: (id: string) => void = (_id: string): void => {};
+  onArtifactFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
+  onArtifactAction: (path: string, name: string, reveal: boolean) => void =
+    (_path: string, _name: string, _reveal: boolean): void => {};
+  onChanges: (target: DesktopChangeTarget) => void = (_target: DesktopChangeTarget): void => {};
 
   private readonly scroller: Scroller = new Scroller();
   private following: boolean = true;
@@ -290,6 +298,10 @@ export struct DesktopConversationPane {
                 this.PlanCard(item.plan)
               } else if (item.message !== undefined) {
                 this.Message(item.message)
+              } else if (item.artifacts !== undefined) {
+                DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+                  artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
+                  onReview: this.onChanges })
               }
             }
             .width('100%').justifyContent(FlexAlign.Center)

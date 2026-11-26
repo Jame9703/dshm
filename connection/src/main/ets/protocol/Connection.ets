@@ -19,13 +19,14 @@ import { AuthOutcome, AuthSession, isAuthFailureStatus } from './AuthSession';
 import { RemoteMux } from './RemoteMux';
 import { EventStream, EventStreamPhase } from './EventStream';
 import { ReconnectController } from './Backoff';
-import { stringifyJson } from './JsonValue';
+import { parseJson, stringifyJson } from './JsonValue';
 import {
   API_CHANNEL,
   checkTarget,
   CLIENT_FAILURE_CODE,
   RemoteFailure,
   rpcFail,
+  rpcOk,
   RpcResult
 } from './RpcTypes';
 import { parseConnectionResponse } from './Envelope';
@@ -556,6 +557,35 @@ export class Connection {
       return rpcFail(RemoteFailure.parse(`空响应体（${endpoint}）`));
     }
     return parseConnectionResponse(outcome.body, rpcId, endpoint);
+  }
+
+  /** Read a JSON document on a named route at the authenticated Host. */
+  async readApiDocument(resource: string, query: Record<string, string>): Promise<RpcResult> {
+    const address = this.address;
+    if (address === undefined) {
+      return rpcFail(RemoteFailure.carrier('未配置 Host 地址'));
+    }
+    if (!new RegExp('^[a-z]+(?:\\.[a-z]+)+$').test(resource)) {
+      return rpcFail(new RemoteFailure(CLIENT_FAILURE_CODE, '无效的宿主资源名称', ''));
+    }
+    const parameters = Object.keys(query).map((key: string): string =>
+      encodeURIComponent(key) + '=' + encodeURIComponent(query[key])).join('&');
+    const url = `${address.baseUrl}${this.surface.apiChannel}/${resource}?${parameters}`;
+    let outcome = await this.http.send(url, address.authority, false, undefined, this.options.defaultTimeoutMs, false);
+    if (isAuthFailureStatus(outcome.status) && this.address === address && (await this.rebind()).ok &&
+      this.address === address) {
+      outcome = await this.http.send(url, address.authority, false, undefined, this.options.defaultTimeoutMs, false);
+    }
+    if (!outcome.responded) {
+      return rpcFail(RemoteFailure.carrier(outcome.transportError ?? '未收到宿主响应'));
+    }
+    if (outcome.status !== 200) {
+      const failure = new RemoteFailure('resource/http', `宿主返回 HTTP ${outcome.status}`, '');
+      failure.httpStatus = outcome.status;
+      return rpcFail(failure);
+    }
+    const value = parseJson(outcome.body);
+    return value === undefined ? rpcFail(RemoteFailure.parse('宿主资源格式无效')) : rpcOk(value);
   }
 
   // ─────────────────────────── 逻辑流 ───────────────────────────

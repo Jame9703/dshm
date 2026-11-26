@@ -17,6 +17,11 @@ interface FileRow {
   loading: boolean;
 }
 
+export interface DesktopFileNavigation {
+  path: string;
+  name: string;
+}
+
 interface Directory {
   children: FileNode[];
   loading: boolean;
@@ -50,6 +55,7 @@ export struct DesktopFilesPane {
   host?: DesktopHostActions;
   ability?: common.UIAbilityContext;
   @Prop @Watch('reset') sessionId: string = '';
+  @Prop @Watch('openRequested') requested: DesktopFileNavigation | undefined = undefined;
   onHide: () => void = (): void => {};
   onAttachWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
 
@@ -102,6 +108,14 @@ export struct DesktopFilesPane {
     this.closePreview();
     if (this.active && this.sessionId.length > 0) {
       this.expand(ROOT);
+      this.openRequested();
+    }
+  }
+
+  private openRequested(): void {
+    const file = this.requested;
+    if (this.active && file !== undefined && file.path.length > 0) {
+      this.openPreview({ path: file.path, name: file.name, directory: false, depth: 0, expanded: false, loading: false });
     }
   }
 

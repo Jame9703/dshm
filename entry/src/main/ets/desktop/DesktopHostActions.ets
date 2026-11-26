@@ -1,9 +1,11 @@
 import { Connection, getArray, getRecord, getString, RemoteFailure, rpcFail } from 'connection';
 import type { DuplexStream, RpcResult, StreamSink } from 'connection';
 import { argsFor } from 'dshcompat';
+import { desktopChangeSummary, DesktopChangeSummary } from './DesktopArtifacts';
 
 export class DesktopHostActions {
   private readonly connection: Connection;
+  private readonly changes: Map<string, Promise<DesktopChangeSummary | undefined>> = new Map();
 
   constructor(connection: Connection) {
     this.connection = connection;
@@ -26,6 +28,36 @@ export class DesktopHostActions {
       return rpcFail(new RemoteFailure('unsupported', '当前宿主协议不提供此操作', ''));
     }
     return this.connection.call(endpoint, args, { timeoutMs: optionsTimeoutMs });
+  }
+
+  changeSummary(sessionId: string, sequence: number): Promise<DesktopChangeSummary | undefined> {
+    const key = `${sessionId}:${sequence}`;
+    const cached = this.changes.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (this.changes.size >= 64) {
+      const oldest = this.changes.keys().next();
+      if (!oldest.done) {
+        this.changes.delete(oldest.value);
+      }
+    }
+    const task = this.connection.readApiDocument('changes.summary', {
+      'sessionId': sessionId, 'seq': String(sequence)
+    }).then((result: RpcResult): DesktopChangeSummary | undefined => {
+      if (!result.ok && result.error?.httpStatus !== 404) {
+        this.changes.delete(key);
+      }
+      return desktopChangeSummary(result.value);
+    });
+    this.changes.set(key, task);
+    return task;
+  }
+
+  changeDiff(sessionId: string, sequence: number, index: number): Promise<RpcResult> {
+    return this.connection.readApiDocument('changes.diff', {
+      'sessionId': sessionId, 'seq': String(sequence), 'index': String(index)
+    });
   }
 }
 

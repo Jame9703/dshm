@@ -2,12 +2,15 @@ import { common } from '@kit.AbilityKit';
 import { getString, parseTarget } from 'connection';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
-import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { DesktopFileNavigation, DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
+import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
 import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { dialogMaterial, PickOutcome, pickDocument, pickFolder, readDocumentUri, uriFromPath } from 'platform';
+import { dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
+  readDocumentUri, uriFromPath } from 'platform';
 import { harmonySheetOptions } from '../view/NativePrimitives';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
@@ -49,6 +52,8 @@ struct DesktopWorkspace {
   @State private rightPaneWidth: number = 340;
   @State private terminalSession: string = '';
   @State private filesSession: string = '';
+  @State private requestedFile: DesktopFileNavigation | undefined = undefined;
+  @State private changesTarget: DesktopChangeTarget | undefined = undefined;
   @State private planSession: string = '';
   @State private planPreview: DesktopPlanDocument | undefined = undefined;
   private readonly shownPlanReviews: Set<string> = new Set<string>();
@@ -111,7 +116,11 @@ struct DesktopWorkspace {
       return true;
     }
     if (this.filesSession.length > 0 && this.filesSession === this.sessionId && this.panel === 'session') {
-      this.filesSession = '';
+      this.closeFiles();
+      return true;
+    }
+    if (this.changesTarget?.sessionId === this.sessionId && this.panel === 'session') {
+      this.changesTarget = undefined;
       return true;
     }
     if (this.terminalSession.length > 0 && this.terminalSession === this.sessionId && this.panel === 'session') {
@@ -147,6 +156,8 @@ struct DesktopWorkspace {
     this.interactions = [];
     this.shownPlanReviews.clear();
     this.closePlan();
+    this.closeFiles();
+    this.changesTarget = undefined;
     this.chatError = '';
     this.creating = false;
     this.workspaceBusy = false;
@@ -511,12 +522,50 @@ struct DesktopWorkspace {
     this.planSession = this.sessionId;
     this.planPreview = document;
     this.terminalSession = '';
-    this.filesSession = '';
+    this.closeFiles();
+    this.changesTarget = undefined;
   }
 
   private closePlan(): void {
     this.planSession = '';
     this.planPreview = undefined;
+  }
+
+  private closeFiles(): void {
+    this.filesSession = '';
+    this.requestedFile = undefined;
+  }
+
+  private showArtifact(path: string, name: string): void {
+    this.closePlan();
+    this.terminalSession = '';
+    this.requestedFile = { path: path, name: name };
+    this.filesSession = this.sessionId;
+  }
+
+  private showChanges(target: DesktopChangeTarget): void {
+    if (target.sessionId === this.sessionId) {
+      this.closePlan();
+      this.closeFiles();
+      this.terminalSession = '';
+      this.changesTarget = target;
+    }
+  }
+
+  private async openArtifactAction(path: string, name: string, reveal: boolean): Promise<void> {
+    const sessionId = this.sessionId;
+    const result = await this.data?.actions.call('workspaceFiles/stat', { 'workspaceFileScopeId': sessionId, 'path': path });
+    const ability = this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext');
+    if (!this.pageActive || this.sessionId !== sessionId) {
+      return;
+    }
+    const absolute = getString(result?.value, 'absolutePath') ?? '';
+    const ok = result?.ok === true && absolute.startsWith('/') && ability !== undefined && (reveal ?
+      openFileLocation(ability, absolute) === 'ok' :
+      await openSystemPreview(ability, uriFromPath(absolute), name, mimeTypeForName(name)));
+    if (!ok) {
+      this.getUIContext().getPromptAction().showToast({ message: reveal ? '无法在系统文件中定位' : '系统未能打开此文件的预览' });
+    }
   }
 
   private stopMessage(): void {
@@ -1027,6 +1076,7 @@ struct DesktopWorkspace {
     Row() {
       if (this.sessionId.length > 0) {
         DesktopConversationPane({
+          host: this.data?.actions,
           snapshot: this.chat,
           interactions: this.interactions,
           onDecision: (id: string, allow: boolean): void => {
@@ -1056,6 +1106,9 @@ struct DesktopWorkspace {
           },
           onPlanPreview: (plan: DesktopPlanDocument): void => { this.showPlan(plan); },
           onPlanResume: (id: string): void => { this.data?.interactions.reopenPlanReview(id); },
+          onArtifactFile: (path: string, name: string): void => { this.showArtifact(path, name); },
+          onArtifactAction: (path: string, name: string, reveal: boolean): void => { this.openArtifactAction(path, name, reveal); },
+          onChanges: (target: DesktopChangeTarget): void => { this.showChanges(target); },
           title: this.selectedTitle,
           workspaceTitle: this.selectedWorkspaceTitle,
           draft: this.draft,
@@ -1076,14 +1129,21 @@ struct DesktopWorkspace {
           filesOpen: this.filesSession === this.sessionId,
           onFiles: (): void => {
             this.closePlan();
-            this.filesSession = this.filesSession === this.sessionId ? '' : this.sessionId;
+            this.changesTarget = undefined;
+            if (this.filesSession === this.sessionId) {
+              this.closeFiles();
+            } else {
+              this.requestedFile = undefined;
+              this.filesSession = this.sessionId;
+            }
             this.terminalSession = '';
           },
           terminalOpen: this.terminalSession === this.sessionId,
           onTerminal: (): void => {
             this.closePlan();
+            this.changesTarget = undefined;
             this.terminalSession = this.terminalSession === this.sessionId ? '' : this.sessionId;
-            this.filesSession = '';
+            this.closeFiles();
           },
           onModel: (selection: ModelSelection): void => this.chooseModel(selection),
           onPermission: (preset: string): void => {
@@ -1108,9 +1168,20 @@ struct DesktopWorkspace {
               host: this.data.actions,
               ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
               sessionId: this.sessionId,
-              onHide: (): void => { this.filesSession = ''; },
+              requested: this.requestedFile,
+              onHide: (): void => { this.closeFiles(); },
               onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); }
             })
+          }
+          .width(this.rightPaneWidth).height('100%')
+        } else if (this.changesTarget?.sessionId === this.sessionId && this.data !== undefined) {
+          Column() {
+            DesktopChangesPane({ host: this.data.actions, target: this.changesTarget,
+              onClose: (): void => { this.changesTarget = undefined; },
+              onFile: (path: string, name: string, target: DesktopChangeTarget): void => {
+                this.showArtifact(path, name);
+                this.changesTarget = target;
+              } })
           }
           .width(this.rightPaneWidth).height('100%')
         } else if (this.terminalSession === this.sessionId && this.data !== undefined) {
