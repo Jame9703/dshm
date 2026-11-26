@@ -62,7 +62,7 @@ export class HttpClient {
    * @param collectCookies 是否解析并合并 Set-Cookie
    */
   async send(url: string, authority: string, post: boolean, body: string | undefined,
-    timeoutMs: number, collectCookies: boolean): Promise<HttpOutcome> {
+    timeoutMs: number, collectCookies: boolean, responseLimit?: number): Promise<HttpOutcome> {
     const request: http.HttpRequest = http.createHttp();
     const header: Record<string, string> = {};
     header['accept'] = 'application/json, text/plain, */*';
@@ -108,6 +108,9 @@ export class HttpClient {
         expectDataType: http.HttpDataType.STRING,
         usingCache: false
       };
+      if (responseLimit !== undefined) {
+        options.maxLimit = responseLimit;
+      }
       if (body !== undefined) {
         options.extraData = body;
       }

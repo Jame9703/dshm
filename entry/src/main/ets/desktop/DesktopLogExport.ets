@@ -3,8 +3,14 @@ import { fileIo } from '@kit.CoreFileKit';
 import { randomUuid } from 'connection';
 import { saveCachedDownload } from 'platform';
 
+export interface DesktopLogSaveResult {
+  saved: boolean;
+  error: string;
+}
+
 export async function exportDesktopLog(context: common.Context, sessionId: string,
-  download: (onData: (chunk: ArrayBuffer) => void) => Promise<string>): Promise<string> {
+  download: (onData: (chunk: ArrayBuffer) => void) => Promise<string>,
+  chooseLocation: () => boolean): Promise<DesktopLogSaveResult> {
   const path = `${context.cacheDir}/session-export-${randomUuid()}.zip`;
   const name = `dsh-session-${sessionId.replace(new RegExp('[^A-Za-z0-9_-]', 'g'), '_')}.zip`;
   try {
@@ -27,12 +33,13 @@ export async function exportDesktopLog(context: common.Context, sessionId: strin
     } finally {
       fileIo.closeSync(file);
     }
-    if (problem) { return problem; }
-    if (bytes < 22 || signature !== 0x504b) { return '宿主未返回完整的 ZIP 日志'; }
-    await saveCachedDownload(context, path, name);
-    return '';
+    if (problem) { return { saved: false, error: problem }; }
+    if (bytes < 22 || signature !== 0x504b) { return { saved: false, error: '宿主未返回完整的 ZIP 日志' }; }
+    if (!chooseLocation()) { return { saved: false, error: '' }; }
+    const location = await saveCachedDownload(context, path, name);
+    return { saved: location.length > 0, error: '' };
   } catch (_) {
-    return '无法保存会话日志';
+    return { saved: false, error: '无法保存会话日志' };
   } finally {
     try { fileIo.unlinkSync(path); } catch (_) { }
   }

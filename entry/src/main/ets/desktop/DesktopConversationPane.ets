@@ -32,6 +32,8 @@ export struct DesktopConversationPane {
   @Prop filesOpen: boolean = false;
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
+  @Prop copyingTranscript: boolean = false;
+  @Prop exportingLog: boolean = false;
   onDraft: (value: string) => void = () => {};
   onAddAttachment: () => void = () => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
@@ -46,6 +48,8 @@ export struct DesktopConversationPane {
   onStop: () => void = () => {};
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
+  onCopyTranscript: () => void = () => {};
+  onExportLog: () => void = () => {};
   onTerminal: () => void = () => {};
   onFiles: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
@@ -386,6 +390,15 @@ export struct DesktopConversationPane {
     });
   }
 
+  private sessionMenu(): MenuElement[] {
+    return [
+      { value: '复制会话为 Markdown', icon: $r('app.media.dsh_session_copy'),
+        enabled: !this.copyingTranscript, action: this.onCopyTranscript },
+      { value: '下载 Session 日志', icon: $r('app.media.dsh_session_download'),
+        enabled: !this.exportingLog && !this.busy, action: this.onExportLog }
+    ];
+  }
+
   private effortMenu(): Array<MenuElement> {
     const selection = this.snapshot?.selection;
     if (selection === undefined) {
@@ -574,6 +587,12 @@ export struct DesktopConversationPane {
         Button($r('app.string.desktop_experiment_open_web'),
           { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(34).focusOnTouch(false).onClick(this.onWeb)
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.dsh_session_ellipsis')).width(18).height(18).supportSvg2(true).draggable(false)
+            .accessibilityLevel('no')
+        }.key('desktopSessionMore').width(34).height(34).padding(0).focusOnTouch(false)
+          .accessibilityText('会话菜单').enabled(this.snapshot?.loading === false)
+          .bindMenu(this.sessionMenu(), desktopMenuOptions(Placement.BottomRight))
       }
       .width('100%').height(50).padding({ left: 20, right: 16 })
       if (this.snapshot?.loading) {

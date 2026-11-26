@@ -8,10 +8,11 @@ import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
 import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
 import { exportDesktopLog } from '../desktop/DesktopLogExport';
+import { DesktopLogStage, DesktopSessionLogDialog } from '../desktop/DesktopSessionLogDialog';
 import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
+import { copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
   readDocumentUri, uriFromPath } from 'platform';
 import { harmonySheetOptions } from '../view/NativePrimitives';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
@@ -84,6 +85,12 @@ struct DesktopWorkspace {
   private readonly attachmentsBySession: Map<string, PendingAttachment[]> = new Map<string, PendingAttachment[]>();
   @State private creating: boolean = false;
   @State private busySessions: string[] = [];
+  @State private copyingTranscript: boolean = false;
+  @State private exportingLog: boolean = false;
+  @State private logStage: DesktopLogStage = DesktopLogStage.PREPARING;
+  @State private logProblem: string = '';
+  private logDialog: number = -1;
+  private logDialogVersion: number = 0;
   private readonly drafts: Map<string, string> = new Map<string, string>();
 
   @State private groups: DesktopWorkspaceGroup[] = [];
@@ -108,6 +115,7 @@ struct DesktopWorkspace {
     this.active = false;
     this.pageActive = false;
     this.closeAccount();
+    this.closeLogDialog();
     this.data?.stop();
     this.data = undefined;
   }
@@ -522,12 +530,92 @@ struct DesktopWorkspace {
     }
   }
 
-  private exportLog(id: string): Promise<string> {
+  private async copyTranscript(): Promise<void> {
+    const conversation = this.data?.conversation;
+    const sessionId = this.sessionId;
+    if (conversation === undefined || !sessionId || this.copyingTranscript) { return; }
+    this.copyingTranscript = true;
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const reply = await conversation.readMarkdown(sessionId);
+      if (!this.pageActive || this.data?.conversation !== conversation) { return; }
+      if (!reply.ok || typeof reply.value !== 'string' || !reply.value.trim()) {
+        prompt.showToast({ message: '无法读取 Session 进行复制，请重试' });
+        return;
+      }
+      const copied = await copyText(reply.value);
+      if (this.pageActive) {
+        prompt.showToast({ message: copied ? 'Session 已复制为 Markdown' : '无法写入剪贴板，请检查权限后重试' });
+      }
+    } finally {
+      this.copyingTranscript = false;
+    }
+  }
+
+  private async exportLog(id: string): Promise<string> {
     const conversation = this.data?.conversation;
     const context = this.getUIContext().getHostContext();
-    if (conversation === undefined || context === undefined) { return Promise.resolve('当前会话暂不可导出'); }
-    return exportDesktopLog(context, id, (onData: (chunk: ArrayBuffer) => void): Promise<string> =>
-      conversation.downloadLog(id, onData));
+    if (conversation === undefined || context === undefined) { return '当前会话暂不可导出'; }
+    if (this.exportingLog) { return '当前正在导出会话日志'; }
+    this.exportingLog = true;
+    this.logStage = DesktopLogStage.PREPARING;
+    this.logProblem = '';
+    try {
+      await this.openLogDialog();
+      if (!this.pageActive || this.data?.conversation !== conversation) { return ''; }
+      const result = await exportDesktopLog(context, id,
+        (onData: (chunk: ArrayBuffer) => void): Promise<string> => conversation.downloadLog(id, onData),
+        (): boolean => {
+          if (!this.pageActive || this.data?.conversation !== conversation) { return false; }
+          this.logStage = DesktopLogStage.CHOOSING;
+          return true;
+        });
+      if (!this.pageActive || this.data?.conversation !== conversation) { return ''; }
+      if (result.error) {
+        this.logProblem = result.error;
+        this.logStage = DesktopLogStage.FAILED;
+      } else if (result.saved) {
+        this.logStage = DesktopLogStage.SAVED;
+      } else {
+        this.closeLogDialog();
+      }
+      return result.error;
+    } finally {
+      this.exportingLog = false;
+    }
+  }
+
+  @Builder
+  private LogDialogContent() {
+    DesktopSessionLogDialog({ stage: this.logStage, problem: this.logProblem,
+      onClose: (): void => { this.closeLogDialog(); } })
+  }
+
+  private async openLogDialog(): Promise<void> {
+    if (this.logDialog >= 0) { return; }
+    const version = ++this.logDialogVersion;
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    try {
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.LogDialogContent(); },
+        alignment: DialogAlignment.Center, width: Math.max(220, Math.min(448, this.workbenchWidth - 32)),
+        autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          if (version === this.logDialogVersion) { this.logDialog = -1; this.logDialogVersion++; }
+        } });
+      if (this.pageActive && version === this.logDialogVersion) { this.logDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.pageActive) { prompt.showToast({ message: '正在导出 Session' }); }
+    }
+  }
+
+  private closeLogDialog(): void {
+    const id = this.logDialog;
+    this.logDialog = -1;
+    this.logDialogVersion++;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
   }
 
   private showPlan(document: DesktopPlanDocument): void {
@@ -1162,6 +1250,12 @@ struct DesktopWorkspace {
           onStop: (): void => this.stopMessage(),
           onEarlier: (): void => this.data?.conversation.loadEarlier(),
           onWeb: (): void => { this.openWeb(false); },
+          copyingTranscript: this.copyingTranscript,
+          exportingLog: this.exportingLog,
+          onCopyTranscript: (): void => { this.copyTranscript(); },
+          onExportLog: (): void => {
+            this.chatAction((id: string): Promise<string> => this.exportLog(id));
+          },
           filesOpen: this.filesSession === this.sessionId,
           onFiles: (): void => {
             this.closePlan();

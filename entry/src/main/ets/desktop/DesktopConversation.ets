@@ -317,6 +317,10 @@ export class DesktopConversation {
     return this.connection.downloadSessionArchive(sessionId, onData);
   }
 
+  readMarkdown(sessionId: string): Promise<RpcResult> {
+    return this.connection.readSessionMarkdown(sessionId);
+  }
+
   loadCommands(sessionId: string): Promise<DesktopCommand[] | undefined> {
     if (this.closed || !sessionId || sessionId !== this.sessionId) {
       return Promise.resolve(undefined);

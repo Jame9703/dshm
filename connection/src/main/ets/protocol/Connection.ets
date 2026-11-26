@@ -561,6 +561,17 @@ export class Connection {
 
   /** Read a JSON document on a named route at the authenticated Host. */
   async readApiDocument(resource: string, query: Record<string, string>): Promise<RpcResult> {
+    const reply = await this.readApiText(resource, query);
+    if (!reply.ok) { return reply; }
+    const value = parseJson(typeof reply.value === 'string' ? reply.value : '');
+    return value === undefined ? rpcFail(RemoteFailure.parse('宿主资源格式无效')) : rpcOk(value);
+  }
+
+  readSessionMarkdown(sessionId: string): Promise<RpcResult> {
+    return this.readApiText('session.markdown', { 'sessionId': sessionId }, 100 * 1024 * 1024);
+  }
+
+  private async readApiText(resource: string, query: Record<string, string>, responseLimit?: number): Promise<RpcResult> {
     const address = this.address;
     if (address === undefined) {
       return rpcFail(RemoteFailure.carrier('未配置 Host 地址'));
@@ -571,10 +582,11 @@ export class Connection {
     const parameters = Object.keys(query).map((key: string): string =>
       encodeURIComponent(key) + '=' + encodeURIComponent(query[key])).join('&');
     const url = `${address.baseUrl}${this.surface.apiChannel}/${resource}?${parameters}`;
-    let outcome = await this.http.send(url, address.authority, false, undefined, this.options.defaultTimeoutMs, false);
+    const timeout = responseLimit === undefined ? this.options.defaultTimeoutMs : 120000;
+    let outcome = await this.http.send(url, address.authority, false, undefined, timeout, false, responseLimit);
     if (isAuthFailureStatus(outcome.status) && this.address === address && (await this.rebind()).ok &&
       this.address === address) {
-      outcome = await this.http.send(url, address.authority, false, undefined, this.options.defaultTimeoutMs, false);
+      outcome = await this.http.send(url, address.authority, false, undefined, timeout, false, responseLimit);
     }
     if (!outcome.responded) {
       return rpcFail(RemoteFailure.carrier(outcome.transportError ?? '未收到宿主响应'));
@@ -584,8 +596,7 @@ export class Connection {
       failure.httpStatus = outcome.status;
       return rpcFail(failure);
     }
-    const value = parseJson(outcome.body);
-    return value === undefined ? rpcFail(RemoteFailure.parse('宿主资源格式无效')) : rpcOk(value);
+    return rpcOk(outcome.body);
   }
 
   downloadSessionArchive(sessionId: string, onData: (chunk: ArrayBuffer) => void): Promise<string> {
