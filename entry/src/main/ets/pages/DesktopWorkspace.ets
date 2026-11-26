@@ -2,7 +2,7 @@ import { parseTarget } from 'connection';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { PickOutcome, pickDocument, pickFolder } from 'platform';
+import { dialogMaterial, PickOutcome, pickDocument, pickFolder } from 'platform';
 import { harmonySheetOptions } from '../view/NativePrimitives';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
@@ -51,7 +51,6 @@ struct DesktopWorkspace {
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
-  @State private accountOpen: boolean = false;
   @State private panel: string = 'session';
   @State private workspaceBusy: boolean = false;
   @State private archived: SessionListItem[] = [];
@@ -73,6 +72,9 @@ struct DesktopWorkspace {
 
   @State private groups: DesktopWorkspaceGroup[] = [];
   private data?: DesktopWorkspaceData;
+  private workbenchWidth: number = 440;
+  private accountOpening: boolean = false;
+  private accountDialog: number = -1;
   private pageActive: boolean = false;
   private measured: boolean = false;
 
@@ -89,6 +91,7 @@ struct DesktopWorkspace {
   aboutToDisappear(): void {
     this.active = false;
     this.pageActive = false;
+    this.closeAccount();
     this.data?.stop();
     this.data = undefined;
   }
@@ -520,13 +523,13 @@ struct DesktopWorkspace {
     }
   }
 
-  private async openSettings(): Promise<void> {
+  private async openSettings(section: string = 'settings.general'): Promise<void> {
     if (this.switching) {
       return;
     }
     this.switching = true;
     const ui = this.getUIContext();
-    const params: Record<string, Object> = { 'desktopSettings': 'settings.general' };
+    const params: Record<string, Object> = { 'desktopSettings': section };
     try {
       await ui.getRouter().pushUrl({ url: 'pages/Index', params: params });
     } catch (_) {
@@ -549,22 +552,59 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private WorkspaceSheet() {
-    if (this.accountOpen) {
-      DesktopAccountPane({
-        host: this.data?.actions,
-        callbackOrigin: parseTarget(this.hostUrl)?.address.baseUrl ?? '',
-        onClose: (): void => { this.accountOpen = false; }
-      })
-    } else {
-      this.RenameSheet()
+  private AccountDialog() {
+    DesktopAccountPane({
+      host: this.data?.actions,
+      callbackOrigin: parseTarget(this.hostUrl)?.address.baseUrl ?? '',
+      onClose: (): void => { this.closeAccount(); },
+      onAddKey: (): void => {
+        this.closeAccount();
+        this.openSettings('settings.models');
+      }
+    })
+  }
+
+  private async openAccount(): Promise<void> {
+    if (this.accountOpening || this.accountDialog >= 0) {
+      return;
+    }
+    this.accountOpening = true;
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.AccountDialog(); },
+        alignment: DialogAlignment.Center,
+        width: Math.max(220, Math.min(440, this.workbenchWidth - 32)),
+        autoCancel: false,
+        systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => { this.accountDialog = -1; }
+      });
+      if (this.pageActive) {
+        this.accountDialog = id;
+      } else {
+        prompt.closeCustomDialog(id);
+      }
+    } catch (_) {
+      if (this.pageActive) {
+        prompt.showToast({ message: '无法打开账号弹窗' });
+      }
+    } finally {
+      this.accountOpening = false;
+    }
+  }
+
+  private closeAccount(): void {
+    if (this.accountDialog >= 0) {
+      this.getUIContext().getPromptAction().closeCustomDialog(this.accountDialog);
     }
   }
 
   private sidebarActions(footer: boolean): Array<MenuElement> {
     if (footer) {
       return [
-        { value: '账号', action: (): void => { this.accountOpen = true; } },
+        { value: '账号', action: (): void => { this.openAccount(); } },
         { value: $r('app.string.desktop_workspace_settings'), action: (): void => { this.openSettings(); } },
         { value: $r('app.string.desktop_experiment_open_web_home'), action: (): void => { this.openWeb(false); } },
         { value: $r('app.string.desktop_experiment_exit'), action: (): void => { this.openWeb(true); } }
@@ -1064,12 +1104,12 @@ struct DesktopWorkspace {
       }
       .width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
       .onAreaChange((_, area: Area): void => {
+        this.workbenchWidth = Number(area.width);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
         this.terminalWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })
-      .bindSheet(this.renameOpen || this.accountOpen, this.WorkspaceSheet(), harmonySheetOptions((): void => {
+      .bindSheet(this.renameOpen, this.RenameSheet(), harmonySheetOptions((): void => {
         this.renameOpen = false;
-        this.accountOpen = false;
       }, SheetSize.MEDIUM))
     }
   }

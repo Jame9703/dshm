@@ -8,6 +8,7 @@ export struct DesktopAccountPane {
   host?: DesktopHostActions;
   @Prop callbackOrigin: string = '';
   onClose: () => void = (): void => {};
+  onAddKey: () => void = (): void => {};
   @State private status: string = '';
   @State private phase: string = '';
   @State private attemptId: string = '';
@@ -169,7 +170,7 @@ export struct DesktopAccountPane {
     }
   }
 
-  private async changeAccount(endpoint: string, body: Record<string, Object>): Promise<void> {
+  private async changeAccount(endpoint: string, body: Record<string, Object>, closeAfter: boolean = false): Promise<void> {
     if (this.host === undefined || this.busy) {
       return;
     }
@@ -185,6 +186,10 @@ export struct DesktopAccountPane {
       if (revision === this.stateRevision) {
         this.accept(result.value);
       }
+      if (closeAfter) {
+        this.onClose();
+        return;
+      }
     } else {
       this.failure = desktopHostProblem(result);
     }
@@ -199,15 +204,32 @@ export struct DesktopAccountPane {
       case 'waiting-browser': return '请在浏览器中完成授权';
       case 'exchanging':
       case 'committing': return '正在完成登录…';
-      default: return this.status.length === 0 ? '正在读取账号…' : '登录 DeepSeek 账号';
+      default: return this.status.length === 0 ? '正在读取账号…' : '在浏览器中完成授权后，返回此窗口。';
     }
+  }
+
+  private dismiss(): void {
+    if (this.busy || this.phase === 'committing') {
+      return;
+    }
+    if (this.attemptId && (this.phase === 'initializing' || this.phase === 'waiting-browser' ||
+      this.phase === 'exchanging')) {
+      this.changeAccount('account/cancelSignIn', { 'attemptId': this.attemptId }, true);
+      return;
+    }
+    this.onClose();
   }
 
   build() {
     Column({ space: 16 }) {
       Row() {
-        Text('账号').fontSize(22).fontWeight(FontWeight.Medium).layoutWeight(1)
-        Button('关闭', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick(this.onClose)
+        Text(this.status === 'credential-stored' ? '账号' : '登录 DeepSeek 账号')
+          .fontSize(22).fontWeight(FontWeight.Medium).layoutWeight(1)
+        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([$r('sys.color.font_secondary')])
+        }
+        .width(36).height(36).padding(0).accessibilityText('关闭')
+        .enabled(!this.busy && this.phase !== 'committing').onClick((): void => { this.dismiss(); })
       }
       .width('100%')
       if (this.status === 'credential-stored') {
@@ -244,12 +266,14 @@ export struct DesktopAccountPane {
           if (this.phase === 'waiting-browser') {
             Button('打开浏览器').enabled(!this.busy).onClick((): void => { this.openAuthorization(); })
           } else if (this.phase !== 'initializing' && this.phase !== 'exchanging' && this.phase !== 'committing') {
+            Button('添加 API Key', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
+              .onClick(this.onAddKey)
             Button('登录').enabled(!this.busy && this.status === 'signed-out').onClick((): void => { this.signIn(); })
           }
           if (this.phase === 'initializing' || this.phase === 'waiting-browser' || this.phase === 'exchanging') {
             Button('取消登录', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy && !!this.attemptId)
               .onClick((): void => {
-                this.changeAccount('account/cancelSignIn', { 'attemptId': this.attemptId });
+                this.dismiss();
               })
           }
         }
