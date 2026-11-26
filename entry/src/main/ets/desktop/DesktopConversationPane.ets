@@ -1,6 +1,8 @@
 import { Speaker, TrajectoryItem } from 'appstate';
 import type { ModelOption, ModelSelection, PendingAttachment } from 'appstate';
 import type { DesktopConversationSnapshot, DesktopPermissionOption } from './DesktopConversation';
+import { DesktopInteractionPane } from './DesktopInteractionPane';
+import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 
 @Component
@@ -9,6 +11,7 @@ export struct DesktopConversationPane {
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
   @Prop draft: string = '';
+  @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: PendingAttachment[] = [];
   @Prop busy: boolean = false;
   @Prop commandError: string = '';
@@ -22,6 +25,9 @@ export struct DesktopConversationPane {
   onWeb: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
   onPermission: (preset: string) => void = () => {};
+  onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
+  onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
+    (_id: string, _answers: DesktopQuestionAnswer[]): void => {};
 
   private readonly scroller: Scroller = new Scroller();
   private following: boolean = true;
@@ -239,8 +245,17 @@ export struct DesktopConversationPane {
       .onScrollIndex((_first: number, last: number): void => {
         this.following = last >= this.messageCount - 1;
       })
-      if (this.snapshot?.waitingForInput) {
-        Button($r('app.string.desktop_chat_pending'), { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick(this.onWeb)
+      if (this.interactions.length > 0) {
+        Row() {
+          ForEach(this.interactions.slice(0, 1), (row: DesktopInteraction) => {
+            DesktopInteractionPane({
+              request: row, busy: this.busy, onDecision: this.onDecision, onAnswer: this.onAnswer
+            })
+          }, (row: DesktopInteraction): string => row.id)
+        }
+        .width('100%').padding({ left: 20, right: 20, bottom: 8 }).justifyContent(FlexAlign.Center)
+      } else if (this.snapshot?.waitingForInput) {
+        Text('正在读取待处理请求…').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(8)
       }
       if (this.commandError.length > 0 || (this.snapshot?.error.length ?? 0) > 0) {
         Text(this.commandError || this.snapshot?.error || '')

@@ -1,9 +1,11 @@
 import { projectSessionCreate, projectSessionList, sessionCreatePayload, sessionListEndpoint, sessionListPayload } from 'appstate';
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
-import type { StreamSink } from 'connection';
+import type { EventSink, StreamSink } from 'connection';
 import { argsFor, SESSION_CREATE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopInteractions } from './DesktopInteractions';
+import type { DesktopInteraction } from './DesktopInteractions';
 import { DesktopConversation } from './DesktopConversation';
 import type { DesktopConversationSnapshot } from './DesktopConversation';
 
@@ -39,6 +41,7 @@ function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
 export class DesktopWorkspaceData {
   private readonly connection: Connection = new Connection();
   readonly conversation: DesktopConversation;
+  readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private active: boolean = true;
@@ -54,10 +57,12 @@ export class DesktopWorkspaceData {
   private stopWorkspace?: () => void;
 
   constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
-    onConversation: (snapshot: DesktopConversationSnapshot) => void) {
+    onConversation: (snapshot: DesktopConversationSnapshot) => void,
+    onInteractions: (items: DesktopInteraction[]) => void) {
     this.listener = listener;
+    this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.conversation = new DesktopConversation(this.connection, onConversation,
-      (): void => { this.refreshSessions(); });
+      (): void => { this.refreshSessions(); }, this.interactions);
   }
 
   async start(url: string): Promise<void> {
@@ -69,16 +74,30 @@ export class DesktopWorkspaceData {
     if (!this.active) {
       return;
     }
-    const opening: Promise<boolean> = this.connection.connectOnce();
+    const eventSink: EventSink = {
+      onReady: (): void => { this.openWorkspaceStream(); },
+      onEvent: (frame: Object): void => { this.interactions.onEvent(frame); },
+      onEnd: (): void => { this.interactions.resetEvents(); }
+    };
+    const opening: Promise<boolean> = this.connection.start(eventSink);
     this.refreshSessions();
     const opened: boolean = await opening;
     if (!this.active) {
       await this.connection.stop();
       return;
     }
+    if (opened) {
+      this.openWorkspaceStream();
+    }
+  }
+
+  private openWorkspaceStream(): void {
+    if (!this.active || this.stopWorkspace !== undefined) {
+      return;
+    }
     const empty: Record<string, Object> = {};
     const args: Object | undefined = argsFor(WORKSPACE_FOLLOW_ENDPOINT, empty);
-    if (opened && args !== undefined) {
+    if (args !== undefined) {
       const sink: StreamSink = {
         onItem: (frame: Object): void => this.onWorkspaceFrame(frame),
         onError: (): void => this.workspaceStreamEnded(),
@@ -134,6 +153,8 @@ export class DesktopWorkspaceData {
   stop(): void {
     this.active = false;
     this.conversation.close();
+    this.interactions.select('');
+    this.interactions.resetEvents();
     this.stopWorkspace?.();
     this.connection.stop();
   }
@@ -182,6 +203,7 @@ export class DesktopWorkspaceData {
       this.archivedIds = new Set<string>(toStringArray(getArray(value, 'archivedSessionIds') ?? []));
       this.pinnedIds = toStringArray(getArray(value, 'pinnedSessionIds') ?? []);
       this.workspaceReady = true;
+      this.workspaceError = '';
     } else if (type === 'upsert') {
       const workspace = getRecord(frame, 'workspace');
       const row = workspace === undefined ? undefined : workspaceFromHost(workspace);
@@ -215,6 +237,7 @@ export class DesktopWorkspaceData {
   }
 
   private workspaceStreamEnded(): void {
+    this.stopWorkspace = undefined;
     this.workspaceError = '工作区列表连接已中断';
     this.publish();
   }

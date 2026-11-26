@@ -11,6 +11,8 @@ import {
   SESSION_PAGE_ENDPOINT, SESSION_PROMPT_ENDPOINT, SESSION_SELECT_MODEL_ENDPOINT
 } from 'dshcompat';
 
+import { DesktopInteractions } from './DesktopInteractions';
+
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
 const PAGE_MESSAGES: number = 50;
@@ -43,6 +45,7 @@ interface DraftRequest {
 
 export class DesktopConversation {
   private readonly connection: Connection;
+  private readonly interactions: DesktopInteractions;
   private readonly listener: (snapshot: DesktopConversationSnapshot) => void;
   private readonly refreshSessions: () => void;
   private sessionId: string = '';
@@ -71,8 +74,9 @@ export class DesktopConversation {
   private readonly pendingRequests: Map<string, DraftRequest> = new Map<string, DraftRequest>();
 
   constructor(connection: Connection, listener: (snapshot: DesktopConversationSnapshot) => void,
-    refreshSessions: () => void) {
+    refreshSessions: () => void, interactions: DesktopInteractions) {
     this.connection = connection;
+    this.interactions = interactions;
     this.listener = listener;
     this.refreshSessions = refreshSessions;
   }
@@ -104,6 +108,7 @@ export class DesktopConversation {
     const generation = ++this.generation;
     this.stopWatching();
     this.sessionId = sessionId;
+    this.interactions.select(sessionId);
     this.messages = [];
     this.model = undefined;
     this.permission = '';
@@ -300,9 +305,13 @@ export class DesktopConversation {
     const request: Record<string, Object> = { 'sessionId': this.sessionId };
     const args = argsFor(PROJECTIONS_ENDPOINT, request);
     const result = args === undefined ? undefined : await this.connection.call(PROJECTIONS_ENDPOINT, args);
-    if (result?.ok && this.current(generation) && this.model === undefined) {
-      this.readProjection(result.value);
-      this.publish();
+    if (result?.ok && this.current(generation)) {
+      if (this.model === undefined) {
+        this.readProjection(result.value);
+        this.publish();
+      } else {
+        this.readQuestions(result.value);
+      }
     }
   }
 
@@ -381,7 +390,12 @@ export class DesktopConversation {
     this.publish();
   }
 
+  private readQuestions(projection?: Object): void {
+    this.interactions.observeQuestions(this.sessionId, getRecord(getRecord(projection, 'values'), 'userQuestions'));
+  }
+
   private readProjection(projection: Object | undefined): void {
+    this.readQuestions(projection);
     const values = getRecord(projection, 'values');
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
@@ -416,6 +430,9 @@ export class DesktopConversation {
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
+      if (eventType?.startsWith('user-question/') || eventType === 'tool/result' || eventType === 'user/message') {
+        this.loadSelection(this.generation);
+      }
       this.cursor = Math.max(this.cursor, getNumber(event, 'seq') ?? -1);
       this.addRecords([frame], true, this.hasEarlier);
       if (eventType === EVENT_TURN_END || (eventType !== undefined && mayChangeSessionTitle(eventType))) {

@@ -1,3 +1,6 @@
+import { parseTarget } from 'connection';
+import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
+import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { PickOutcome, pickDocument, pickFolder } from 'platform';
 import { harmonySheetOptions } from '../view/NativePrimitives';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
@@ -45,6 +48,7 @@ struct DesktopWorkspace {
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
+  @State private accountOpen: boolean = false;
   @State private panel: string = 'session';
   @State private workspaceBusy: boolean = false;
   @State private archived: SessionListItem[] = [];
@@ -55,6 +59,7 @@ struct DesktopWorkspace {
   private renameId: string = '';
   private renameWorkspace: boolean = false;
   @State private chat: DesktopConversationSnapshot | undefined = undefined;
+  @State private interactions: DesktopInteraction[] = [];
   @State private draft: string = '';
   @State private chatError: string = '';
   @State private attachments: PendingAttachment[] = [];
@@ -112,6 +117,7 @@ struct DesktopWorkspace {
     this.ready = false;
     this.error = '';
     this.chat = undefined;
+    this.interactions = [];
     this.chatError = '';
     this.creating = false;
     this.workspaceBusy = false;
@@ -130,6 +136,8 @@ struct DesktopWorkspace {
       this.ready = true;
     }, (snapshot: DesktopConversationSnapshot): void => {
       this.chat = snapshot;
+    }, (items: DesktopInteraction[]): void => {
+      this.interactions = items;
     });
     this.data.start(this.hostUrl);
   }
@@ -533,9 +541,23 @@ struct DesktopWorkspace {
     this.getUIContext().getPromptAction().showToast({ message: '会话暂不可用' });
   }
 
+  @Builder
+  private WorkspaceSheet() {
+    if (this.accountOpen) {
+      DesktopAccountPane({
+        host: this.data?.actions,
+        callbackOrigin: parseTarget(this.hostUrl)?.address.baseUrl ?? '',
+        onClose: (): void => { this.accountOpen = false; }
+      })
+    } else {
+      this.RenameSheet()
+    }
+  }
+
   private sidebarActions(footer: boolean): Array<MenuElement> {
     if (footer) {
       return [
+        { value: '账号', action: (): void => { this.accountOpen = true; } },
         { value: $r('app.string.desktop_workspace_settings'), action: (): void => { this.openSettings(); } },
         { value: $r('app.string.desktop_experiment_open_web_home'), action: (): void => { this.openWeb(false); } },
         { value: $r('app.string.desktop_experiment_exit'), action: (): void => { this.openWeb(true); } }
@@ -887,6 +909,19 @@ struct DesktopWorkspace {
       if (this.sessionId.length > 0) {
         DesktopConversationPane({
           snapshot: this.chat,
+          interactions: this.interactions,
+          onDecision: (id: string, allow: boolean): void => {
+            const interactions = this.data?.interactions;
+            if (interactions !== undefined) {
+              this.chatAction((): Promise<string> => interactions.approve(id, allow));
+            }
+          },
+          onAnswer: (id: string, answers: DesktopQuestionAnswer[]): void => {
+            const interactions = this.data?.interactions;
+            if (interactions !== undefined) {
+              this.chatAction((): Promise<string> => interactions.answer(id, answers));
+            }
+          },
           title: this.selectedTitle,
           workspaceTitle: this.selectedWorkspaceTitle,
           draft: this.draft,
@@ -1008,8 +1043,9 @@ struct DesktopWorkspace {
       .onAreaChange((_, area: Area): void => {
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
       })
-      .bindSheet(this.renameOpen, this.RenameSheet(), harmonySheetOptions((): void => {
+      .bindSheet(this.renameOpen || this.accountOpen, this.WorkspaceSheet(), harmonySheetOptions((): void => {
         this.renameOpen = false;
+        this.accountOpen = false;
       }, SheetSize.MEDIUM))
     }
   }
