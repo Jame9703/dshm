@@ -51,7 +51,7 @@ import { DESKTOP_PROGRESSIVE_STARTUP, DESKTOP_WEB_LOADED, DESKTOP_WEB_NETWORK_LO
   buildDesktopWorkbenchPaintScript, desktopWorkbenchPaintPage } from '../common/DesktopStartup';
 import { DesktopStartupProgress } from '../common/DesktopStartupProgress';
 import { BRAND_SHIM_JS } from 'dshcompat';
-import { ACCOUNT_MENU_SHIM_JS } from 'dshcompat';
+import { WEB_ACTION_MENU_SHIM_JS } from 'dshcompat';
 // Web 权限裁决的纯逻辑（真机 bug 修复：getOrigin() 带结尾斜杠）
 import { isLoopbackOrigin, shouldGrantWebPermission } from 'appstate';
 // 语音音频换算（路线 A）：HMS 只收 16k/单声道/16位，且 writeAudio 只收 640/1280 字节
@@ -203,6 +203,7 @@ const WEB_CONTEXT_MENU_COMPAT: WebContextMenuCompat = new WebContextMenuCompat()
 interface WebContextMenuItem {
   label: string;
   run: () => void;
+  enabled?: boolean;
 }
 
 /**
@@ -214,7 +215,7 @@ interface WebContextMenuPanelParams {
   themeDark: boolean;
 }
 
-interface WebAccountMenu {
+interface WebActionMenu {
   content: ComponentContent<WebContextMenuPanelParams>;
   requestId: number;
   action: number;
@@ -231,10 +232,11 @@ function WebContextMenuPanel(params: WebContextMenuPanelParams) {
     Menu() {
       ForEach(params.items, (item: WebContextMenuItem): void => {
         MenuItem({ content: item.label })
+          .enabled(item.enabled !== false)
           .onClick((): void => {
             item.run();
           })
-      }, (item: WebContextMenuItem): string => item.label)
+      }, (item: WebContextMenuItem, index: number): string => `${index}:${item.label}`)
     }
   }
 }
@@ -4616,8 +4618,8 @@ struct WebApp {
      * 写进 `files/diag-glass`，真机一条 `cat` 就能判"没生效"是内核不支持、还是选择器没命中。
      */
     ,'writeGlassDiag': (detail: string): void => this.dirPickerBridge.writeDiagMarkerPublic('diag-glass', detail)
-    ,'openWebAccountMenu': (id: number, x: number, y: number, settings: string, feedback: string,
-      account: string): boolean => this.openWebAccountMenu(id, x, y, [settings, feedback, account])
+    ,'openWebActionMenu': (id: number, x: number, y: number, category: string, rows: string): boolean =>
+      this.openWebActionMenu(id, x, y, category, rows)
     /*
      * 形态读数（2026-10-09）：侧栏垫片用它决定要不要开"移动端抽屉"（SIDEBAR_SHIM_JS §B）。
      * 【为什么必须由原生回答】手持档判据只有一处真源（platform.isHandheldForm()，
@@ -5623,7 +5625,7 @@ struct WebApp {
     { script: SIDEBAR_SHIM_JS, scriptRules: ['*'] },
     /* 外壳玻璃（docs/359 一期）：排在侧栏垫片之后——它要认 .dshm-sbcol 这个钩子。 */
     { script: GLASS_SKIN_JS, scriptRules: ['*'] },
-    { script: ACCOUNT_MENU_SHIM_JS, scriptRules: ['*'] },
+    { script: WEB_ACTION_MENU_SHIM_JS, scriptRules: ['*'] },
     /* AI 生成标识：同样认 .dshm-frame 的主列；排在侧栏/玻璃之后即可。 */
     { script: AI_DISCLOSURE_SHIM_JS, scriptRules: ['*'] },
   { script: COMPOSER_PIN_SHIM_JS, scriptRules: ['*'] },
@@ -5976,7 +5978,7 @@ struct WebApp {
   aboutToDisappear(): void {
     this.nativeCaptureDisposed = true;
     this.cancelNativeCapture();
-    this.closeWebAccountMenu();
+    this.closeWebActionMenu();
     this.startupPageActive = false;
     this.clearTabletStartupBrandTimer();
     if (this.startupWebPrepareTimer !== -1) {
@@ -7684,14 +7686,14 @@ struct WebApp {
   private webMenuContent: ComponentContent<WebContextMenuPanelParams> | undefined = undefined;
   private webMenuResult: WebContextMenuResult | undefined = undefined;
   private webMenuClosed: boolean = true;
-  private webAccountMenu: WebAccountMenu | undefined = undefined;
+  private webActionMenu: WebActionMenu | undefined = undefined;
 
-  private openWebAccountMenu(id: number, x: number, y: number, labels: string[]): boolean {
-    if (!this.desktopForced || !this.startupMainWindow || !this.webReady || this.webAccountMenu !== undefined ||
+  private openWebActionMenu(id: number, x: number, y: number, category: string, rows: string): boolean {
+    if (!this.desktopForced || !this.startupMainWindow || !this.webReady || this.webActionMenu !== undefined ||
       this.webMenuContent !== undefined || deviceInfo.sdkApiVersion < 26 || this.lastWebAreaWidth <= 0 ||
       this.lastWebAreaHeight <= 0 || !Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(x) ||
-      !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 ||
-      labels.some((label: string): boolean => label.length === 0 || label.length > 80)) {
+      !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 || rows.length > 819 ||
+      (category !== 'account' && category !== 'context')) {
       return false;
     }
     try {
@@ -7706,61 +7708,66 @@ struct WebApp {
         return false;
       }
       const ui: UIContext = this.getUIContext();
-      const items: WebContextMenuItem[] = labels.map((label: string, index: number): WebContextMenuItem => {
-        return { label: label, run: (): void => this.selectWebAccountMenuItem(id, index) };
+      const lines: string[] = rows.split('\n');
+      if (lines.length > 10 || lines.some((line: string): boolean => !/^[01][^\r\n]{1,80}$/.test(line))) {
+        return false;
+      }
+      const items: WebContextMenuItem[] = lines.map((line: string, index: number): WebContextMenuItem => {
+        return { label: line.slice(1), enabled: line.charAt(0) === '0',
+          run: (): void => this.selectWebActionMenuItem(id, index) };
       });
       const params: WebContextMenuPanelParams = { items: items, themeDark: this.themeMode === 'dark' };
       const content = new ComponentContent<WebContextMenuPanelParams>(ui, wrapBuilder(WebContextMenuPanel), params);
-      const menu: WebAccountMenu = { content: content, requestId: id, action: -1, disposed: false };
-      this.webAccountMenu = menu;
+      const menu: WebActionMenu = { content: content, requestId: id, action: -1, disposed: false };
+      this.webActionMenu = menu;
       const options: MenuOptions = {
         anchorPosition: { x: x * this.lastWebAreaWidth, y: y * this.lastWebAreaHeight },
         systemMaterial: material,
-        onAppear: (): void => this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', 'account native appear'),
-        onDisappear: (): void => this.finishWebAccountMenu(menu, menu.action)
+        onAppear: (): void => this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `${category} native appear`),
+        onDisappear: (): void => this.finishWebActionMenu(menu, menu.action)
       };
       ui.getPromptAction().openMenu(content, { id: 'dshm-web-menu-anchor' }, options).catch((): void => {
-        this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', 'account native fallback');
-        this.finishWebAccountMenu(menu, -2);
+        this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `${category} native fallback`);
+        this.finishWebActionMenu(menu, -2);
       });
       return true;
     } catch (e) {
-      if (this.webAccountMenu !== undefined) {
-        this.finishWebAccountMenu(this.webAccountMenu, -2);
+      if (this.webActionMenu !== undefined) {
+        this.finishWebActionMenu(this.webActionMenu, -2);
       }
       return false;
     }
   }
 
-  private selectWebAccountMenuItem(id: number, action: number): void {
-    const menu = this.webAccountMenu;
+  private selectWebActionMenuItem(id: number, action: number): void {
+    const menu = this.webActionMenu;
     if (menu === undefined || menu.requestId !== id || menu.action !== -1) {
       return;
     }
     menu.action = action;
-    this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `account native select ${action}`);
-    this.dismissWebAccountMenu(menu);
+    this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `native action menu select ${action}`);
+    this.dismissWebActionMenu(menu);
   }
 
-  private closeWebAccountMenu(): void {
-    const menu = this.webAccountMenu;
-    this.webAccountMenu = undefined;
+  private closeWebActionMenu(): void {
+    const menu = this.webActionMenu;
+    this.webActionMenu = undefined;
     if (menu !== undefined) {
-      this.dismissWebAccountMenu(menu);
+      this.dismissWebActionMenu(menu);
     }
   }
 
-  private dismissWebAccountMenu(menu: WebAccountMenu): void {
+  private dismissWebActionMenu(menu: WebActionMenu): void {
     try {
       this.getUIContext().getPromptAction().closeMenu(menu.content).catch((): void => {
-        this.finishWebAccountMenu(menu, menu.action);
+        this.finishWebActionMenu(menu, menu.action);
       });
     } catch (e) {
-      this.finishWebAccountMenu(menu, menu.action);
+      this.finishWebActionMenu(menu, menu.action);
     }
   }
 
-  private finishWebAccountMenu(menu: WebAccountMenu, action: number): void {
+  private finishWebActionMenu(menu: WebActionMenu, action: number): void {
     if (menu.disposed) {
       return;
     }
@@ -7770,12 +7777,12 @@ struct WebApp {
     } catch (e) {
       // 窗口销毁时系统可能已释放内容。
     }
-    if (this.webAccountMenu !== menu) {
+    if (this.webActionMenu !== menu) {
       return;
     }
-    this.webAccountMenu = undefined;
+    this.webActionMenu = undefined;
     try {
-      this.controller.runJavaScript(`window.__DSHM_ACCOUNT_MENU__?.finish(${menu.requestId}, ${action});`)
+      this.controller.runJavaScript(`window.__DSHM_ACTION_MENU__?.finish(${menu.requestId}, ${action});`)
         .catch((): void => {});
     } catch (e) {
       // 导航后旧文档可能已经销毁。
@@ -8363,7 +8370,7 @@ struct WebApp {
              * entry 侧是迁移遗漏。bridge 对象本体（'platformPcMode': …）一直在
              * bridges 里定义着，只是名单漏登记。
              */
-            methodList: ['startPick', 'onThemeMode', 'startNativeCapture', 'nativeCaptureState', 'takeNativeCapture', 'cancelNativeCapture', 'openExternal', 'openFilePreview', 'openFileLocation', 'writeGlassDiag', 'openWebAccountMenu', 'platformHandheld', 'platformForm', 'platformPcMode', 'requestSystemBack', 'openCloudSync', 'cloudSyncState', 'cloudSyncAction', 'readAloud', 'stopReadAloud', 'shareText'],
+            methodList: ['startPick', 'onThemeMode', 'startNativeCapture', 'nativeCaptureState', 'takeNativeCapture', 'cancelNativeCapture', 'openExternal', 'openFilePreview', 'openFileLocation', 'writeGlassDiag', 'openWebActionMenu', 'platformHandheld', 'platformForm', 'platformPcMode', 'requestSystemBack', 'openCloudSync', 'cloudSyncState', 'cloudSyncAction', 'readAloud', 'stopReadAloud', 'shareText'],
             controller: this.controller
           })          // 官方 web UI 自己按 prefers-color-scheme 适配暗色：跟随系统、不强制反色
           .darkMode(WebDarkMode.Auto)
@@ -8397,7 +8404,7 @@ struct WebApp {
             this.cancelNativeCapture();
             // 【顺序不可换】上一行必须是本回调的第一个动作（`check-native-capture-lifecycle`
             // 的主检和变异体依赖此顺序）。
-            this.closeWebAccountMenu();
+            this.closeWebActionMenu();
             if (this.isStartupBlankNavigation(event.url)) {
               return;
             }
