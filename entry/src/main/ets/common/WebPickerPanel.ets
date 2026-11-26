@@ -145,3 +145,22 @@ export function buildWebPickerPanel(params: WebPickerPanelParams) {
     })
   }
 }
+
+@Builder
+export function buildWebPickerMenu(params: WebPickerPanelParams) {
+  WithTheme({ colorMode: params.themeDark ? ThemeColorMode.DARK : ThemeColorMode.LIGHT }) {
+    Menu() {
+      ForEach(params.page.rows, (row: WebPickerRow): void => {
+        MenuItem({ content: row.detail.length > 0 ? row.label + '\n' + row.detail : row.label })
+          .contentFont({ size: 14 })
+          .selectIcon(true)
+          .selected(row.selected)
+          .accessibilityText(row.detail.length > 0 ? row.label + ', ' + row.detail : row.label)
+          .accessibilitySelected(row.selected)
+          .enabled(!row.disabled)
+          .onClick((): void => params.select(row.key))
+      }, (row: WebPickerRow): string => row.key)
+    }
+    .width(params.width)
+  }
+}

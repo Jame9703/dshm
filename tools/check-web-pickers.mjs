@@ -1,11 +1,29 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 
 const source = readFileSync(new URL('../dshcompat/src/main/ets/WebPicker.ets', import.meta.url), 'utf8');
 const literal = source.match(/= (`[\s\S]+`);/)[1];
 const shell = readFileSync(new URL('../entry/src/main/ets/pages/WebApp.ets', import.meta.url), 'utf8');
+const nativePicker = readFileSync(new URL('../entry/src/main/ets/common/DesktopWebPicker.ets', import.meta.url), 'utf8');
+const nativePanel = readFileSync(new URL('../entry/src/main/ets/common/WebPickerPanel.ets', import.meta.url), 'utf8');
+
+const choiceCheck = nativePicker.match(/function canUsePickerMenu\([^]*?\n\}/)[0];
+const canUsePickerMenu = runInNewContext(stripTypeScriptTypes(choiceCheck + '\ncanUsePickerMenu'));
+const choice = { title: '', search: '', status: '', empty: '',
+  rows: [{ label: 'Standard', detail: 'Daily tasks', group: '', stay: false, drill: false }] };
+assert.equal(canUsePickerMenu(choice), true);
+assert.equal(canUsePickerMenu({ ...choice, rows: Array.from({ length: 12 }, () => choice.rows[0]) }), true);
+for (const state of [{ search: 'Search' }, { status: 'Loading' }, { title: 'Model' },
+  { rows: [{ ...choice.rows[0], group: 'Provider' }] },
+  { rows: [{ ...choice.rows[0], stay: true, drill: true }] }]) {
+  assert.equal(canUsePickerMenu({ ...choice, ...state }), false);
+}
+assert.match(nativePicker, /\? this\.openMenu\(dialog, left,[^]*?: this\.openPanel\(dialog,/);
+assert.match(nativePicker, /systemMaterial:\s*pickerMaterial\(true\),[^]*?getPromptAction\(\)\.openMenu\(dialog\.content/);
+assert.match(nativePanel, /MenuItem\(\{ content: row\.detail\.length > 0 \? row\.label \+ '\\n' \+ row\.detail : row\.label \}\)/);
 
 function fixture(script, accept = true) {
   const events = [];

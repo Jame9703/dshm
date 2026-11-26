@@ -1,7 +1,7 @@
 import { ComponentContent, promptAction, uiMaterial } from '@kit.ArkUI';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { immersiveMaterialOf } from 'platform';
-import { buildWebPickerPanel, WebPickerPage, WebPickerPanelParams, WebPickerRow } from './WebPickerPanel';
+import { buildWebPickerMenu, buildWebPickerPanel, WebPickerPage, WebPickerPanelParams, WebPickerRow } from './WebPickerPanel';
 
 interface ActivePicker {
   id: number;
@@ -9,6 +9,7 @@ interface ActivePicker {
   params: WebPickerPanelParams;
   ui: UIContext;
   send: (id: number, event: string, value: string) => void;
+  menu: boolean;
   opened: boolean;
   closing: boolean;
   event: string;
@@ -47,6 +48,24 @@ function decodePicker(payload: string): WebPickerPage | undefined {
   }
 }
 
+function canUsePickerMenu(page: WebPickerPage): boolean {
+  return page.title.length === 0 && page.search.length === 0 && page.status.length === 0 &&
+    page.empty.length === 0 && page.rows.length > 0 &&
+    page.rows.every((row: WebPickerRow): boolean => row.group.length === 0 && !row.stay && !row.drill);
+}
+
+function pickerMaterial(menu: boolean): uiMaterial.ImmersiveMaterial | undefined {
+  if (deviceInfo.sdkApiVersion < 26) return undefined;
+  try {
+    if (uiMaterial.isImmersiveMaterialSupported()) {
+      return immersiveMaterialOf(menu ? uiMaterial.ImmersiveStyle.THICK : uiMaterial.ImmersiveStyle.THIN, false);
+    }
+  } catch (e) {
+    // Use the platform's default menu or dialog background.
+  }
+  return undefined;
+}
+
 export interface WebPickerViewport {
   width: number;
   height: number;
@@ -83,42 +102,20 @@ export class DesktopWebPicker {
         search: (value: string): void => this.search(id, value),
         select: (key: string): void => this.select(id, key)
       };
-      const content = new ComponentContent<WebPickerPanelParams>(ui, wrapBuilder(buildWebPickerPanel), params);
+      const menu: boolean = canUsePickerMenu(page);
+      const content = new ComponentContent<WebPickerPanelParams>(ui,
+        menu ? wrapBuilder(buildWebPickerMenu) : wrapBuilder(buildWebPickerPanel), params);
       const dialog: ActivePicker = {
-        id: id, content: content, params: params, ui: ui, send: sender,
+        id: id, content: content, params: params, ui: ui, send: sender, menu: menu,
         opened: false, closing: false, event: 'dismiss', value: ''
       };
-      const baseX: number = ui.px2vp(anchor.windowOffset.x);
-      const baseY: number = ui.px2vp(anchor.windowOffset.y);
-      const options: promptAction.BaseDialogOptions = {
-        alignment: DialogAlignment.TopStart,
-        offset: {
-          dx: baseX + Math.min(Math.max(8, x * viewport.width), viewport.width - width - 8),
-          dy: baseY + Math.max(8, placeBelow ? bottomVp + 6 : topVp - room - 6)
-        },
-        autoCancel: true,
-        maskColor: Color.Transparent,
-        onWillDismiss: (action: DismissDialogAction): void => {
-          if (!dialog.closing && action.reason === DismissReason.PRESS_BACK &&
-            dialog.params.page.rows.some((row: WebPickerRow): boolean => row.key === 'back' && row.stay)) {
-            this.select(dialog.id, 'back');
-            return;
-          }
-          action.dismiss();
-        },
-        onDidDisappear: (): void => this.finish(dialog)
-      };
-      if (deviceInfo.sdkApiVersion >= 26) {
-        try {
-          if (uiMaterial.isImmersiveMaterialSupported()) {
-            options.systemMaterial = immersiveMaterialOf(uiMaterial.ImmersiveStyle.THIN, false);
-          }
-        } catch (e) {
-          // The default dialog style still shows the original options.
-        }
-      }
+      const left: number = Math.min(Math.max(8, x * viewport.width), viewport.width - width - 8);
       this.active = dialog;
-      ui.getPromptAction().openCustomDialog(content, options).then((): void => {
+      const opening: Promise<void> = menu
+        ? this.openMenu(dialog, left, Math.max(8, placeBelow ? bottomVp + 6 : topVp - room - 6))
+        : this.openPanel(dialog, ui.px2vp(anchor.windowOffset.x) + left,
+          ui.px2vp(anchor.windowOffset.y) + Math.max(8, placeBelow ? bottomVp + 6 : topVp - room - 6));
+      opening.then((): void => {
         if (this.active !== dialog) return;
         dialog.opened = true;
         if (dialog.closing) this.dismiss(dialog);
@@ -137,11 +134,41 @@ export class DesktopWebPicker {
     }
   }
 
+  private openMenu(dialog: ActivePicker, x: number, y: number): Promise<void> {
+    // A plain choice list uses the same system menu surface as the account menu.
+    const options: MenuOptions = {
+      anchorPosition: { x: x, y: y },
+      systemMaterial: pickerMaterial(true),
+      onDisappear: (): void => this.finish(dialog)
+    };
+    return dialog.ui.getPromptAction().openMenu(dialog.content, { id: 'dshm-web-menu-anchor' }, options);
+  }
+
+  private openPanel(dialog: ActivePicker, x: number, y: number): Promise<void> {
+    const options: promptAction.BaseDialogOptions = {
+      alignment: DialogAlignment.TopStart,
+      offset: { dx: x, dy: y },
+      autoCancel: true,
+      maskColor: Color.Transparent,
+      systemMaterial: pickerMaterial(false),
+      onWillDismiss: (action: DismissDialogAction): void => {
+        if (!dialog.closing && action.reason === DismissReason.PRESS_BACK &&
+          dialog.params.page.rows.some((row: WebPickerRow): boolean => row.key === 'back' && row.stay)) {
+          this.select(dialog.id, 'back');
+          return;
+        }
+        action.dismiss();
+      },
+      onDidDisappear: (): void => this.finish(dialog)
+    };
+    return dialog.ui.getPromptAction().openCustomDialog(dialog.content, options);
+  }
+
   update(id: number, payload: string): boolean {
     const dialog = this.active;
     if (dialog === undefined || dialog.id !== id || dialog.closing) return false;
     const page: WebPickerPage | undefined = decodePicker(payload);
-    if (page === undefined) return false;
+    if (page === undefined || (dialog.menu && !canUsePickerMenu(page))) return false;
     const current = dialog.params;
     const params: WebPickerPanelParams = {
       page: page, width: current.width, height: current.height, themeDark: current.themeDark,
@@ -188,7 +215,9 @@ export class DesktopWebPicker {
     dialog.closing = true;
     if (!dialog.opened) return;
     try {
-      dialog.ui.getPromptAction().closeCustomDialog(dialog.content).catch((): void => this.finish(dialog));
+      const prompt = dialog.ui.getPromptAction();
+      const closing: Promise<void> = dialog.menu ? prompt.closeMenu(dialog.content) : prompt.closeCustomDialog(dialog.content);
+      closing.catch((): void => this.finish(dialog));
     } catch (e) {
       this.finish(dialog);
     }
