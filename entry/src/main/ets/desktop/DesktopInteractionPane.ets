@@ -1,5 +1,6 @@
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import type { DesktopInteraction, DesktopQuestion, DesktopQuestionAnswer, DesktopQuestionOption } from './DesktopInteractions';
+import type { DesktopPlanDocument } from './DesktopPlan';
 
 @Component
 export struct DesktopInteractionPane {
@@ -8,10 +9,43 @@ export struct DesktopInteractionPane {
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
     (_id: string, _answers: DesktopQuestionAnswer[]): void => {};
+  onPlanDecision: (id: string, approve: boolean) => void = (_id: string, _approve: boolean): void => {};
+  onPlanPreview: (plan: DesktopPlanDocument) => void = (_plan: DesktopPlanDocument): void => {};
   @State private draft: DesktopQuestionAnswer[] = [];
 
   private answerFor(id: string): DesktopQuestionAnswer | undefined {
     return this.draft.find((answer: DesktopQuestionAnswer): boolean => answer.id === id);
+  }
+
+  @Builder
+  private PlanReview() {
+    Row({ space: 7 }) {
+      Circle().width(7).height(7).fill($r('sys.color.warning'))
+      Text('计划待审').fontSize(13).fontColor($r('sys.color.font_secondary'))
+      Blank()
+      Button('查看完整计划', { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .onClick((): void => {
+          const review = this.request?.planReview;
+          if (review !== undefined) {
+            this.onPlanPreview(review.document);
+          }
+        })
+    }
+    .width('100%')
+    Text(this.request?.planReview?.document.title ?? '').fontSize(17).fontWeight(FontWeight.Medium)
+      .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+    if (this.request?.planReview?.summary) {
+      Text(this.request?.planReview?.summary ?? '').fontSize(14).fontColor($r('sys.color.font_secondary'))
+        .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    Row({ space: 8 }) {
+      Blank()
+      Button('要求修改', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
+        .onClick((): void => { this.onPlanDecision(this.request?.id ?? '', false); })
+      Button('同意执行').enabled(!this.busy)
+        .onClick((): void => { this.onPlanDecision(this.request?.id ?? '', true); })
+    }
+    .width('100%')
   }
 
   private setAnswer(answer: DesktopQuestionAnswer): void {
@@ -118,6 +152,8 @@ export struct DesktopInteractionPane {
     Column({ space: 10 }) {
       if (this.request?.kind === 'approval') {
         this.Approval()
+      } else if (this.request?.planReview !== undefined) {
+        this.PlanReview()
       } else {
         Scroll() {
           Column({ space: 14 }) {

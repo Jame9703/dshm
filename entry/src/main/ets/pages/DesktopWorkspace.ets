@@ -3,6 +3,8 @@ import { getString, parseTarget } from 'connection';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
+import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { dialogMaterial, PickOutcome, pickDocument, pickFolder, readDocumentUri, uriFromPath } from 'platform';
@@ -47,6 +49,9 @@ struct DesktopWorkspace {
   @State private rightPaneWidth: number = 340;
   @State private terminalSession: string = '';
   @State private filesSession: string = '';
+  @State private planSession: string = '';
+  @State private planPreview: DesktopPlanDocument | undefined = undefined;
+  private readonly shownPlanReviews: Set<string> = new Set<string>();
   @State private searchOpen: boolean = false;
   @State private query: string = '';
   @State private selectedWorkspaceTitle: ResourceStr = '';
@@ -101,6 +106,10 @@ struct DesktopWorkspace {
   }
 
   onBackPress(): boolean {
+    if (this.planSession.length > 0 && this.planSession === this.sessionId && this.panel === 'session') {
+      this.closePlan();
+      return true;
+    }
     if (this.filesSession.length > 0 && this.filesSession === this.sessionId && this.panel === 'session') {
       this.filesSession = '';
       return true;
@@ -136,6 +145,8 @@ struct DesktopWorkspace {
     this.error = '';
     this.chat = undefined;
     this.interactions = [];
+    this.shownPlanReviews.clear();
+    this.closePlan();
     this.chatError = '';
     this.creating = false;
     this.workspaceBusy = false;
@@ -156,6 +167,12 @@ struct DesktopWorkspace {
       this.chat = snapshot;
     }, (items: DesktopInteraction[]): void => {
       this.interactions = items;
+      const review = items.find((row: DesktopInteraction): boolean =>
+        row.sessionId === this.sessionId && row.planReview !== undefined && row.reviewHidden !== true);
+      if (review?.planReview !== undefined && this.panel === 'session' && !this.shownPlanReviews.has(review.id)) {
+        this.shownPlanReviews.add(review.id);
+        this.showPlan(review.planReview.document);
+      }
     });
     this.data.start(this.hostUrl);
   }
@@ -488,6 +505,18 @@ struct DesktopWorkspace {
         return result;
       }, text);
     }
+  }
+
+  private showPlan(document: DesktopPlanDocument): void {
+    this.planSession = this.sessionId;
+    this.planPreview = document;
+    this.terminalSession = '';
+    this.filesSession = '';
+  }
+
+  private closePlan(): void {
+    this.planSession = '';
+    this.planPreview = undefined;
   }
 
   private stopMessage(): void {
@@ -1012,6 +1041,21 @@ struct DesktopWorkspace {
               this.chatAction((): Promise<string> => interactions.answer(id, answers));
             }
           },
+          onPlanDecision: (id: string, approve: boolean): void => {
+            const interactions = this.data?.interactions;
+            if (interactions !== undefined) {
+              this.chatAction((): Promise<string> => approve ?
+                interactions.approvePlanReview(id) : interactions.dismissPlanReview(id));
+            }
+          },
+          onPlanMode: (enabled: boolean): void => {
+            const conversation = this.data?.conversation;
+            if (conversation !== undefined) {
+              this.chatAction((id: string): Promise<string> => conversation.togglePlanMode(id, enabled));
+            }
+          },
+          onPlanPreview: (plan: DesktopPlanDocument): void => { this.showPlan(plan); },
+          onPlanResume: (id: string): void => { this.data?.interactions.reopenPlanReview(id); },
           title: this.selectedTitle,
           workspaceTitle: this.selectedWorkspaceTitle,
           draft: this.draft,
@@ -1031,11 +1075,13 @@ struct DesktopWorkspace {
           onWeb: (): void => { this.openWeb(false); },
           filesOpen: this.filesSession === this.sessionId,
           onFiles: (): void => {
+            this.closePlan();
             this.filesSession = this.filesSession === this.sessionId ? '' : this.sessionId;
             this.terminalSession = '';
           },
           terminalOpen: this.terminalSession === this.sessionId,
           onTerminal: (): void => {
+            this.closePlan();
             this.terminalSession = this.terminalSession === this.sessionId ? '' : this.sessionId;
             this.filesSession = '';
           },
@@ -1048,7 +1094,15 @@ struct DesktopWorkspace {
           }
         })
         .layoutWeight(1)
-        if (this.filesSession === this.sessionId && this.data !== undefined) {
+        if (this.planSession === this.sessionId && this.planPreview !== undefined) {
+          Column() {
+            DesktopPlanPreviewPane({
+              markdown: this.planPreview.markdown,
+              onClosePreview: (): void => { this.closePlan(); }
+            })
+          }
+          .width(this.rightPaneWidth).height('100%')
+        } else if (this.filesSession === this.sessionId && this.data !== undefined) {
           Column() {
             DesktopFilesPane({
               host: this.data.actions,

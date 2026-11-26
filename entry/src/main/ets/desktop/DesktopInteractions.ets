@@ -1,6 +1,7 @@
 import { Connection, EVENTS_RESULT_ENDPOINT, getArray, getBoolean, getRecord, getString } from 'connection';
 import { RemoteEventFrameType, WATERFALL_APPROVAL, WATERFALL_QUESTION } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
+import { desktopPlanTitle, DesktopPlanReview } from './DesktopPlan';
 
 export interface DesktopQuestionOption {
   label: string;
@@ -33,6 +34,30 @@ export interface DesktopInteraction {
   questions: DesktopQuestion[];
   continued: boolean;
   timed: boolean;
+  planReview?: DesktopPlanReview;
+  reviewHidden?: boolean;
+}
+
+function planReviewOf(raw: Object, questions: DesktopQuestion[]): DesktopPlanReview | undefined {
+  const entry = getArray(raw, 'questions')?.[0];
+  const intent = getRecord(entry, 'intent');
+  const question = questions[0];
+  const markdown = getString(entry, 'detail');
+  const approve = getString(intent, 'approve') ?? '';
+  if (questions.length !== 1 || getArray(raw, 'questions')?.length !== 1 ||
+    getString(intent, 'kind') !== 'plan-review' || markdown === undefined || question.multi ||
+    question.options.length > 2 || !approve ||
+    !question.options.some((option: DesktopQuestionOption): boolean => option.label === approve)) {
+    return undefined;
+  }
+  return {
+    document: { callId: getString(intent, 'callId') ?? '', title: desktopPlanTitle(markdown),
+      markdown: markdown, sequence: -1 },
+    questionId: question.id,
+    approve: approve,
+    summary: (markdown.trim().split('\n').slice(1).join('\n').trim()
+      .split(new RegExp('\\r?\\n\\s*\\r?\\n'), 1)[0] ?? '').replace(new RegExp('\\s+', 'g'), ' ')
+  };
 }
 
 function questionsOf(value: Object): DesktopQuestion[] {
@@ -135,7 +160,8 @@ export class DesktopInteractions {
       reason: getString(displayReason, 'zh') ?? getString(displayReason, 'en') ?? getString(request, 'reason') ?? '',
       questions: questions,
       continued: false,
-      timed: getBoolean(wait, 'timed') === true
+      timed: getBoolean(wait, 'timed') === true,
+      planReview: approval ? undefined : planReviewOf(request, questions)
     };
     this.events.set(id, row);
     this.publish();
@@ -171,6 +197,39 @@ export class DesktopInteractions {
     return this.settle(id, allow ? 'allowed-once' : 'rejected');
   }
 
+  async approvePlanReview(id: string): Promise<string> {
+    const row = this.events.get(id);
+    const review = row?.planReview;
+    if (review === undefined || row?.sessionId !== this.selected) {
+      return '这项计划审阅已结束';
+    }
+    return this.answer(id, [{ id: review.questionId, selected: [review.approve] }]);
+  }
+
+  async dismissPlanReview(id: string): Promise<string> {
+    const row = this.events.get(id);
+    if (row === undefined || row.planReview === undefined || row.sessionId !== this.selected) {
+      return '这项计划审阅已结束';
+    }
+    if (row.callId.length > 0) {
+      row.reviewHidden = true;
+      this.publish();
+      return '';
+    }
+    const error: Record<string, Object> = {
+      'name': 'UserQuestionError', 'code': 'ASK_CANCELLED', 'message': 'the user cancelled ask_user_question'
+    };
+    return this.settle(id, error, 'rejected');
+  }
+
+  reopenPlanReview(id: string): void {
+    const row = this.events.get(id);
+    if (row?.planReview !== undefined && row.sessionId === this.selected && row.reviewHidden) {
+      row.reviewHidden = false;
+      this.publish();
+    }
+  }
+
   async answer(id: string, answers: DesktopQuestionAnswer[]): Promise<string> {
     const event = this.events.get(id) ?? this.continued.find((row: DesktopInteraction): boolean => row.id === id);
     if (event?.kind !== 'question' || event.sessionId !== this.selected) {
@@ -191,8 +250,8 @@ export class DesktopInteractions {
     return '';
   }
 
-  private async settle(id: string, value: Object): Promise<string> {
-    const error = await this.send(id, 'result', value);
+  private async settle(id: string, value: Object, kind: string = 'result'): Promise<string> {
+    const error = await this.send(id, kind, value);
     if (error.length === 0 && this.events.delete(id)) {
       this.publish();
     }
@@ -206,7 +265,7 @@ export class DesktopInteractions {
     }
     const outcome: Record<string, Object> = { 'kind': kind };
     if (value !== undefined) {
-      outcome['value'] = value;
+      outcome[kind === 'rejected' ? 'error' : 'value'] = value;
     }
     const payload: Record<string, Object> = { 'clientId': clientId, 'eventId': id, 'outcome': outcome };
     const result = await this.connection.call(EVENTS_RESULT_ENDPOINT, payload);

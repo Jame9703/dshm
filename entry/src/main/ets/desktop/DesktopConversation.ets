@@ -7,11 +7,12 @@ import type { ModelOption, ModelSelection, PendingAttachment, PromptContentPart 
 import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
-  argsFor, EVENT_TURN_END, mayChangeSessionTitle, MODEL_CATALOG_ENDPOINT, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
+  argsFor, COMMANDS_EXECUTE_ENDPOINT, EVENT_TURN_END, mayChangeSessionTitle, MODEL_CATALOG_ENDPOINT, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
   SESSION_PAGE_ENDPOINT, SESSION_PROMPT_ENDPOINT, SESSION_SELECT_MODEL_ENDPOINT
 } from 'dshcompat';
 
 import { DesktopInteractions } from './DesktopInteractions';
+import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument, isDesktopPlanCommand } from './DesktopPlan';
 
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
@@ -22,9 +23,16 @@ export interface DesktopPermissionOption {
   title: string;
 }
 
+export interface DesktopTranscriptItem {
+  id: string;
+  sequence: number;
+  message?: TrajectoryItem;
+  plan?: DesktopPlanDocument;
+}
+
 export interface DesktopConversationSnapshot {
   sessionId: string;
-  messages: TrajectoryItem[];
+  transcript: DesktopTranscriptItem[];
   partial: string;
   loading: boolean;
   hasEarlier: boolean;
@@ -34,6 +42,7 @@ export interface DesktopConversationSnapshot {
   permissions: DesktopPermissionOption[];
   permission: string;
   modelLabel: string;
+  planMode?: boolean;
   selection?: ModelSelection;
   error: string;
 }
@@ -53,7 +62,9 @@ export class DesktopConversation {
   private closed: boolean = false;
   private stopFollow?: () => void;
   private timer: number = -1;
-  private messages: TrajectoryItem[] = [];
+  private transcript: DesktopTranscriptItem[] = [];
+  private planMode?: boolean;
+  private planAsOf: number = -1;
   private models: ModelOption[] = [];
   private modelsRequested: boolean = false;
   private defaultModel?: ModelSelection;
@@ -109,7 +120,9 @@ export class DesktopConversation {
     this.stopWatching();
     this.sessionId = sessionId;
     this.interactions.select(sessionId);
-    this.messages = [];
+    this.transcript = [];
+    this.planMode = undefined;
+    this.planAsOf = -1;
     this.model = undefined;
     this.permission = '';
     this.cursor = -1;
@@ -175,6 +188,9 @@ export class DesktopConversation {
   }
 
   async send(sessionId: string, text: string, attachments: PendingAttachment[]): Promise<string> {
+    if (isDesktopPlanCommand(text)) {
+      return this.executePlan(sessionId, text, attachments);
+    }
     const ids = attachments.map((file: PendingAttachment): string => file.receiptId);
     const signature = JSON.stringify([text, ...ids]);
     const parts: PromptContentPart[] = ids.map((id: string): PromptContentPart => filePart(id));
@@ -193,6 +209,31 @@ export class DesktopConversation {
       return '';
     }
     return this.failure(response, '宿主未确认发送');
+  }
+
+  async togglePlanMode(sessionId: string, enabled: boolean): Promise<string> {
+    return this.executePlan(sessionId, enabled ? '/plan' : '/plan off', []);
+  }
+
+  private async executePlan(sessionId: string, line: string, files: PendingAttachment[]): Promise<string> {
+    const attachments = files.map((file: PendingAttachment): PromptContentPart => filePart(file.receiptId));
+    const body: Record<string, Object> = {
+      'agentId': sessionId, 'line': line, 'submittedAttachments': attachments
+    };
+    const args = argsFor(COMMANDS_EXECUTE_ENDPOINT, body);
+    const generation = this.generation;
+    const response = args === undefined ? undefined : await this.connection.call(COMMANDS_EXECUTE_ENDPOINT, args);
+    if (!response?.ok) {
+      return this.failure(response, '无法提交计划模式命令');
+    }
+    const result = getRecord(response.value, 'result');
+    if (getString(result, 'kind') !== 'success') {
+      return getString(result, 'text') || '当前宿主未接受计划模式命令';
+    }
+    if (this.current(generation) && this.sessionId === sessionId) {
+      await this.loadSelection(generation);
+    }
+    return '';
   }
 
   async cancel(sessionId: string): Promise<string> {
@@ -277,9 +318,9 @@ export class DesktopConversation {
   }
 
   private addRecords(records: Object[], merge: boolean, hasEarlier: boolean): void {
-    const result: Map<string, TrajectoryItem> = new Map<string, TrajectoryItem>();
+    const result: Map<string, DesktopTranscriptItem> = new Map<string, DesktopTranscriptItem>();
     if (merge) {
-      this.messages.forEach((message: TrajectoryItem): void => { result.set(message.id, message); });
+      this.transcript.forEach((item: DesktopTranscriptItem): void => { result.set(item.id, item); });
     }
     for (const record of records) {
       const seq = getNumber(getRecord(record, 'event'), 'seq') ?? -1;
@@ -287,17 +328,26 @@ export class DesktopConversation {
         this.earliest = seq;
       }
       const event = getRecord(record, 'event');
+      const plan = desktopSubmittedPlan(event);
+      if (plan !== undefined) {
+        const id = 'plan:' + plan.callId;
+        const previous = result.get(id);
+        if (previous === undefined || plan.sequence < previous.sequence) {
+          result.set(id, { id: id, sequence: plan.sequence, plan: plan });
+        }
+        continue;
+      }
       const source = getString(getRecord(getRecord(event, 'data'), 'source'), 'kind');
       if (getString(event, 'type') === 'user/message' && source !== undefined && source !== 'user') {
         continue;
       }
       const message = projectWireRecord(record);
       if (message !== undefined && message.kind === TrajectoryKind.MESSAGE && !message.internal && message.speaker !== Speaker.SYSTEM && message.body.length > 0) {
-        result.set(message.id, message);
+        result.set(message.id, { id: message.id, sequence: seq, message: message });
       }
     }
-    this.messages = Array.from(result.values()).sort((a: TrajectoryItem, b: TrajectoryItem): number =>
-      Number(a.id.substring(3)) - Number(b.id.substring(3)));
+    this.transcript = Array.from(result.values()).sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
+      a.sequence - b.sequence);
     this.hasEarlier = hasEarlier;
   }
 
@@ -311,6 +361,9 @@ export class DesktopConversation {
         this.publish();
       } else {
         this.readQuestions(result.value);
+        if (this.readPlan(result.value)) {
+          this.publish();
+        }
       }
     }
   }
@@ -323,8 +376,8 @@ export class DesktopConversation {
       return;
     }
     if (response?.ok) {
-      const active = getBoolean(response.value, 'running') === true ||
-        (getArray(response.value, 'queue')?.length ?? 0) > 0;
+      // A mode command can leave internal messages queued while the agent is idle.
+      const active = getBoolean(response.value, 'running') === true;
       const waiting = (getArray(response.value, 'pendingInput')?.length ?? 0) > 0;
       if (active !== this.running || waiting !== this.waitingForInput) {
         this.running = active;
@@ -334,6 +387,7 @@ export class DesktopConversation {
       const cursor = getNumber(response.value, 'cursor') ?? -1;
       if (this.stopFollow === undefined && cursor > this.cursor && !this.pageLoading) {
         this.loadPage(generation, false);
+        this.loadSelection(generation);
       }
     } else if (this.stopFollow === undefined && !this.pageLoading) {
       this.loadPage(generation, false);
@@ -394,8 +448,21 @@ export class DesktopConversation {
     this.interactions.observeQuestions(this.sessionId, getRecord(getRecord(projection, 'values'), 'userQuestions'));
   }
 
+  private readPlan(projection?: Object): boolean {
+    const asOf = getNumber(projection, 'asOfSeq') ?? -1;
+    if (asOf < this.planAsOf) {
+      return false;
+    }
+    this.planAsOf = asOf;
+    const mode = desktopPlanMode(projection);
+    const changed = this.planMode !== mode;
+    this.planMode = mode;
+    return changed;
+  }
+
   private readProjection(projection: Object | undefined): void {
     this.readQuestions(projection);
+    this.readPlan(projection);
     const values = getRecord(projection, 'values');
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
@@ -430,7 +497,8 @@ export class DesktopConversation {
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
-      if (eventType?.startsWith('user-question/') || eventType === 'tool/result' || eventType === 'user/message') {
+      if (eventType?.startsWith('user-question/') || eventType === 'tool/result' || eventType === 'user/message' ||
+        eventType === 'plan/mode' || eventType === 'command/done') {
         this.loadSelection(this.generation);
       }
       this.cursor = Math.max(this.cursor, getNumber(event, 'seq') ?? -1);
@@ -481,11 +549,11 @@ export class DesktopConversation {
     }
     const selection = this.model ?? this.defaultModel;
     this.listener({
-      sessionId: this.sessionId, messages: this.messages, partial: this.partial, loading: this.loading,
+      sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       models: this.models, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
-      modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models)
+      modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode
     });
   }
 }
