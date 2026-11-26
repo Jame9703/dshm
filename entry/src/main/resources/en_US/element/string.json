@@ -273,12 +273,20 @@
       "value": "Keep the CPU awake while a long task (core unpack, host startup, package install) runs, so it is not throttled or suspended halfway"
     },
     {
+      "name": "desktop_workspace_settings",
+      "value": "Settings"
+    },
+    {
+      "name": "desktop_workspace_back",
+      "value": "Back to ArkTS workspace"
+    },
+    {
       "name": "desktop_experiment_title",
       "value": "ArkUI experimental workspace"
     },
     {
       "name": "desktop_experiment_exit",
-      "value": "Exit experiment"
+      "value": "Use WebUI by default"
     },
     {
       "name": "desktop_experiment_workspaces",
@@ -338,7 +346,7 @@
     },
     {
       "name": "desktop_experiment_open_web_home",
-      "value": "Open WebUI"
+      "value": "WebUI compatibility mode"
     },
     {
       "name": "desktop_experiment_expand_sidebar",

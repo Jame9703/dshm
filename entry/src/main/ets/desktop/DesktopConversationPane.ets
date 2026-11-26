@@ -1,6 +1,6 @@
 import { Speaker, TrajectoryItem } from 'appstate';
-import type { ModelOption, ModelSelection } from 'appstate';
-import type { DesktopConversationSnapshot } from './DesktopConversation';
+import type { ModelOption, ModelSelection, PendingAttachment } from 'appstate';
+import type { DesktopConversationSnapshot, DesktopPermissionOption } from './DesktopConversation';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 
 @Component
@@ -9,15 +9,19 @@ export struct DesktopConversationPane {
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
   @Prop draft: string = '';
+  @Prop attachments: PendingAttachment[] = [];
   @Prop busy: boolean = false;
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
   onDraft: (value: string) => void = () => {};
+  onAddAttachment: () => void = () => {};
+  onRemoveAttachment: (receiptId: string) => void = () => {};
   onSend: () => void = () => {};
   onStop: () => void = () => {};
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
+  onPermission: (preset: string) => void = () => {};
 
   private readonly scroller: Scroller = new Scroller();
   private following: boolean = true;
@@ -123,11 +127,38 @@ export struct DesktopConversationPane {
   @Builder
   private Composer() {
     Column({ space: 6 }) {
+      if (this.attachments.length > 0) {
+        Scroll() {
+          Row({ space: 6 }) {
+            ForEach(this.attachments, (item: PendingAttachment, index: number) => {
+              Button(item.name + ' ×', { buttonStyle: ButtonStyleMode.TEXTUAL })
+                .enabled(!this.busy).accessibilityText('移除附件 ' + item.name)
+                .onClick((): void => { this.onRemoveAttachment(item.receiptId); })
+            }, (item: PendingAttachment, index: number): string => item.receiptId + index)
+          }
+        }
+        .scrollable(ScrollDirection.Horizontal).width('100%').padding({ left: 8, right: 8 })
+      }
       TextArea({ text: this.draft, placeholder: $r('app.string.desktop_chat_placeholder') })
         .width('100%').height(66).fontSize(15).borderRadius(16).padding({ left: 12, right: 12, top: 10 })
         .fontColor($r('sys.color.font_primary')).backgroundColor(Color.Transparent)
         .onChange(this.onDraft)
       Row({ space: 4 }) {
+        Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          SymbolGlyph($r('sys.symbol.paperclip')).fontSize(16)
+        }
+        .width(32).height(32).focusOnTouch(false)
+        .enabled(!this.busy && this.snapshot?.loading === false)
+        .accessibilityText('添加附件').onClick(this.onAddAttachment)
+        if ((this.snapshot?.permissions.length ?? 0) > 0) {
+          Button(this.snapshot?.permissions.find((row: DesktopPermissionOption): boolean =>
+            row.value === this.snapshot?.permission)?.title || '访问模式', { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .height(31).borderRadius(8).enabled(!this.busy).focusOnTouch(false)
+            .bindMenu(this.snapshot?.permissions.map((row: DesktopPermissionOption): MenuElement => {
+              return { value: (row.value === this.snapshot?.permission ? '✓ ' : '') + row.title,
+                action: (): void => { this.onPermission(row.value); } };
+            }) ?? [], this.menuOptions)
+        }
         Blank()
         this.ModelChip(false)
         if (this.effortMenu().length > 0) {
@@ -142,7 +173,8 @@ export struct DesktopConversationPane {
         .accessibilityText(this.snapshot?.running ? $r('app.string.desktop_chat_stop') :
           $r('app.string.desktop_chat_send'))
         .enabled(!this.busy && (this.snapshot?.running === true ||
-          (this.draft.trim().length > 0 && this.snapshot?.loading === false)))
+          ((this.draft.trim().length > 0 || this.attachments.length > 0) &&
+            this.snapshot?.loading === false)))
         .onClick((): void => {
           if (this.snapshot?.running) {
             this.onStop();

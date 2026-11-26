@@ -179,7 +179,7 @@ import {
  */
 import type { AttachOutcome, PluginInventoryTotals, CredentialWriteResult, HubSnapshot, HubSubscriber, InputModality, LayoutDecision, LayoutInput, ModalityEvidence, NavState, NavigationState, OverlayState, PiAiFieldCheck, PiAiModelRow, PiAiProviderView, PluginRow, SessionJob, SessionStatsInput, SettingChoice, SettingInputResult, SettingItem, SettingsKeyParts, SettingsWriteResult, TabSelection } from 'appstate';
 import { emitter } from '@kit.BasicServicesKit';
-import { parseJson } from 'connection';
+import { getString, parseJson } from 'connection';
 import { EVENT_HOST_CONNECTED, EVENT_KEY_HOST_TOKEN, EVENT_KEY_HOST_URL } from 'platform';
 import { EVENT_PICKER_SUBSTITUTED, EVENT_KEY_PICKER_REASON, EVENT_KEY_PICKER_PATH } from 'platform';
 import { ConnectPane } from '../view/ConnectPane';
@@ -354,6 +354,9 @@ struct Index {
    * 现在唯一真值是 `NavigationState.selectedMainPanel`，`NavTab` 只是**迁移期的别名**
    * （`legacyTabOfMainPanel` / `mainPanelOfLegacyTab` 是双向桥，有往返断言）。
    */
+  @StorageProp('dshHostLaunchUrl') @Watch('connectDesktopSettings') private desktopHostUrl: string = '';
+  @State private desktopSettingsEntry: boolean = false;
+  private desktopSettingsUrl: string = '';
   @State nav: NavigationState = initialNavigationState();
   @State stackPage: StackPage = StackPage.MAIN;
   @State detailOpen: boolean = false;
@@ -1006,6 +1009,11 @@ struct Index {
   private pickerNoticeCb: ((data: emitter.EventData) => void) | undefined = undefined;
 
   aboutToAppear(): void {
+    const section = getString(this.getUIContext().getRouter().getParams(), 'desktopSettings');
+    if (section !== undefined) {
+      this.desktopSettingsEntry = true;
+      this.selectSettingsSection(section);
+    }
     // 目录选择器**换了路径**（用户选了 A、实际用 B）时给用户一句说明：事件由 `WebApp`（Web 侧）
     // 在探写失败、改用应用公共目录时发出。此前那条路只落 diag 标记 ⇒ 用户完全看不到
     // （issue #3 报的正是"UI 显示已授权、产出为零、无提示"）。
@@ -1061,6 +1069,10 @@ struct Index {
     // 自动重连：能力层从（加密）存储里读「上次的 Host」是异步的，
     // 可能晚于本页就绪。这里**轮询等待**而不是「读一次就下结论」——
     // 读一次就下结论会让用户看到「请添加 Host」，而他上次明明连过。
+    if (this.desktopSettingsEntry) {
+      this.connectDesktopSettings();
+      return;
+    }
     this.waitForRememberedHost();
     // 冷启动时也可能是"从通知进来"的（应用被杀后点通知 → onCreate 带参数）
     this.applyLaunchRoute();
@@ -1144,8 +1156,30 @@ struct Index {
    * "应用被切到前台"，`onPageShow` 正是这个时刻——由生命周期驱动比轮询可靠，
    * 也不会在页面已经可见时反复触发。
    */
+  private async connectDesktopSettings(): Promise<void> {
+    const url = this.desktopHostUrl;
+    if (!this.desktopSettingsEntry || url.length === 0 || this.desktopSettingsUrl === url) {
+      return;
+    }
+    this.desktopSettingsUrl = url;
+    const hub = SessionHub.shared();
+    this.connectBusy = true;
+    this.connectSettled = false;
+    const ok = hub.configure(url) && await hub.connect();
+    if (this.desktopSettingsUrl === url) {
+      this.connectBusy = false;
+      this.connectSettled = true;
+      this.hubError = ok ? '' : hub.snapshot().lastError;
+      if (!ok) {
+        this.desktopSettingsUrl = '';
+      }
+    }
+  }
+
   onPageShow(): void {
-    this.applyLaunchRoute();
+    if (!this.desktopSettingsEntry) {
+      this.applyLaunchRoute();
+    }
   }
 
   /**
@@ -1218,6 +1252,9 @@ struct Index {
         hilog.info(DOMAIN, TAG, 'DSHM-BACK 收起手机导航抽屉');
         return true;
       case BackAction.TAB_TO_SESSIONS:
+        if (this.desktopSettingsEntry) {
+          return false;
+        }
         this.selectTab(NavTab.SESSIONS);
         hilog.info(DOMAIN, TAG, 'DSHM-BACK 回首页签（会话）');
         return true;
@@ -2415,7 +2452,24 @@ struct Index {
   build() {
     // 轨道布局归 AppFrame：`AppShell` 拥有「窗口宽度 → 几条轨道」这件事（见 docs/ia-parity-plan.md）。
     Stack() {
-      AppShell({ f: this.buildShellFacade() })
+      Column() {
+        if (this.desktopSettingsEntry) {
+          Row() {
+            Button($r('app.string.desktop_workspace_back'), {
+              type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL
+            })
+              .borderRadius(8)
+              .focusOnTouch(false)
+              .onClick((): void => { this.getUIContext().getRouter().back(); })
+          }
+          .width('100%').height(42).padding({ left: 12 })
+        }
+        Column() {
+          AppShell({ f: this.buildShellFacade() })
+        }
+        .width('100%').layoutWeight(1)
+      }
+      .width('100%').height('100%')
     }
     .width('100%')
     .height('100%')

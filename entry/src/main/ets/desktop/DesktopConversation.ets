@@ -1,9 +1,9 @@
 import {
-  followSessionAddress, modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
-  projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, SessionPageValue, sessionCancelPayload,
+  filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress, modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
+  projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, SessionPageValue, sessionCancelPayload,
   sessionFollowPayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
 } from 'appstate';
-import type { ModelOption, ModelSelection } from 'appstate';
+import type { ModelOption, ModelSelection, PendingAttachment, PromptContentPart } from 'appstate';
 import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
@@ -15,6 +15,11 @@ const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
 const PAGE_MESSAGES: number = 50;
 
+export interface DesktopPermissionOption {
+  value: string;
+  title: string;
+}
+
 export interface DesktopConversationSnapshot {
   sessionId: string;
   messages: TrajectoryItem[];
@@ -24,13 +29,15 @@ export interface DesktopConversationSnapshot {
   running: boolean;
   waitingForInput: boolean;
   models: ModelOption[];
+  permissions: DesktopPermissionOption[];
+  permission: string;
   modelLabel: string;
   selection?: ModelSelection;
   error: string;
 }
 
 interface DraftRequest {
-  text: string;
+  signature: string;
   id: string;
 }
 
@@ -58,6 +65,9 @@ export class DesktopConversation {
   private waitingForInput: boolean = false;
   private attempt: string = '';
   private partial: string = '';
+  private permissions: DesktopPermissionOption[] = [];
+  private permission: string = '';
+  private permissionsRequested: boolean = false;
   private readonly pendingRequests: Map<string, DraftRequest> = new Map<string, DraftRequest>();
 
   constructor(connection: Connection, listener: (snapshot: DesktopConversationSnapshot) => void,
@@ -96,6 +106,7 @@ export class DesktopConversation {
     this.sessionId = sessionId;
     this.messages = [];
     this.model = undefined;
+    this.permission = '';
     this.cursor = -1;
     this.earliest = -1;
     this.hasEarlier = false;
@@ -141,13 +152,36 @@ export class DesktopConversation {
     }
   }
 
-  async send(sessionId: string, text: string): Promise<string> {
+  async upload(sessionId: string, name: string, base64: string, bytes: number,
+    mediaType: string): Promise<PendingAttachment | string> {
+    const args = fileUploadPayload(sessionId, base64, name);
+    const result = args === undefined ? undefined : await this.connection.call(fileUploadEndpoint(), args);
+    if (!result?.ok) {
+      return this.failure(result, '附件上传失败');
+    }
+    const file = projectFileUpload(result.value);
+    if (file === undefined) {
+      return '宿主没有返回有效的附件回执';
+    }
+    const attachment: PendingAttachment = {
+      receiptId: file.receiptId, name: file.file.name || name, bytes: file.file.bytes || bytes, mediaType: mediaType
+    };
+    return attachment;
+  }
+
+  async send(sessionId: string, text: string, attachments: PendingAttachment[]): Promise<string> {
+    const ids = attachments.map((file: PendingAttachment): string => file.receiptId);
+    const signature = JSON.stringify([text, ...ids]);
+    const parts: PromptContentPart[] = ids.map((id: string): PromptContentPart => filePart(id));
+    if (text.trim().length > 0) {
+      parts.unshift(textPart(text));
+    }
     let request = this.pendingRequests.get(sessionId);
-    if (request === undefined || request.text !== text) {
-      request = { text: text, id: 'req-' + randomUuid() };
+    if (request === undefined || request.signature !== signature) {
+      request = { signature: signature, id: 'req-' + randomUuid() };
       this.pendingRequests.set(sessionId, request);
     }
-    const args = promptPayload(request.id, sessionId, PromptMode.QUEUE, [textPart(text)], '');
+    const args = promptPayload(request.id, sessionId, PromptMode.QUEUE, parts, '');
     const response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args);
     if (response?.ok && projectSessionPrompt(response.value).accepted) {
       this.pendingRequests.delete(sessionId);
@@ -307,10 +341,54 @@ export class DesktopConversation {
     return { provider: provider, modelId: model, effort: getString(value, 'reasoningEffort') ?? '' };
   }
 
+  async selectPermission(sessionId: string, preset: string): Promise<string> {
+    const body: Record<string, Object> = { 'sessionId': sessionId, 'preset': preset };
+    const args = argsFor('permissionPresets/set', body);
+    if (args === undefined) {
+      return '当前宿主不支持切换访问模式';
+    }
+    const result = await this.connection.call('permissionPresets/set', args);
+    if (!result.ok) {
+      return result.error?.message ?? '无法切换访问模式';
+    }
+    if (!this.closed && sessionId === this.sessionId) {
+      this.permission = getString(result.value, 'currentValue') ?? preset;
+      this.publish();
+    }
+    return '';
+  }
+
+  private async loadPermissions(): Promise<void> {
+    const body: Record<string, Object> = {};
+    const args = argsFor('permissionPresets/catalog', body);
+    if (this.permissionsRequested || args === undefined) {
+      return;
+    }
+    this.permissionsRequested = true;
+    const result = await this.connection.call('permissionPresets/catalog', args);
+    if (this.closed || !result.ok) {
+      this.permissionsRequested = false;
+      return;
+    }
+    const options: DesktopPermissionOption[] = [];
+    for (const row of getArray(result.value, 'options') ?? []) {
+      const value = getString(row, 'value') ?? '';
+      if (value.length > 0) {
+        options.push({ value: value, title: getString(row, 'name') ?? value });
+      }
+    }
+    this.permissions = options;
+    this.publish();
+  }
+
   private readProjection(projection: Object | undefined): void {
     const values = getRecord(projection, 'values');
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
+    this.permission = getString(getRecord(values, 'permissions'), 'currentValue') ?? '';
+    if (this.permission.length > 0) {
+      this.loadPermissions();
+    }
   }
 
   private onFrame(frame: Object): void {
@@ -389,6 +467,7 @@ export class DesktopConversation {
       sessionId: this.sessionId, messages: this.messages, partial: this.partial, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       models: this.models, selection: selection, error: this.error,
+      permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models)
     });
   }

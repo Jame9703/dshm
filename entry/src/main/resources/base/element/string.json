@@ -293,12 +293,20 @@
       "value": "用于让 dsh-pet 桌面宠物窗口保持在其他应用窗口之上"
     },
     {
+      "name": "desktop_workspace_settings",
+      "value": "设置"
+    },
+    {
+      "name": "desktop_workspace_back",
+      "value": "返回 ArkTS 工作台"
+    },
+    {
       "name": "desktop_experiment_title",
       "value": "ArkUI 实验工作台"
     },
     {
       "name": "desktop_experiment_exit",
-      "value": "退出实验"
+      "value": "将 WebUI 设为默认"
     },
     {
       "name": "desktop_experiment_workspaces",
@@ -358,7 +366,7 @@
     },
     {
       "name": "desktop_experiment_open_web_home",
-      "value": "打开 WebUI"
+      "value": "WebUI 兼容模式"
     },
     {
       "name": "desktop_experiment_expand_sidebar",

@@ -3,6 +3,7 @@ import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { StreamSink } from 'connection';
 import { argsFor, SESSION_CREATE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopConversation } from './DesktopConversation';
 import type { DesktopConversationSnapshot } from './DesktopConversation';
 
@@ -16,6 +17,8 @@ export interface DesktopWorkspaceRow {
 export interface DesktopWorkspaceSnapshot {
   workspaces: DesktopWorkspaceRow[];
   sessions: SessionListItem[];
+  archived: SessionListItem[];
+  pinned: string[];
   ready: boolean;
   error: string;
 }
@@ -36,6 +39,7 @@ function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
 export class DesktopWorkspaceData {
   private readonly connection: Connection = new Connection();
   readonly conversation: DesktopConversation;
+  readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private active: boolean = true;
   private workspaceReady: boolean = false;
@@ -46,6 +50,7 @@ export class DesktopWorkspaceData {
   private workspaces: DesktopWorkspaceRow[] = [];
   private sessions: SessionListItem[] = [];
   private archivedIds: Set<string> = new Set<string>();
+  private pinnedIds: string[] = [];
   private stopWorkspace?: () => void;
 
   constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
@@ -86,6 +91,19 @@ export class DesktopWorkspaceData {
     }
   }
 
+  workspacePath(workspaceId: string): string {
+    return this.workspaces.find((row: DesktopWorkspaceRow): boolean => row.id === workspaceId)?.path ?? '';
+  }
+
+  async createWorkspace(path: string): Promise<string> {
+    const result = await this.actions.call('workspace/create', { 'path': path });
+    if (!this.active || !result.ok) {
+      return '';
+    }
+    const workspace = getRecord(result.value, 'workspace');
+    return getString(workspace, 'workspaceId') ?? '';
+  }
+
   async createSession(workspaceId: string): Promise<string> {
     const args = sessionCreatePayload(workspaceId, '', '', '');
     if (args === undefined) {
@@ -100,6 +118,17 @@ export class DesktopWorkspaceData {
       await this.refreshSessions();
     }
     return id;
+  }
+
+  async manage(endpoint: string, payload: Record<string, Object>): Promise<string> {
+    const result = await this.actions.call(endpoint, payload);
+    if (!result.ok) {
+      return result.error?.message ?? '宿主未能保存修改';
+    }
+    if (endpoint === 'session/rename') {
+      await this.refreshSessions();
+    }
+    return '';
   }
 
   stop(): void {
@@ -151,6 +180,7 @@ export class DesktopWorkspaceData {
       }
       this.workspaces = rows;
       this.archivedIds = new Set<string>(toStringArray(getArray(value, 'archivedSessionIds') ?? []));
+      this.pinnedIds = toStringArray(getArray(value, 'pinnedSessionIds') ?? []);
       this.workspaceReady = true;
     } else if (type === 'upsert') {
       const workspace = getRecord(frame, 'workspace');
@@ -173,6 +203,8 @@ export class DesktopWorkspaceData {
       ids.forEach((id: string, index: number): void => { ranks.set(id, index); });
       this.workspaces = this.workspaces.slice().sort((a: DesktopWorkspaceRow, b: DesktopWorkspaceRow): number =>
         (ranks.get(a.id) ?? ids.length) - (ranks.get(b.id) ?? ids.length));
+    } else if (type === 'pinned') {
+      this.pinnedIds = toStringArray(getArray(frame, 'pinnedSessionIds') ?? []);
     } else if (type === 'archived') {
       this.archivedIds = new Set<string>(toStringArray(getArray(frame, 'archivedSessionIds') ?? []));
     }
@@ -192,6 +224,8 @@ export class DesktopWorkspaceData {
       this.listener({
         workspaces: this.workspaces,
         sessions: this.sessions.filter((row: SessionListItem): boolean => !this.archivedIds.has(row.id)),
+        archived: this.sessions.filter((row: SessionListItem): boolean => this.archivedIds.has(row.id)),
+        pinned: this.pinnedIds,
         ready: this.workspaceReady && this.sessionsReady,
         error: this.workspaceError || this.sessionError
       });
