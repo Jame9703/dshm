@@ -41,7 +41,7 @@ import { common, ConfigurationConstant, bundleManager } from '@kit.AbilityKit';
 import { abilityAccessCtrl } from '@kit.AbilityKit';
 import type { PermissionRequestResult, Permissions } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
-import { curves, router, window, uiMaterial, ComponentContent } from '@kit.ArkUI';
+import { curves, router, window, uiMaterial, ComponentContent, FrameCallback } from '@kit.ArkUI';
 import { Fs, HarmonySpacing, Radius, Sp, parseNotifyRoute } from 'appstate';
 import { DESKTOP_PROGRESSIVE_STARTUP, DESKTOP_WEB_LOADED, DESKTOP_WEB_NETWORK_LOADED, DESKTOP_WEB_START, DesktopHostStartupStage,
   DESKTOP_WORKBENCH_PAINTED_EVENT, DESKTOP_WORKBENCH_PAINT_OBSERVER, DESKTOP_WORKBENCH_PAINT_PREFIX,
@@ -51,7 +51,7 @@ import { DESKTOP_PROGRESSIVE_STARTUP, DESKTOP_WEB_LOADED, DESKTOP_WEB_NETWORK_LO
   buildDesktopWorkbenchPaintScript, desktopWorkbenchPaintPage } from '../common/DesktopStartup';
 import { DesktopStartupProgress } from '../common/DesktopStartupProgress';
 import { BRAND_SHIM_JS } from 'dshcompat';
-import { WEB_ACTION_MENU_SHIM_JS, WEB_PICKER_SHIM_JS } from 'dshcompat';
+import { TOUCH_FEEDBACK_SHIM_JS, WEB_ACTION_MENU_SHIM_JS, WEB_PICKER_SHIM_JS } from 'dshcompat';
 import { DesktopWebPicker, disposeOverlayContent, WebPickerViewport } from '../common/DesktopWebPicker';
 import { buildWebPickerPanel, WebPickerPanelParams, WebPickerPanelState } from '../common/WebPickerPanel';
 // Web 权限裁决的纯逻辑（真机 bug 修复：getOrigin() 带结尾斜杠）
@@ -206,6 +206,7 @@ interface WebContextMenuItem {
   label: string;
   run: () => void;
   enabled?: boolean;
+  selected?: boolean;
 }
 
 /**
@@ -222,6 +223,22 @@ interface WebActionMenu {
   requestId: number;
   action: number;
   disposed: boolean;
+  started: boolean;
+}
+
+class WebActionMenuFrame extends FrameCallback {
+  private open: () => void;
+
+  constructor(open: () => void) {
+    super();
+    this.open = open;
+  }
+
+  onFrame(_frameTime: number): void {}
+
+  onIdle(_timeLeft: number): void {
+    this.open();
+  }
 }
 
 /**
@@ -235,6 +252,8 @@ function WebContextMenuPanel(params: WebContextMenuPanelParams) {
       ForEach(params.items, (item: WebContextMenuItem): void => {
         MenuItem({ content: item.label })
           .enabled(item.enabled !== false)
+          .selectIcon(item.selected === true)
+          .selected(item.selected === true)
           .onClick((): void => {
             item.run();
           })
@@ -4432,6 +4451,8 @@ struct WebApp {
   @State aboutTab: string = 'version';
   /** 顶栏三点菜单是否悬停（只用于补 hover 底色）。 */
   @State dotsHover: boolean = false;
+  @State dotsPressed: boolean = false;
+  @State webActionAnchor: Position = { x: 0, y: 0 };
   /** 云同步设置页（生产界面，2026-10-30） */
   @State cloudSyncOpen: boolean = false;
   /*
@@ -4620,8 +4641,8 @@ struct WebApp {
      * 写进 `files/diag-glass`，真机一条 `cat` 就能判"没生效"是内核不支持、还是选择器没命中。
      */
     ,'writeGlassDiag': (detail: string): void => this.dirPickerBridge.writeDiagMarkerPublic('diag-glass', detail)
-    ,'openWebActionMenu': (id: number, x: number, y: number, category: string, rows: string): boolean =>
-      this.openWebActionMenu(id, x, y, category, rows)
+    ,'openWebActionMenu': (id: number, x: number, y: number, category: string, rows: string, above: boolean): boolean =>
+      this.openWebActionMenu(id, x, y, category, rows, above)
     ,'openWebPicker': (id: number, x: number, top: number, bottom: number, payload: string): boolean =>
       this.openWebPicker(id, x, top, bottom, payload)
     ,'updateWebPicker': (id: number, payload: string): boolean =>
@@ -5636,6 +5657,7 @@ struct WebApp {
     { script: GLASS_SKIN_JS, scriptRules: ['*'] },
     { script: WEB_ACTION_MENU_SHIM_JS, scriptRules: ['*'] },
     { script: WEB_PICKER_SHIM_JS, scriptRules: ['*'] },
+    { script: TOUCH_FEEDBACK_SHIM_JS, scriptRules: ['*'] },
     /* AI 生成标识：同样认 .dshm-frame 的主列；排在侧栏/玻璃之后即可。 */
     { script: AI_DISCLOSURE_SHIM_JS, scriptRules: ['*'] },
   { script: COMPOSER_PIN_SHIM_JS, scriptRules: ['*'] },
@@ -7676,8 +7698,7 @@ struct WebApp {
    * 任何设备都不该因为它崩掉。取不到材质时返回 `undefined`，`bindMenu` 退回系统默认菜单样式，
    * 菜单功能完全不受影响。
    *
-   * 【2026-11-11 材质调整】`THICK` → `THIN`：THICK 的底衬太实，和 DSHM 的沉浸顶栏
-   * 打架；THIN 保留透光与模糊，弹层仍然清晰可读。
+   * 顶栏与工作台动作菜单使用同档材质，保持菜单文字对比度。
    */
   private menuMaterialOptions(): MenuOptions | undefined {
     if (deviceInfo.sdkApiVersion < 26) {
@@ -7685,7 +7706,7 @@ struct WebApp {
     }
     try {
       const opts: MenuOptions = {
-        systemMaterial: new uiMaterial.ImmersiveMaterial({ style: uiMaterial.ImmersiveStyle.THIN })
+        systemMaterial: immersiveMaterialOf(uiMaterial.ImmersiveStyle.THICK, false)
       };
       return opts;
     } catch (e) {
@@ -7735,45 +7756,56 @@ struct WebApp {
       }, (params: WebPickerPanelParams, model: WebPickerPanelState): void => this.webPickerPanel(params, model));
   }
 
-  private openWebActionMenu(id: number, x: number, y: number, category: string, rows: string): boolean {
+  private openWebActionMenu(id: number, x: number, y: number, category: string, rows: string, above: boolean): boolean {
     if (!this.desktopForced || !this.startupMainWindow || !this.webReady || this.webActionMenu !== undefined ||
       this.webMenuContent !== undefined || this.desktopWebPicker.isActive() || deviceInfo.sdkApiVersion < 26 || this.lastWebAreaWidth <= 0 ||
       this.lastWebAreaHeight <= 0 || !Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(x) ||
-      !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 || rows.length > 819 ||
-      (category !== 'account' && category !== 'context')) {
+      !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1 || rows.length > 2623 ||
+      (category !== 'account' && category !== 'sidebar' && category !== 'navigation' && category !== 'context' &&
+        category !== 'action')) {
       return false;
     }
     try {
       if (!this.isWorkbenchMenuCaller() || !uiMaterial.isImmersiveMaterialSupported()) {
         return false;
       }
-      const material = immersiveMaterialOf(uiMaterial.ImmersiveStyle.THIN, false);
+      const material = immersiveMaterialOf(uiMaterial.ImmersiveStyle.THICK, false);
       if (material === undefined) {
         return false;
       }
       const ui: UIContext = this.getUIContext();
       const lines: string[] = rows.split('\n');
-      if (lines.length > 10 || lines.some((line: string): boolean => !/^[01][^\r\n]{1,80}$/.test(line))) {
+      if (lines.length > 32 || lines.some((line: string): boolean => !/^[0-3][^\r\n]{1,80}$/.test(line))) {
         return false;
       }
       const items: WebContextMenuItem[] = lines.map((line: string, index: number): WebContextMenuItem => {
-        return { label: line.slice(1), enabled: line.charAt(0) === '0',
+        const flags: number = Number(line.charAt(0));
+        return { label: line.slice(1), enabled: (flags & 1) === 0, selected: (flags & 2) !== 0,
           run: (): void => this.selectWebActionMenuItem(id, index) };
       });
       const params: WebContextMenuPanelParams = { items: items, themeDark: this.themeMode === 'dark' };
       const content = new ComponentContent<WebContextMenuPanelParams>(ui, wrapBuilder(WebContextMenuPanel), params);
-      const menu: WebActionMenu = { content: content, requestId: id, action: -1, disposed: false };
+      const menu: WebActionMenu = { content: content, requestId: id, action: -1, disposed: false, started: false };
       this.webActionMenu = menu;
       const options: MenuOptions = {
-        anchorPosition: { x: x * this.lastWebAreaWidth, y: y * this.lastWebAreaHeight },
+        placement: above ? Placement.TopLeft : Placement.BottomLeft,
         systemMaterial: material,
         onAppear: (): void => this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `${category} native appear`),
         onDisappear: (): void => this.finishWebActionMenu(menu, menu.action)
       };
-      ui.getPromptAction().openMenu(content, { id: 'dshm-web-menu-anchor' }, options).catch((): void => {
-        this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `${category} native fallback`);
-        this.finishWebActionMenu(menu, -2);
-      });
+      this.webActionAnchor = { x: x * this.lastWebAreaWidth, y: y * this.lastWebAreaHeight };
+      ui.postFrameCallback(new WebActionMenuFrame((): void => {
+        if (this.webActionMenu !== menu) return;
+        menu.started = true;
+        try {
+          ui.getPromptAction().openMenu(content, { id: 'dshm-web-action-anchor' }, options).catch((): void => {
+            this.dirPickerBridge.writeDiagMarkerPublic('diag-webmenu', `${category} native fallback`);
+            this.finishWebActionMenu(menu, -2);
+          });
+        } catch (e) {
+          this.finishWebActionMenu(menu, -2);
+        }
+      }));
       return true;
     } catch (e) {
       if (this.webActionMenu !== undefined) {
@@ -7796,7 +7828,8 @@ struct WebApp {
     const menu = this.webActionMenu;
     this.webActionMenu = undefined;
     if (menu !== undefined && menu.action < 0) {
-      this.dismissWebActionMenu(menu);
+      if (menu.started) this.dismissWebActionMenu(menu);
+      else this.finishWebActionMenu(menu, -1);
     }
   }
 
@@ -8101,11 +8134,16 @@ struct WebApp {
       .height(22)
       .padding({ left: 7, right: 7 })
       .borderRadius(5) // token-exempt: 与官方图标按钮 hover 圆角一致
-      .backgroundColor(this.dotsHover ? '#2E808080' : '#00000000') // token-exempt: 官方交互底色 rgba(128,128,128,0.18)
+      .backgroundColor(this.dotsPressed ? '#40808080' : this.dotsHover ? '#2E808080' : Color.Transparent)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .onHover((isHover: boolean) => {
         this.dotsHover = isHover;
+      })
+      .focusOnTouch(false)
+      .onTouch((event: TouchEvent): void => {
+        if (event.type === TouchType.Down) this.dotsPressed = true;
+        if (event.type === TouchType.Up || event.type === TouchType.Cancel) this.dotsPressed = false;
       })
       .bindMenu(this.aboutMenu(), this.menuMaterialOptions())
       .onClick(() => {
@@ -8672,6 +8710,13 @@ struct WebApp {
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.None)
         .id('dshm-web-menu-anchor')
+
+      Column()
+        .width(1)
+        .height(1)
+        .position(this.webActionAnchor)
+        .hitTestBehavior(HitTestMode.None)
+        .id('dshm-web-action-anchor')
 
       // 启动等待画面（BOOTING **与 LOADING**）：品牌标（透明底 logo_dark）淡入后进入
       // 常驻呼吸循环，线性进度条推进，直到就绪/失败。

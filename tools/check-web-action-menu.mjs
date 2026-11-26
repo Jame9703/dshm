@@ -5,6 +5,8 @@ import { runInNewContext } from 'node:vm';
 
 const source = readFileSync(new URL('../dshcompat/src/main/ets/WebActionMenu.ets', import.meta.url), 'utf8');
 const literal = source.match(/= (`[\s\S]+`);/)[1];
+const touchSource = readFileSync(new URL('../dshcompat/src/main/ets/TouchFeedback.ets', import.meta.url), 'utf8');
+const touchLiteral = touchSource.match(/= (`[\s\S]+`);/)[1];
 
 function fixture(script, options = {}) {
   class Element {
@@ -26,11 +28,13 @@ function fixture(script, options = {}) {
   const frames = [];
   const calls = [];
   const selections = [];
-  const account = options.account ?? true;
+  const category = options.category ?? 'account';
   trigger.setAttribute('aria-expanded', 'false');
-  trigger.closest = selector => ((account && selector.includes('data-signed-out')) ||
-    (account && selector === '.dshm-sbcol') || (!account && selector.includes('data-context-menu-trigger')))
-    ? trigger : null;
+  if (category === 'context') trigger.setAttribute('data-context-menu-trigger', '');
+  trigger.closest = selector => (selector.startsWith('[aria-haspopup') ||
+    (category === 'account' && selector.includes('data-signed-out')) ||
+    (category === 'sidebar' && selector.includes('panelRow')) ||
+    (category === 'navigation' && selector.includes('viewsMore'))) ? trigger : null;
   trigger.focus = () => { focusRestored = true; };
 
   function opacity(menu) {
@@ -46,11 +50,16 @@ function fixture(script, options = {}) {
 
   function newMenu() {
     const menu = new Element();
+    menu.getBoundingClientRect = () => ({ width: 120, left: 55, bottom: options.above ? 45 : 95 });
     const items = ['Settings', 'Feedback', 'Account'].map((label, index) => {
       const item = new Element();
       item.textContent = label;
       item.querySelector = () => null;
       item.disabled = index === 1;
+      if (options.checked && index === 2) {
+        item.setAttribute('aria-checked', 'true');
+        item.setAttribute('role', 'menuitemcheckbox');
+      }
       item.click = () => {
         selections.push({ index, opacity: opacity(menu) });
         closeMenu();
@@ -95,8 +104,8 @@ function fixture(script, options = {}) {
     innerHeight: 100,
     getComputedStyle: menu => ({ opacity: opacity(menu) }),
     __DSHM_BRIDGES__: {
-      openWebActionMenu(id, x, y, category, rows) {
-        calls.push({ id, x, y, category, rows, opacity: opacity(menus.at(-1)) });
+      openWebActionMenu(id, x, y, category, rows, above) {
+        calls.push({ id, x, y, category, rows, above, opacity: opacity(menus.at(-1)) });
         if (options.closeOnFocus) { closeMenu(); }
         return options.accept ?? true;
       }
@@ -138,23 +147,36 @@ function verify(template) {
   assert.equal(account.opacity(unrelated), '1');
   account.draw();
   assert.deepEqual(account.calls[0], {
-    id: 1, x: 0.2, y: 0.5, category: 'account', rows: '0Settings\n1Feedback\n0Account', opacity: '0'
+    id: 1, x: 0.2, y: 0.5, category: 'account', rows: '0Settings\n1Feedback\n0Account', above: true, opacity: '0'
   });
   assert.equal(account.opacity(accountSource), '0', 'Web menu became visible after native acceptance');
   assert.equal(account.isHidden(accountSource), true, 'Web menu remains visible to accessibility');
   account.finish(0);
   assert.deepEqual(account.selections, [{ index: 0, opacity: '0' }]);
 
-  const context = fixture(script, { account: false, closeOnFocus: true });
+  const context = fixture(script, { category: 'context', closeOnFocus: true });
   context.open();
   assert.equal(context.opacity(context.menu), '0');
   context.draw();
   assert.equal(context.calls[0].category, 'context');
   assert.equal(context.calls[0].y, 0.6);
+  assert.equal(context.calls[0].above, false);
   context.finish(2);
   assert.equal(context.opacity(context.menu), '0');
   context.draw();
   assert.deepEqual(context.selections, [{ index: 2, opacity: '0' }]);
+
+  for (const [category, above] of [['sidebar', true], ['navigation', false], ['action', true]]) {
+    const menu = fixture(script, { category, above: category === 'action', checked: true });
+    menu.open();
+    assert.equal(menu.opacity(menu.menu), '0');
+    menu.draw();
+    assert.deepEqual(menu.calls[0], {
+      id: 1, x: 0.2, y: above ? 0.5 : 0.6, category, rows: '0Settings\n1Feedback\n2Account', above, opacity: '0'
+    });
+    menu.finish(2);
+    assert.deepEqual(menu.selections, [{ index: 2, opacity: '0' }]);
+  }
 
   const cancel = fixture(script);
   cancel.open();
@@ -175,7 +197,45 @@ function verify(template) {
   }
 }
 
+function verifyTouch(template) {
+  class Element {
+    attrs = new Map();
+    setAttribute(key, value) { this.attrs.set(key, value); }
+    removeAttribute(key) { this.attrs.delete(key); }
+    closest() { return this; }
+    matches() { return false; }
+  }
+  const root = new Element();
+  const button = new Element();
+  const listeners = new Map();
+  let sheet;
+  const document = {
+    documentElement: root,
+    getElementById: () => null,
+    createElement: () => ({}),
+    head: { appendChild: style => { sheet = style.textContent; } },
+    addEventListener: (type, fn) => { listeners.set(type, fn); }
+  };
+  const window = { addEventListener() {} };
+  window.top = window;
+  runInNewContext(runInNewContext(template), { window, document, Element, location: { origin: 'http://127.0.0.1:3120' } });
+  assert.match(sheet, /:where\(button,[^{}]*\) \{ -webkit-user-select: none; user-select: none; \}/);
+  assert.match(sheet, /\[data-dshm-touch\][^{}]+:focus \{ outline: none/);
+  assert.match(sheet, /\[data-dshm-touch-pressed\][^{}]* \{ background-image: linear-gradient/);
+  const event = { pointerType: 'touch', isPrimary: true, pointerId: 3, target: button };
+  listeners.get('pointerdown')(event);
+  assert.equal(button.attrs.has('data-dshm-touch-pressed'), true);
+  listeners.get('pointerup')({ pointerId: 4 });
+  assert.equal(button.attrs.has('data-dshm-touch-pressed'), true);
+  listeners.get('pointercancel')(event);
+  assert.equal(button.attrs.has('data-dshm-touch-pressed'), false);
+  assert.equal(root.attrs.has('data-dshm-touch'), true);
+  listeners.get('keydown')();
+  assert.equal(root.attrs.has('data-dshm-touch'), false);
+}
+
 verify(literal);
+verifyTouch(touchLiteral);
 if (process.argv.includes('--self-test')) {
   for (const mutation of [
     literal.replace('    startCapture(entry);\n    whenOpen(entry, function (menu)', '    whenOpen(entry, function (menu)'),

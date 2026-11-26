@@ -7,7 +7,8 @@ export const WEB_ACTION_MENU_SHIM_JS: string = `(function () {
     window.__DSHM_ACTION_MENU__) { return; }
 
   var accountTrigger = 'button[data-signed-out][data-collapsed][aria-haspopup="menu"]';
-  var contextTrigger = 'button[data-context-menu-trigger][aria-haspopup="menu"]';
+  var menuTrigger = '[aria-haspopup="menu"][aria-expanded]';
+  var itemSelector = '[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]';
   var menuSelector = '[role="menu"]';
   var existing = 'data-dshm-native-menu-existing';
   var capturing = 'data-dshm-native-menu-capture';
@@ -38,18 +39,19 @@ export const WEB_ACTION_MENU_SHIM_JS: string = `(function () {
   }
 
   function inspectMenu(node) {
-    if (node.querySelector('[role="menu"],[role="menuitemcheckbox"],[role="menuitemradio"],' +
-      '[role="menuitem"][aria-haspopup], input, select, textarea, a[href]')) { return null; }
-    var items = Array.from(node.querySelectorAll('[role="menuitem"]'));
-    if (!items.length || items.length > 10 || items.some(function (item) {
-      return item.tagName !== 'BUTTON';
+    if (node.querySelector('[role="menu"], [aria-haspopup="menu"], input, select, textarea')) { return null; }
+    var items = Array.from(node.querySelectorAll(itemSelector));
+    if (!items.length || items.length > 32 || items.some(function (item) {
+      return typeof item.click !== 'function';
     })) { return null; }
     var lines = items.map(function (item) {
       var text = item.querySelector('span[class*="itemLabel"]');
-      var label = (text || item).textContent.trim().replace(/\\s+/g, ' ');
+      var label = (item.getAttribute('aria-label') || (text || item).textContent).trim().replace(/\\s+/g, ' ');
       if (!label || label.length > 80) { return ''; }
       var disabled = item.disabled || item.getAttribute('aria-disabled') === 'true';
-      return (disabled ? '1' : '0') + label;
+      var selected = item.getAttribute('aria-checked') === 'true' || item.getAttribute('aria-selected') === 'true' ||
+        item.getAttribute('aria-current') === 'true';
+      return String((disabled ? 1 : 0) | (selected ? 2 : 0)) + label;
     });
     if (lines.some(function (line) { return !line; })) { return null; }
     return { node: node, items: items, rows: lines.join('\\n') };
@@ -88,13 +90,12 @@ export const WEB_ACTION_MENU_SHIM_JS: string = `(function () {
 
   document.addEventListener('click', function (event) {
     if (!event.isTrusted || current || !(event.target instanceof Element)) { return; }
-    var trigger = event.target.closest(accountTrigger);
-    var category = 'account';
-    if (!trigger || !trigger.closest('.dshm-sbcol')) {
-      trigger = event.target.closest(contextTrigger);
-      category = 'context';
-    }
+    var trigger = event.target.closest(menuTrigger);
     if (!trigger || trigger.getAttribute('aria-expanded') !== 'false') { return; }
+    var category = trigger.closest(accountTrigger) ? 'account' :
+      trigger.closest('[class*="panelRow"]') ? 'sidebar' :
+      trigger.closest('[class*="viewsMore"]') ? 'navigation' :
+      trigger.hasAttribute('data-context-menu-trigger') ? 'context' : 'action';
     var b = window.__DSHM_BRIDGES__;
     if (!b || typeof b.openWebActionMenu !== 'function') { return; }
 
@@ -106,12 +107,12 @@ export const WEB_ACTION_MENU_SHIM_JS: string = `(function () {
       if (menu && window.getComputedStyle(menu.node).opacity === '0') {
         var anchor = trigger.getBoundingClientRect();
         var rect = menu.node.getBoundingClientRect();
-        var x = category === 'account' ? rect.left : anchor.left;
-        var y = category === 'account' ? rect.top : anchor.bottom;
+        var above = category === 'account' || category === 'sidebar' || rect.bottom <= anchor.top + 1;
+        var y = above ? anchor.top : anchor.bottom;
         try {
           accepted = b.openWebActionMenu(entry.id,
-            Math.min(1, Math.max(0, x / window.innerWidth)),
-            Math.min(1, Math.max(0, y / window.innerHeight)), category, menu.rows) === true;
+            Math.min(1, Math.max(0, anchor.left / window.innerWidth)),
+            Math.min(1, Math.max(0, y / window.innerHeight)), category, menu.rows, above) === true;
         } catch (e) { /* Reveal the Web popup below. */ }
       }
       if (accepted) {

@@ -108,12 +108,24 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
-import { DUNDER_MEMBER, PORTABLE_RESERVED_WORDS, PtcRuntime, RESERVED_BINDING_GLOBALS, RESERVED_ERROR_MEMBERS } from "@deepseek-ai/dsh-ptc-runtime";
+import * as ptcContract from "@deepseek-ai/dsh-ptc-runtime";
 import { MAX_TIMER_DELAY_MS, clampTimeout } from "@deepseek-ai/dsh-timeout";
 import { OutputLedger, jsonValueBytes, startProgram } from "./vm-run.js";
 
 /** 稳定标识（日志/错误前缀用）。 */
 const MODULE_NAME = "dshm-ptc-runtime-inproc";
+// Alpha.2 exports the keyword set under its original name and keeps the dunder
+// rule private. Resolve the optional exports without an ESM link-time error.
+const { PtcRuntime, RESERVED_BINDING_GLOBALS } = ptcContract;
+const PORTABLE_RESERVED_WORDS = ptcContract.PORTABLE_RESERVED_WORDS ?? new Set([
+	...ptcContract.RESERVED_BINDING_WORDS,
+	"False", "None", "True", "and", "as", "assert", "async", "def", "del", "elif", "except", "from",
+	"global", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "match", "type", "_"
+]);
+const DUNDER_MEMBER = ptcContract.DUNDER_MEMBER ?? /^__.+__$/;
+const RESERVED_ERROR_MEMBERS = ptcContract.DUNDER_MEMBER ? ptcContract.RESERVED_ERROR_MEMBERS : new Set([
+	...ptcContract.RESERVED_ERROR_MEMBERS, "args", "with_traceback", "add_note"
+]);
 /** 所有对外错误文本的前缀。官方用 `dsh-ptc-runtime-node: `，我们换成自己的包名。 */
 const MESSAGE_PREFIX = `${MODULE_NAME}: `;
 /**

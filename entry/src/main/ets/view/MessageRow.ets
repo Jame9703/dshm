@@ -33,11 +33,12 @@
  */
 
 import {
-  Fs, HarmonyColor, HarmonyRadius, HarmonySpacing, HarmonyType, MenuGesture, Radius, Sp, Speaker,
+  Fs, HarmonyColor, MenuGesture, Radius, Sp, Speaker,
   TrajectoryItem, contextMenuGestures, formatClock, formatDuration, hoverEnabled
 } from 'appstate';
 /** 类型单独 import type（本仓约定：值与类型分开写） */
 import type { InputModality } from 'appstate';
+import { dialogMaterial } from 'platform';
 import type { NativeAction } from './NativePrimitives';
 import { NativeActionBar } from './NativePrimitives';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -184,6 +185,7 @@ export struct MessageRow {
     })
     .bindContextMenu(this.menuShown, this.contextMenu(), {
       placement: Placement.BottomLeft,
+      systemMaterial: dialogMaterial(),
       // 原生关闭（点空白/返回）时要复位，否则菜单再也打不开（与 Sheet 同一个坑）
       onDisappear: () => {
         this.menuShown = false;
@@ -194,16 +196,14 @@ export struct MessageRow {
   /** 上下文菜单内容：与行内操作条同一份动作清单（不显示空气泡） */
   @Builder
   contextMenu() {
-    Column({ space: Sp.XS }) {
+    Menu() {
       ForEach(this.actions, (a: NativeAction) => {
-        Text(a.active === true ? `✓ ${a.label}` : a.label)
-          .fontSize(HarmonyType.CAPTION.size)
-          .fontColor(a.active === true ? HarmonyColor.BRAND : HarmonyColor.TEXT_PRIMARY)
-          .width('100%')
-          .padding(HarmonySpacing.CONTROL_INNER)
-          .borderRadius(HarmonyRadius.CONTROL)
+        MenuItem({ content: a.label })
+          .selectIcon(a.active === true)
+          .selected(a.active === true)
+          .enabled(a.disabled !== true)
+          .accessibilityText(a.a11y ?? a.label)
           .onClick(() => {
-            this.menuShown = false;
             if (a.id === 'like' || a.id === 'dislike') {
               this.onOpenFeedback(this.item, a.id === 'like' ? 'positive' : 'negative');
               return;
@@ -213,6 +213,5 @@ export struct MessageRow {
       }, (a: NativeAction) => a.id)
     }
     .width(200)
-    .padding(HarmonySpacing.CONTROL_INNER)
   }
 }
