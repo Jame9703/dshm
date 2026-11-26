@@ -62,6 +62,10 @@ export function parseConnectionResponse(text: string, expectedRpcId: string, end
   if (result === undefined) {
     return rpcFail(RemoteFailure.parse(`invalid server-response result for ${endpoint}`));
   }
+  return parseRemoteResult(result, endpoint);
+}
+
+export function parseRemoteResult(result: Object, endpoint: string): RpcResult {
   const okValue: Object | undefined = getField(result, 'ok');
   if (okValue === true as Object) {
     // 先用键存在性判断，再取值：要区分「没有 value 键」（合法的 void 成功）

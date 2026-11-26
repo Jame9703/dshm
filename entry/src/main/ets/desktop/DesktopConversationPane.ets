@@ -1,6 +1,6 @@
 import { Speaker, TrajectoryItem } from 'appstate';
 import { KeyCode } from '@kit.InputKit';
-import type { ModelOption, ModelSelection, PendingAttachment } from 'appstate';
+import type { ModelOption, ModelSelection } from 'appstate';
 import type { DesktopConversationSnapshot, DesktopPermissionOption, DesktopTranscriptItem } from './DesktopConversation';
 import { DesktopInteractionPane } from './DesktopInteractionPane';
 import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
@@ -20,6 +20,8 @@ import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
 import { DesktopReplyActions } from './DesktopReplyActions';
 import { DesktopQueueDock } from './DesktopQueueDock';
+import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
+import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
 import type { QueueActionBody } from 'appstate';
 
 @Component
@@ -30,7 +32,7 @@ export struct DesktopConversationPane {
   @Prop workspaceTitle: ResourceStr = '';
   @Prop draft: string = '';
   @Prop interactions: DesktopInteraction[] = [];
-  @Prop attachments: PendingAttachment[] = [];
+  @Prop attachments: DesktopDraftAttachment[] = [];
   @Prop busy: boolean = false;
   @Prop terminalOpen: boolean = false;
   @Prop filesOpen: boolean = false;
@@ -43,6 +45,7 @@ export struct DesktopConversationPane {
   onFork: (sessionId: string, atSeq: number) => void = (_sessionId: string, _atSeq: number): void => {};
   onDraft: (value: string) => void = () => {};
   onAddAttachment: () => void = () => {};
+  onOpenImage: (row: DesktopMediaAttachment) => void = (_row: DesktopMediaAttachment): void => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
   onSend: (alternateDelivery: boolean) => void = (_alternateDelivery: boolean): void => {};
   onQueueAction: (session: string, id: string, action: QueueActionBody) => Promise<string> =
@@ -456,14 +459,30 @@ export struct DesktopConversationPane {
   }
 
   @Builder
-  private Message(item: TrajectoryItem) {
-    Column() {
+  private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[]) {
+    Column({ space: 7 }) {
       if (item.speaker === Speaker.USER) {
-        Text(item.body)
-          .fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
-          .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-          .constraintSize({ maxWidth: '82%' }).borderRadius(16)
-          .backgroundColor($r('app.color.workspace_panel'))
+        if (attachments.length > 0) {
+          Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.End }) {
+            ForEach(attachments, (row: DesktopMediaAttachment, index: number): void => {
+              Row() {
+                if (row.image) {
+                  DesktopAttachmentThumbnail({ attachment: row, sessionId: this.sessionId, host: this.host,
+                    maxEdge: 150, nodeKey: 'desktopHistoryImage-' + item.id + '-' + index, onOpen: this.onOpenImage })
+                } else {
+                  DesktopAttachmentFile({ filename: row.name, bytes: row.bytes })
+                }
+              }.margin({ left: 6, top: 4 })
+            }, (row: DesktopMediaAttachment, index: number): string => row.id + ':' + index)
+          }.width('100%').constraintSize({ maxWidth: '82%' })
+        }
+        if (item.body) {
+          Text(item.body)
+            .fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
+            .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+            .constraintSize({ maxWidth: '82%' }).borderRadius(16)
+            .backgroundColor($r('app.color.workspace_panel'))
+        }
       } else {
         if (item.reasoning) {
           Button(this.expandedReasoning.includes(item.id) ? '收起思考过程' : '思考过程',
@@ -509,7 +528,7 @@ export struct DesktopConversationPane {
         }
         .width(32).height(32).focusOnTouch(false)
         .enabled(!this.busy && this.snapshot?.loading === false)
-        .accessibilityText('添加附件').onClick(this.onAddAttachment)
+        .key('desktopComposerAddAttachment').accessibilityText('添加附件').onClick(this.onAddAttachment)
         if (this.snapshot?.planMode !== undefined) {
           Button(this.snapshot?.planMode ? '计划模式 ×' : '计划模式', { buttonStyle: ButtonStyleMode.TEXTUAL })
             .height(31).borderRadius(8).focusOnTouch(false).enabled(!this.busy)
@@ -541,11 +560,21 @@ export struct DesktopConversationPane {
       if (this.attachments.length > 0) {
         Scroll() {
           Row({ space: 6 }) {
-            ForEach(this.attachments, (item: PendingAttachment, index: number) => {
-              Button(item.name + ' ×', { buttonStyle: ButtonStyleMode.TEXTUAL })
-                .enabled(!this.busy).accessibilityText('移除附件 ' + item.name)
-                .onClick((): void => { this.onRemoveAttachment(item.receiptId); })
-            }, (item: PendingAttachment, index: number): string => item.receiptId + index)
+            ForEach(this.attachments, (item: DesktopDraftAttachment, index: number) => {
+              Row({ space: 3 }) {
+                if (item.picture !== undefined) {
+                  DesktopAttachmentThumbnail({ attachment: item.picture, sessionId: this.sessionId, host: this.host,
+                    maxEdge: 68, nodeKey: 'desktopDraftImage-' + item.receiptId, onOpen: this.onOpenImage })
+                } else {
+                  DesktopAttachmentFile({ filename: item.name, bytes: item.bytes })
+                }
+                Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+                  Image($r('app.media.dsh_dock_close')).width(13).height(13).supportSvg2(true).accessibilityLevel('no')
+                }.key('desktopRemoveAttachment-' + item.receiptId).width(26).height(26).padding(0).borderRadius(6)
+                  .enabled(!this.busy).accessibilityText('移除附件 ' + item.name)
+                  .onClick((): void => { this.onRemoveAttachment(item.receiptId); })
+              }
+            }, (item: DesktopDraftAttachment, index: number): string => item.receiptId + index)
           }
         }
         .scrollable(ScrollDirection.Horizontal).width('100%').padding({ left: 8, right: 8 })
@@ -680,7 +709,7 @@ export struct DesktopConversationPane {
                   Divider().layoutWeight(1).color($r('app.color.workspace_border'))
                 }.width('100%').constraintSize({ maxWidth: 712 })
               } else if (item.message !== undefined) {
-                this.Message(item.message)
+                this.Message(item.message, item.attachments ?? [])
               } else if (item.artifacts !== undefined) {
                 DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
                   artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
@@ -697,7 +726,8 @@ export struct DesktopConversationPane {
             }
             .width('100%').justifyContent(FlexAlign.Center)
           }
-        }, (item: DesktopTranscriptItem): string => item.id + (item.process?.version ?? '') + (item.command?.completed ?? ''))
+        }, (item: DesktopTranscriptItem): string => this.sessionId + ':' + item.id +
+          (item.process?.version ?? '') + (item.command?.completed ?? ''))
         if ((this.snapshot?.partial.length ?? 0) > 0) {
           ListItem() {
             Row() {
@@ -750,7 +780,8 @@ export struct DesktopConversationPane {
       Column({ space: 6 }) {
         if ((this.snapshot?.queue.length ?? 0) > 0) {
           DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
-            running: this.snapshot?.running === true, busy: this.busy, host: this.host, onAction: this.onQueueAction })
+            running: this.snapshot?.running === true, busy: this.busy, host: this.host,
+            onAction: this.onQueueAction, onOpenImage: this.onOpenImage })
         }
         if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
           DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })

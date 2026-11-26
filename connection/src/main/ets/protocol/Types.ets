@@ -115,4 +115,6 @@ export interface CallOptions {
   timeoutMs?: number;
   /** 401 时是否允许自动重绑认证并重放（最多一次） */
   allowAuthRetry?: boolean;
+  /** 最大响应字节数，用于有界的大型宿主资源。 */
+  responseLimit?: number;
 }

@@ -29,7 +29,7 @@ import {
   rpcOk,
   RpcResult
 } from './RpcTypes';
-import { parseConnectionResponse } from './Envelope';
+import { parseConnectionResponse, parseRemoteResult } from './Envelope';
 import {
   CallOptions,
   ConnectionState,
@@ -506,7 +506,7 @@ export class Connection {
     }
 
     const timeoutMs: number = options?.timeoutMs ?? this.options.defaultTimeoutMs;
-    const first: RpcResult = await this.callOnce(address, endpoint, args, timeoutMs);
+    const first: RpcResult = await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit);
     if (first.ok) {
       return first;
     }
@@ -515,7 +515,7 @@ export class Connection {
     if (shouldRetryAuth && failure !== undefined && isAuthFailureStatus(failure.httpStatus ?? 0)) {
       const rebind: AuthOutcome = await this.rebind();
       if (rebind.ok) {
-        return await this.callOnce(address, endpoint, args, timeoutMs);
+        return await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit);
       }
       return rpcFail(new RemoteFailure('auth/rebind-failed',
         rebind.reason ?? '重新授权失败', rebind.advice ?? ''));
@@ -524,7 +524,7 @@ export class Connection {
   }
 
   private async callOnce(address: HostAddress, endpoint: string, args: Object,
-    timeoutMs: number): Promise<RpcResult> {
+    timeoutMs: number, responseLimit?: number): Promise<RpcResult> {
     const rpcId: string = randomUuid();
     const body: string | undefined = buildBody(rpcId, endpoint, args);
     if (body === undefined) {
@@ -532,7 +532,7 @@ export class Connection {
     }
     const outcome: HttpOutcome = await this.http.send(
       `${address.baseUrl}${this.surface.apiChannel}/${endpoint}`,
-      address.authority, true, body, timeoutMs, true);
+      address.authority, true, body, timeoutMs, true, responseLimit);
 
     if (!outcome.responded) {
       return rpcFail(RemoteFailure.carrier(
@@ -569,6 +569,30 @@ export class Connection {
 
   readSessionMarkdown(sessionId: string): Promise<RpcResult> {
     return this.readApiText('session.markdown', { 'sessionId': sessionId }, 100 * 1024 * 1024);
+  }
+
+  /** Stage a prompt image through the same authenticated binary route as WebUI. */
+  async uploadSessionImage(sessionId: string, data: ArrayBuffer, mediaType: string, name: string): Promise<RpcResult> {
+    const address = this.address;
+    if (address === undefined || !sessionId) { return rpcFail(RemoteFailure.carrier('尚未连接当前会话')); }
+    const route = '/api/session/uploadFileBinary';
+    const url = address.baseUrl + route + '?sessionId=' + encodeURIComponent(sessionId) +
+      '&mediaType=' + encodeURIComponent(mediaType) + '&name=' + encodeURIComponent(name);
+    let outcome = await this.http.send(url, address.authority, true, data, 90000, false);
+    if (isAuthFailureStatus(outcome.status) && this.address === address && (await this.rebind()).ok &&
+      this.address === address) {
+      outcome = await this.http.send(url, address.authority, true, data, 90000, false);
+    }
+    if (!outcome.responded) {
+      return rpcFail(RemoteFailure.carrier(outcome.transportError ?? '图片上传未收到响应'));
+    }
+    if (outcome.status !== 200) {
+      const failure = new RemoteFailure('resource/http', `图片上传失败（HTTP ${outcome.status}）`, '');
+      failure.httpStatus = outcome.status;
+      return rpcFail(failure);
+    }
+    const result = parseJson(outcome.body);
+    return result === undefined ? rpcFail(RemoteFailure.parse('图片上传响应格式无效')) : parseRemoteResult(result, route);
   }
 
   private async readApiText(resource: string, query: Record<string, string>, responseLimit?: number): Promise<RpcResult> {

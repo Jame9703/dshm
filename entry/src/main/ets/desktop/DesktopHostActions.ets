@@ -22,12 +22,12 @@ export class DesktopHostActions {
   }
 
   async call(endpoint: string, body: Record<string, Object | null> = {},
-    optionsTimeoutMs: number = 15000): Promise<RpcResult> {
+    optionsTimeoutMs: number = 15000, responseLimit?: number): Promise<RpcResult> {
     const args = argsFor(endpoint, body);
     if (args === undefined) {
       return rpcFail(new RemoteFailure('unsupported', '当前宿主协议不提供此操作', ''));
     }
-    return this.connection.call(endpoint, args, { timeoutMs: optionsTimeoutMs });
+    return this.connection.call(endpoint, args, { timeoutMs: optionsTimeoutMs, responseLimit: responseLimit });
   }
 
   changeSummary(sessionId: string, sequence: number): Promise<DesktopChangeSummary | undefined> {

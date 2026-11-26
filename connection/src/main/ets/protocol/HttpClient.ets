@@ -61,13 +61,13 @@ export class HttpClient {
    * @param timeoutMs 超时毫秒
    * @param collectCookies 是否解析并合并 Set-Cookie
    */
-  async send(url: string, authority: string, post: boolean, body: string | undefined,
+  async send(url: string, authority: string, post: boolean, body: string | ArrayBuffer | undefined,
     timeoutMs: number, collectCookies: boolean, responseLimit?: number): Promise<HttpOutcome> {
     const request: http.HttpRequest = http.createHttp();
     const header: Record<string, string> = {};
     header['accept'] = 'application/json, text/plain, */*';
     if (post) {
-      header['content-type'] = 'application/json';
+      header['content-type'] = body instanceof ArrayBuffer ? 'application/octet-stream' : 'application/json';
     }
     const cookie: string | undefined = this.jar.headerFor(authority);
     if (cookie !== undefined) {
@@ -82,7 +82,9 @@ export class HttpClient {
      * 这里对**纯 ASCII** 体显式声明字节数（我们的 JSON 封装是 ASCII；含非 ASCII 时先不声明，
      * 避免写错长度反而更糟——那种情况需要按 UTF-8 计算字节数）。
      */
-    if (body !== undefined && /^[\x00-\x7F]*$/.test(body)) {
+    if (body instanceof ArrayBuffer) {
+      header['content-length'] = String(body.byteLength);
+    } else if (body !== undefined && /^[\x00-\x7F]*$/.test(body)) {
       header['content-length'] = String(body.length);
     }
 
@@ -94,11 +96,13 @@ export class HttpClient {
      * 用 `console.info` 而不是 `hilog`：本文件没有 hilog 导入，而 console 同样进 hilog
      * （此前几轮因"用了没导入的 hilog"把构建打挂过两次，这里避开该坑）。
      */
-    console.info(`DSHM-REQ ${post ? 'POST' : 'GET'} ${url}`
-      + ` content-type=${header['content-type'] ?? '(none)'}`
-      + ` cookie=${cookie === undefined ? '(none)' : `${cookie.length}B`}`
-      + ` bodyLen=${body === undefined ? 0 : body.length}`
-      + (body === undefined ? '' : ` body=${body.substring(0, 120)}`));
+    if (!(body instanceof ArrayBuffer)) {
+      console.info(`DSHM-REQ ${post ? 'POST' : 'GET'} ${url}`
+        + ` content-type=${header['content-type'] ?? '(none)'}`
+        + ` cookie=${cookie === undefined ? '(none)' : `${cookie.length}B`}`
+        + ` bodyLen=${body === undefined ? 0 : body.length}`
+        + (body === undefined ? '' : ` body=${body.substring(0, 120)}`));
+    }
     try {
       const options: http.HttpRequestOptions = {
         method: post ? http.RequestMethod.POST : http.RequestMethod.GET,

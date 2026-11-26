@@ -1,61 +1,10 @@
-import { image } from '@kit.ImageKit';
-import { util } from '@kit.ArkTS';
 import { KeyCode } from '@kit.InputKit';
-import { formatBytes, queueEditAction, queueRemoveAction, queueSteerAction } from 'appstate';
+import { queueEditAction, queueRemoveAction, queueSteerAction } from 'appstate';
 import type { QueueActionBody } from 'appstate';
-import { getString } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
-import { DesktopQueueAttachment, DesktopQueuedPrompt } from './DesktopPromptQueue';
-
-@Component
-struct DesktopQueueThumbnail {
-  @Prop sessionId: string = '';
-  @Prop attachment?: DesktopQueueAttachment;
-  host?: DesktopHostActions;
-  @State private picture: image.PixelMap | undefined = undefined;
-  private active: boolean = false;
-
-  aboutToAppear(): void {
-    this.active = true;
-    this.load();
-  }
-
-  aboutToDisappear(): void {
-    this.active = false;
-    this.picture?.release().catch((): void => {});
-  }
-
-  private async load(): Promise<void> {
-    const reference = this.attachment?.reference;
-    if (this.host === undefined || reference === undefined) { return; }
-    const result = await this.host.call('session/attachment', { 'sessionId': this.sessionId, 'attachment': reference });
-    const data = result.ok ? getString(result.value, 'data') : undefined;
-    if (!data || !this.active) { return; }
-    try {
-      const bytes = await new util.Base64Helper().decode(data);
-      const buffer = new ArrayBuffer(bytes.byteLength);
-      new Uint8Array(buffer).set(bytes);
-      const source = image.createImageSource(buffer);
-      try {
-        const picture = await source.createPixelMap({ desiredSize: { width: 96, height: 96 } });
-        if (this.active) { this.picture = picture; }
-        else { await picture.release(); }
-      } finally {
-        await source.release();
-      }
-    } catch (_) {}
-  }
-
-  build() {
-    if (this.picture !== undefined) {
-      Image(this.picture).width(36).height(32).borderRadius(5).objectFit(ImageFit.Cover).draggable(false)
-        .accessibilityText(this.attachment?.name ?? '图片')
-    } else {
-      Text(this.attachment?.name ?? '图片').fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        .constraintSize({ maxWidth: 136 }).padding({ left: 5, right: 5 })
-    }
-  }
-}
+import type { DesktopQueuedPrompt } from './DesktopPromptQueue';
+import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
+import type { DesktopMediaAttachment } from './DesktopAttachments';
 
 @Component
 export struct DesktopQueueDock {
@@ -64,6 +13,7 @@ export struct DesktopQueueDock {
   @Prop running: boolean = false;
   @Prop busy: boolean = false;
   host?: DesktopHostActions;
+  onOpenImage: (row: DesktopMediaAttachment) => void = (_row: DesktopMediaAttachment): void => {};
   onAction: (session: string, id: string, action: QueueActionBody) => Promise<string> =
     (_session: string, _id: string, _action: QueueActionBody): Promise<string> => Promise.resolve('');
   @State private expanded: boolean = false;
@@ -147,18 +97,14 @@ export struct DesktopQueueDock {
         Text(row.text.replace(/\s+/g, ' ')).fontSize(13).maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
       }
-      ForEach(row.attachments, (file: DesktopQueueAttachment): void => {
+      ForEach(row.attachments, (file: DesktopMediaAttachment, index: number): void => {
         if (file.image) {
-          DesktopQueueThumbnail({ attachment: file, sessionId: this.sessionId, host: this.host })
+          DesktopAttachmentThumbnail({ attachment: file, sessionId: this.sessionId, host: this.host, maxEdge: 34,
+            nodeKey: 'desktopQueueImage-' + row.id + '-' + index, onOpen: this.onOpenImage })
         } else {
-          Row({ space: 4 }) {
-            SymbolGlyph($r('sys.symbol.doc_text')).fontSize(14).accessibilityLevel('no')
-            Text(file.name).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              .constraintSize({ maxWidth: 120 })
-            Text(formatBytes(file.bytes)).fontSize(11).fontColor($r('sys.color.font_tertiary'))
-          }.padding(4).borderRadius(6).border({ width: 1, color: $r('app.color.workspace_border') })
+          DesktopAttachmentFile({ filename: file.name, bytes: file.bytes })
         }
-      }, (file: DesktopQueueAttachment, index: number): string => file.id + ':' + index)
+      }, (file: DesktopMediaAttachment, index: number): string => file.id + ':' + index)
     }.layoutWeight(1)
   }
 

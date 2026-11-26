@@ -17,14 +17,16 @@ import { DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback
 import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
-  readDocumentUri, uriFromPath } from 'platform';
+import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome,
+  pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
 import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import type { ModelSelection, PendingAttachment, QueueActionBody, SessionListItem } from 'appstate';
+import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import { DesktopAttachmentViewer } from '../desktop/DesktopAttachments';
+import type { DesktopDraftAttachment, DesktopMediaAttachment } from '../desktop/DesktopAttachments';
 import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
 import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } from '../desktop/DesktopSessionArchive';
 import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
@@ -101,8 +103,11 @@ struct DesktopWorkspace {
   @State private interactions: DesktopInteraction[] = [];
   @State private draft: string = '';
   @State private chatError: string = '';
-  @State private attachments: PendingAttachment[] = [];
-  private readonly attachmentsBySession: Map<string, PendingAttachment[]> = new Map<string, PendingAttachment[]>();
+  @State private attachments: DesktopDraftAttachment[] = [];
+  private readonly attachmentsBySession: Map<string, DesktopDraftAttachment[]> = new Map<string, DesktopDraftAttachment[]>();
+  private imageDialog: number = -1;
+  private imageDialogVersion: number = 0;
+  private imageDialogOpening: boolean = false;
   @State private creating: boolean = false;
   @State private busySessions: string[] = [];
   @State private copyingTranscript: boolean = false;
@@ -120,6 +125,7 @@ struct DesktopWorkspace {
   @State private groups: DesktopWorkspaceGroup[] = [];
   private data?: DesktopWorkspaceData;
   private workbenchWidth: number = 440;
+  private workbenchHeight: number = 640;
   private accountOpening: boolean = false;
   private accountDialog: number = -1;
   private pageActive: boolean = false;
@@ -167,6 +173,7 @@ struct DesktopWorkspace {
     this.closeAccount();
     this.closeLogDialog();
     this.closeFeedback();
+    this.closeImagePreview();
     this.closeRename();
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
@@ -220,6 +227,7 @@ struct DesktopWorkspace {
       return;
     }
     this.closeFeedback();
+    this.closeImagePreview();
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
     this.data?.stop();
@@ -691,6 +699,7 @@ struct DesktopWorkspace {
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
     if (this.sessionId !== session.id) {
       this.closeFeedback();
+      this.closeImagePreview();
       this.draft = this.drafts.get(session.id) ?? '';
       this.attachments = this.attachmentsBySession.get(session.id) ?? [];
       this.chatError = '';
@@ -715,6 +724,7 @@ struct DesktopWorkspace {
 
   private clearSession(): void {
     this.closeFeedback();
+    this.closeImagePreview();
     this.sessionId = '';
     this.selectedTitle = '';
     this.draft = '';
@@ -784,31 +794,27 @@ struct DesktopWorkspace {
   }
 
   private attachDocument(): void {
-    const conversation = this.data?.conversation;
+    const data = this.data;
     const context = this.getUIContext().getHostContext();
-    if (conversation === undefined || context === undefined) {
+    if (data === undefined || context === undefined) {
       return;
     }
     this.chatAction(async (id: string): Promise<string> => {
       try {
-        const picked = await pickDocument(context);
+        const picked = await pickDocumentUris(context, 500);
         if (picked.outcome === PickOutcome.CANCELLED) {
           return '';
         }
         if (picked.outcome !== PickOutcome.PICKED) {
           return picked.reason;
         }
-        if (conversation !== this.data?.conversation) {
-          return '';
+        const problems: string[] = [];
+        for (const uri of picked.uris) {
+          if (this.data !== data) { return ''; }
+          const problem = await this.stageDocument(data, id, uri);
+          if (problem) { problems.push(problem); }
         }
-        const result = await conversation.upload(id, picked.name, picked.base64, picked.bytes, picked.mediaType);
-        if (typeof result === 'string') {
-          return result;
-        }
-        if (conversation === this.data?.conversation) {
-          this.setAttachments(id, [...(this.attachmentsBySession.get(id) ?? []), result]);
-        }
-        return '';
+        return problems.join('\n');
       } catch (_) {
         return '无法读取所选文件';
       }
@@ -832,25 +838,31 @@ struct DesktopWorkspace {
       if (!uri) {
         return '无法访问宿主返回的文件';
       }
-      const file = await readDocumentUri(uri);
-      if (file.outcome !== PickOutcome.PICKED) {
-        return file.reason;
-      }
-      if (data !== this.data) {
-        return '';
-      }
-      const uploaded = await data.conversation.upload(id, name, file.base64, file.bytes, file.mediaType);
-      if (typeof uploaded === 'string') {
-        return uploaded;
-      }
-      if (data === this.data) {
-        this.setAttachments(id, [...(this.attachmentsBySession.get(id) ?? []), uploaded]);
-      }
-      return '';
+      return this.stageDocument(data, id, uri, name);
     });
   }
 
-  private setAttachments(id: string, items: PendingAttachment[]): void {
+  private async stageDocument(data: DesktopWorkspaceData, id: string, uri: string, name: string = ''): Promise<string> {
+    if (this.data !== data) { return ''; }
+    const file = await readDocumentBytes(uri, data.conversation.imageLimit(id));
+    if (file.outcome !== PickOutcome.PICKED || file.data === undefined) {
+      return file.reason || '无法读取所选附件';
+    }
+    if (this.data !== data) { return ''; }
+    const label = name || file.name;
+    try {
+      const uploaded = await data.conversation.upload(id, label, file.data, file.mediaType);
+      if (typeof uploaded === 'string') { return `${label}：${uploaded}`; }
+      if (this.data === data) {
+        this.setAttachments(id, [...(this.attachmentsBySession.get(id) ?? []), uploaded]);
+      }
+      return '';
+    } catch (_) {
+      return `${label}：附件上传失败`;
+    }
+  }
+
+  private setAttachments(id: string, items: DesktopDraftAttachment[]): void {
     if (items.length === 0) {
       this.attachmentsBySession.delete(id);
     } else {
@@ -859,6 +871,51 @@ struct DesktopWorkspace {
     if (id === this.sessionId) {
       this.attachments = items;
     }
+  }
+
+  @Builder
+  private ImagePreviewContent(sessionId: string, row: DesktopMediaAttachment, height: number) {
+    DesktopAttachmentViewer({ sessionId: sessionId, attachment: row, host: this.data?.actions, viewportHeight: height,
+      onClose: (): void => { this.closeImagePreview(); } })
+  }
+
+  private async openImagePreview(row: DesktopMediaAttachment): Promise<void> {
+    if (!this.sessionId || row.reference === undefined || this.imageDialog >= 0 || this.imageDialogOpening) { return; }
+    const sessionId = this.sessionId;
+    const version = ++this.imageDialogVersion;
+    const height = Math.max(120, Math.min(490, this.workbenchHeight - 135));
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    this.imageDialogOpening = true;
+    try {
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.ImagePreviewContent(sessionId, row, height); },
+        width: Math.max(220, Math.min(760, this.workbenchWidth - 32)),
+        alignment: DialogAlignment.Center, autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          if (version === this.imageDialogVersion) {
+            this.imageDialog = -1;
+            this.imageDialogOpening = false;
+            this.imageDialogVersion++;
+          }
+        }
+      });
+      if (this.pageActive && this.sessionId === sessionId && version === this.imageDialogVersion) { this.imageDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (version === this.imageDialogVersion) { prompt.showToast({ message: '无法打开图片预览' }); }
+    } finally {
+      if (version === this.imageDialogVersion) { this.imageDialogOpening = false; }
+    }
+  }
+
+  private closeImagePreview(): void {
+    const dialog = this.imageDialog;
+    this.imageDialog = -1;
+    this.imageDialogOpening = false;
+    this.imageDialogVersion++;
+    if (dialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(dialog); }
   }
 
   private sendMessage(alternateDelivery: boolean): void {
@@ -1697,8 +1754,9 @@ struct DesktopWorkspace {
           draft: this.draft,
           attachments: this.attachments,
           onAddAttachment: (): void => this.attachDocument(),
+          onOpenImage: (row: DesktopMediaAttachment): void => { this.openImagePreview(row); },
           onRemoveAttachment: (receiptId: string): void => {
-            this.setAttachments(this.sessionId, this.attachments.filter((file: PendingAttachment): boolean =>
+            this.setAttachments(this.sessionId, this.attachments.filter((file: DesktopDraftAttachment): boolean =>
               file.receiptId !== receiptId));
           },
           busy: this.busySessions.includes(this.sessionId),
@@ -1918,6 +1976,7 @@ struct DesktopWorkspace {
       .width('100%').height('100%')
       .onAreaChange((_, area: Area): void => {
         this.workbenchWidth = Number(area.width);
+        this.workbenchHeight = Number(area.height);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
         this.rightPaneWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })

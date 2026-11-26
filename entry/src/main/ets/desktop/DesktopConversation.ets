@@ -1,3 +1,4 @@
+import { util } from '@kit.ArkTS';
 import {
   commandsListEndpoint, commandsListPayload, filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress,
   modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
@@ -5,7 +6,7 @@ import {
   SessionPageValue, sessionCancelPayload,
   sessionFollowPayload, sessionUpdateQueuePayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
 } from 'appstate';
-import type { FeedbackRow, ModelOption, ModelSelection, PendingAttachment, PromptContentPart, QueueActionBody } from 'appstate';
+import type { FeedbackRow, ModelOption, ModelSelection, PromptContentPart, QueueActionBody } from 'appstate';
 import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
@@ -21,7 +22,9 @@ import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopFeedback } from './DesktopFeedback';
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
-import { DesktopPromptQueue, DesktopQueueAttachment, DesktopQueuedPrompt } from './DesktopPromptQueue';
+import { DesktopPromptQueue, DesktopQueuedPrompt } from './DesktopPromptQueue';
+import { desktopImageMime, desktopMediaAttachment, desktopMessageAttachments } from './DesktopAttachments';
+import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
 import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopCommandRecord, observeDesktopCommand,
   resolveDesktopCommand } from './DesktopCommands';
 
@@ -39,6 +42,7 @@ export interface DesktopTranscriptItem {
   id: string;
   sequence: number;
   message?: TrajectoryItem;
+  attachments?: DesktopMediaAttachment[];
   plan?: DesktopPlanDocument;
   artifacts?: DesktopTurnArtifacts;
   process?: DesktopProcessGroup;
@@ -104,6 +108,7 @@ export class DesktopConversation {
   private readonly queue: DesktopPromptQueue = new DesktopPromptQueue();
   private readonly sending: Map<string, DesktopQueuedPrompt> = new Map<string, DesktopQueuedPrompt>();
   private busyEnterSteers: boolean = false;
+  private imageBytesLimit?: number;
   private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
   private inheritedSequence: number = -1;
   readonly feedback: DesktopFeedback;
@@ -184,6 +189,7 @@ export class DesktopConversation {
     this.planAsOf = -1;
     this.goals.reset();
     this.queue.reset();
+    this.imageBytesLimit = undefined;
     this.model = undefined;
     this.permission = '';
     this.cursor = -1;
@@ -235,8 +241,17 @@ export class DesktopConversation {
     }
   }
 
-  async upload(sessionId: string, name: string, base64: string, bytes: number,
-    mediaType: string): Promise<PendingAttachment | string> {
+  async upload(sessionId: string, name: string, data: ArrayBuffer,
+    mediaType: string): Promise<DesktopDraftAttachment | string> {
+    if (desktopImageMime(mediaType)) {
+      const response = await this.connection.uploadSessionImage(sessionId, data, mediaType, name);
+      if (!response.ok) { return this.failure(response, '图片上传失败'); }
+      const receiptId = getString(response.value, 'receiptId') ?? '';
+      const row = desktopMediaAttachment(getRecord(response.value, 'image'), true);
+      if (!receiptId || row === undefined) { return '宿主没有返回有效的图片回执'; }
+      return { receiptId: receiptId, name: row.name, bytes: row.bytes, mediaType: mediaType, picture: row };
+    }
+    const base64 = await new util.Base64Helper().encodeToString(new Uint8Array(data));
     const args = fileUploadPayload(sessionId, base64, name);
     const result = args === undefined ? undefined : await this.connection.call(fileUploadEndpoint(), args);
     if (!result?.ok) {
@@ -246,13 +261,26 @@ export class DesktopConversation {
     if (file === undefined) {
       return '宿主没有返回有效的附件回执';
     }
-    const attachment: PendingAttachment = {
-      receiptId: file.receiptId, name: file.file.name || name, bytes: file.file.bytes || bytes, mediaType: mediaType
+    const attachment: DesktopDraftAttachment = {
+      receiptId: file.receiptId, name: file.file.name || name, bytes: file.file.bytes || data.byteLength, mediaType: mediaType
     };
     return attachment;
   }
 
-  async send(sessionId: string, text: string, attachments: PendingAttachment[],
+  imageLimit(sessionId: string): number | undefined {
+    return this.sessionId === sessionId ? this.imageBytesLimit : undefined;
+  }
+
+  private readImageLimit(values?: Object): void {
+    const limits = getRecord(values, 'imageLimits');
+    const individual = getNumber(limits, 'maxImageBytes');
+    const combined = getNumber(limits, 'maxMessageImageBytes');
+    if (individual !== undefined && combined !== undefined && individual > 0 && combined > 0) {
+      this.imageBytesLimit = Math.min(individual, combined);
+    }
+  }
+
+  async send(sessionId: string, text: string, attachments: DesktopDraftAttachment[],
     onExport: (sessionId: string) => Promise<string>, onFeedback: (sessionId: string) => Promise<string>,
     alternateDelivery: boolean): Promise<string> {
     const invocation = commandInvocation(text);
@@ -272,7 +300,7 @@ export class DesktopConversation {
         return result;
       }
     }
-    const ids = attachments.map((file: PendingAttachment): string => file.receiptId);
+    const ids = attachments.map((file: DesktopDraftAttachment): string => file.receiptId);
     const busy = sessionId === this.sessionId && this.running;
     const mode = busy && (this.busyEnterSteers !== alternateDelivery) ? PromptMode.STEER : PromptMode.QUEUE;
     const signature = JSON.stringify([mode, text, ...ids]);
@@ -288,8 +316,8 @@ export class DesktopConversation {
     const args = promptPayload(request.id, sessionId, mode, parts, '');
     const requestId = request.id;
     if (args !== undefined && busy && mode === PromptMode.QUEUE) {
-      const files = attachments.map((attachment: PendingAttachment): DesktopQueueAttachment => {
-        return { id: attachment.receiptId, name: attachment.name, bytes: attachment.bytes, image: false };
+      const files = attachments.map((attachment: DesktopDraftAttachment): DesktopMediaAttachment => {
+        return attachment.picture ?? { id: attachment.receiptId, name: attachment.name, bytes: attachment.bytes, image: false };
       });
       this.sending.set(sessionId, { id: request.id, requestId: request.id, text: text,
         editable: false, attachments: files, sending: true });
@@ -443,8 +471,8 @@ export class DesktopConversation {
     return this.commands;
   }
 
-  private async executeCommand(sessionId: string, line: string, files: PendingAttachment[]): Promise<string> {
-    const attachments = files.map((file: PendingAttachment): PromptContentPart => filePart(file.receiptId));
+  private async executeCommand(sessionId: string, line: string, files: DesktopDraftAttachment[]): Promise<string> {
+    const attachments = files.map((file: DesktopDraftAttachment): PromptContentPart => filePart(file.receiptId));
     const body: Record<string, Object> = {
       'agentId': sessionId, 'line': line, 'submittedAttachments': attachments
     };
@@ -595,9 +623,11 @@ export class DesktopConversation {
         continue;
       }
       const message = projectWireRecord(record);
+      const attachments = message?.speaker === Speaker.USER ?
+        desktopMessageAttachments(getRecord(event, 'data')) : [];
       if (message !== undefined && message.kind === TrajectoryKind.MESSAGE && !message.internal && message.speaker !== Speaker.SYSTEM &&
-        (message.body.length > 0 || message.reasoning.length > 0)) {
-        result.set(message.id, { id: message.id, sequence: seq, message: message });
+        (message.body.length > 0 || message.reasoning.length > 0 || attachments.length > 0)) {
+        result.set(message.id, { id: message.id, sequence: seq, message: message, attachments: attachments });
         if (message.speaker === Speaker.ASSISTANT) { this.replyTimeline.observe(event, message.body); }
       }
     }
@@ -655,6 +685,7 @@ export class DesktopConversation {
         this.publish();
       } else {
         this.readQuestions(result.value);
+        this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
         if (this.readPlan(result.value) || goalChanged || queueChanged) {
@@ -762,6 +793,7 @@ export class DesktopConversation {
     this.readGoal(projection);
     this.readQueue(projection);
     const values = getRecord(projection, 'values');
+    this.readImageLimit(values);
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
     this.permission = getString(getRecord(values, 'permissions'), 'currentValue') ?? '';
@@ -805,7 +837,9 @@ export class DesktopConversation {
       }
     } else if (type === 'projection') {
       const goalChanged = this.goals.observeDelta(frame);
-      const queueChanged = this.queue.observe(getRecord(frame, 'changes'), getNumber(frame, 'seq') ?? -1);
+      const changes = getRecord(frame, 'changes');
+      this.readImageLimit(changes);
+      const queueChanged = this.queue.observe(changes, getNumber(frame, 'seq') ?? -1);
       if (!goalChanged && !queueChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {

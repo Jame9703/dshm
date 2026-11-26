@@ -186,7 +186,7 @@ export enum PickOutcome {
 }
 
 /** 选择结果 */
-export interface PickedFile {
+interface DocumentReadResult {
   outcome: PickOutcome;
   /** 原始 URI（诊断与去重可用；**不要**展示给用户，它很长且含编码） */
   uri: string;
@@ -196,9 +196,21 @@ export interface PickedFile {
   mediaType: string;
   /** 精确字节数 */
   bytes: number;
-  /** 规范 base64（仅 `PICKED` 时有值） */
-  base64: string;
   /** 可直接展示给用户的原因（`CANCELLED` 时为空串） */
+  reason: string;
+}
+
+export interface PickedFile extends DocumentReadResult {
+  base64: string;
+}
+
+export interface PickedDocumentBytes extends DocumentReadResult {
+  data?: ArrayBuffer;
+}
+
+export interface PickedDocumentUris {
+  outcome: PickOutcome;
+  uris: string[];
   reason: string;
 }
 
@@ -825,60 +837,75 @@ function isDirectory(path: string): boolean {
  * `context` 必须由调用方（UI 层）传入：本模块没有 UI，`getContext()` 在这里
  * 拿不到窗口上下文。传进来比在这里猜要诚实。
  *
- * 只允许单选。理由：多选会让「哪几个上传成功了」变成一个需要逐个报错的状态机，
- * 而当前的 UI 只有一个附件列表；在能逐条显示失败原因之前，多选只会制造歧义。
+ * 单选入口供现有页面使用。需要批量上传的会话可单独取得 URI 列表。
  */
 export async function pickDocument(context: common.Context): Promise<PickedFile> {
-  let uris: string[] = [];
+  const selected = await pickDocumentUris(context, 1);
+  if (selected.outcome !== PickOutcome.PICKED) {
+    return outcomeOf(selected.outcome, '', selected.reason);
+  }
+  return readDocumentUri(selected.uris[0]);
+}
+
+export async function pickDocumentUris(context: common.Context, maxSelectNumber: number): Promise<PickedDocumentUris> {
   try {
     const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
-    options.maxSelectNumber = 1;
+    options.maxSelectNumber = maxSelectNumber;
     const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(context);
-    uris = await view.select(options);
+    const uris = await view.select(options);
+    return { outcome: uris.length > 0 ? PickOutcome.PICKED : PickOutcome.CANCELLED, uris: uris, reason: '' };
   } catch (err) {
     const e = err as BusinessError;
     // 用户取消在多数系统上表现为一次 reject（错误码 13900020 / 或 message 含 cancel）。
     // 取消不提示错误，因此必须与真正的失败分开：
     hilog.info(DOMAIN, TAG, 'select rejected: code=%{public}d', e.code);
     const cancelled: boolean = isFolderPickerCancelCode(e.code);
-    return outcomeOf(cancelled ? PickOutcome.CANCELLED : PickOutcome.FAILED, '',
-      cancelled ? '' : `无法拉起文件选择器：${e.message}（code=${e.code}）`);
+    return { outcome: cancelled ? PickOutcome.CANCELLED : PickOutcome.FAILED, uris: [],
+      reason: cancelled ? '' : `无法拉起文件选择器：${e.message}（code=${e.code}）` };
   }
-  if (uris.length === 0) {
-    return outcomeOf(PickOutcome.CANCELLED, '', '');
-  }
-  return await readDocumentUri(uris[0]);
 }
 
 /** 读取一个已获访问权限的文件 URI 并把内容编码成 base64。 */
 export async function readDocumentUri(uri: string): Promise<PickedFile> {
+  const file = await readDocumentBytes(uri);
+  try {
+    const base64 = file.data === undefined ? '' : await new util.Base64Helper().encodeToString(new Uint8Array(file.data));
+    return { outcome: file.outcome, uri: file.uri, name: file.name, mediaType: file.mediaType,
+      bytes: file.bytes, base64: base64, reason: file.reason };
+  } catch (_) {
+    return outcomeOf(PickOutcome.FAILED, uri, '无法编码所选文件');
+  }
+}
+
+export async function readDocumentBytes(uri: string, imageLimit?: number): Promise<PickedDocumentBytes> {
   const name: string = nameOfUri(uri);
+  const mediaType = mediaTypeOf(name);
+  const encodedImage = mediaType === 'image/png' || mediaType === 'image/jpeg' ||
+    mediaType === 'image/webp' || mediaType === 'image/gif';
+  const limit = encodedImage && imageLimit !== undefined && imageLimit > 0 ? imageLimit : MAX_ATTACHMENT_BYTES;
   let file: fs.File | undefined = undefined;
   try {
-    file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-    const size: number = fs.statSync(file.fd).size;
-    if (size > MAX_ATTACHMENT_BYTES) {
+    file = await fs.open(uri, fs.OpenMode.READ_ONLY);
+    const size: number = (await fs.stat(file.fd)).size;
+    if (size > limit) {
       return {
         outcome: PickOutcome.TOO_LARGE, uri: uri, name: name,
-        mediaType: mediaTypeOf(name), bytes: size, base64: '',
-        reason: `文件 ${formatBytes(size)} 超过端侧附件上限 ${formatBytes(MAX_ATTACHMENT_BYTES)}`
+        mediaType: mediaType, bytes: size,
+        reason: `文件 ${formatBytes(size)} 超过附件上限 ${formatBytes(limit)}`
       };
     }
     const buffer: ArrayBuffer = new ArrayBuffer(size);
-    const read: number = fs.readSync(file.fd, buffer);
-    // 只编码**实际读到**的字节：`stat` 与 `read` 之间文件可能被改动，
-    // 按 size 编码会在尾部带上未写入的 0，产生一个「能上传但内容坏了」的附件。
-    const bytes: Uint8Array = new Uint8Array(buffer, 0, read);
-    const helper: util.Base64Helper = new util.Base64Helper();
-    const base64: string = helper.encodeToStringSync(bytes);
+    const read: number = size === 0 ? 0 : await fs.read(file.fd, buffer);
+    const data = read === size ? buffer : buffer.slice(0, read);
     return {
-      outcome: PickOutcome.PICKED, uri: uri, name: name, mediaType: mediaTypeOf(name),
-      bytes: read, base64: base64, reason: ''
+      outcome: PickOutcome.PICKED, uri: uri, name: name, mediaType: mediaType,
+      bytes: read, data: data, reason: ''
     };
   } catch (err) {
     const e = err as BusinessError;
     hilog.warn(DOMAIN, TAG, 'read failed: %{public}s', e.message);
-    return outcomeOf(PickOutcome.FAILED, uri, `读取文件失败：${e.message}（code=${e.code}）`);
+    return { outcome: PickOutcome.FAILED, uri: uri, name: name, mediaType: mediaType, bytes: 0,
+      reason: `读取文件失败：${e.message}（code=${e.code}）` };
   } finally {
     if (file !== undefined) {
       try {

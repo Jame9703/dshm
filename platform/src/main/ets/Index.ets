@@ -91,6 +91,8 @@ export {
   MAX_ATTACHMENT_BYTES,
   PickOutcome,
   pickDocument,
+  pickDocumentUris,
+  readDocumentBytes,
   readDocumentUri,
   pickFolder,
   // 【2026-10-03】"用户可见目录 + agent 可读写删"用到的两件设备能力
@@ -117,7 +119,7 @@ export {
   // 曾经写死 `'1.1.0 (1010000)'` 而包已到 1.1.2 —— 上架自检的 P0，见 docs/163。
   readAppVersionText
 } from './system/FilePicker';
-export type { PickedFile, PickedFolder } from './system/FilePicker';
+export type { PickedDocumentBytes, PickedDocumentUris, PickedFile, PickedFolder } from './system/FilePicker';
 // 【2026-10-06】目录授权的**持久化与跨启动恢复**（`persistPermission` 记下来 +
 // 启动 `activatePermission` 启用回来）。手持档"侧边栏工作区文件"选完当场能读、重启后也能读
 // 靠的就是这一对；判据与真机原始读数见 docs/105。

@@ -1,19 +1,13 @@
-import { getArray, getField, getNumber, getRecord, getString } from 'connection';
-
-export interface DesktopQueueAttachment {
-  id: string;
-  name: string;
-  bytes: number;
-  image: boolean;
-  reference?: Object;
-}
+import { getArray, getField, getRecord, getString } from 'connection';
+import { desktopMessageAttachments } from './DesktopAttachments';
+import type { DesktopMediaAttachment } from './DesktopAttachments';
 
 export interface DesktopQueuedPrompt {
   id: string;
   requestId: string;
   text: string;
   editable: boolean;
-  attachments: DesktopQueueAttachment[];
+  attachments: DesktopMediaAttachment[];
   sending?: boolean;
 }
 
@@ -22,24 +16,17 @@ function queuedPrompt(raw: Object): DesktopQueuedPrompt | undefined {
   const parts = getArray(raw, 'content');
   if (!id || parts === undefined) { return undefined; }
   const text: string[] = [];
-  const attachments: DesktopQueueAttachment[] = [];
   let editable = parts.length > 0;
   for (const part of parts) {
     const type = getString(part, 'type');
     if (type === 'text') {
       text.push(getString(part, 'text') ?? '');
-      continue;
-    }
-    editable = false;
-    const reference = getRecord(part, 'attachment');
-    const attachmentId = getString(reference, 'attachmentId') ?? '';
-    if (attachmentId && (type === 'file' || type === 'image')) {
-      attachments.push({ id: attachmentId, name: getString(reference, 'name') ?? '图片',
-        bytes: getNumber(reference, 'bytes') ?? 0, image: type === 'image', reference: reference });
+    } else {
+      editable = false;
     }
   }
   return { id: id, requestId: getString(getRecord(raw, 'source'), 'rpcId') ?? '',
-    text: text.join('\n'), editable: editable, attachments: attachments };
+    text: text.join('\n'), editable: editable, attachments: desktopMessageAttachments(raw) };
 }
 
 export class DesktopPromptQueue {
