@@ -1,4 +1,5 @@
 import { Speaker, TrajectoryItem } from 'appstate';
+import { KeyCode } from '@kit.InputKit';
 import type { ModelOption, ModelSelection, PendingAttachment } from 'appstate';
 import type { DesktopConversationSnapshot, DesktopPermissionOption, DesktopTranscriptItem } from './DesktopConversation';
 import { DesktopInteractionPane } from './DesktopInteractionPane';
@@ -10,6 +11,10 @@ import { DesktopChangeTarget } from './DesktopArtifacts';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopJobsControl } from './DesktopJobsControl';
 import { DesktopProcessPane } from './DesktopProcessPane';
+import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
+import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
+import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
+import { desktopMenuOptions } from './DesktopMenuOptions';
 
 @Component
 export struct DesktopConversationPane {
@@ -29,6 +34,13 @@ export struct DesktopConversationPane {
   onAddAttachment: () => void = () => {};
   onRemoveAttachment: (receiptId: string) => void = () => {};
   onSend: () => void = () => {};
+  onLoadModels: () => void = () => {};
+  onModelsSettings: () => void = () => {};
+  onLoadCommands: () => void = () => {};
+  onCommand: (name: string) => Promise<string> = (_name: string): Promise<string> => Promise.resolve('');
+  onSlashModel: (selection: ModelSelection) => Promise<string> =
+    (_selection: ModelSelection): Promise<string> => Promise.resolve('');
+  onSlashPermission: (preset: string) => Promise<string> = (_preset: string): Promise<string> => Promise.resolve('');
   onStop: () => void = () => {};
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
@@ -57,8 +69,23 @@ export struct DesktopConversationPane {
   @State private expandedProcesses: string[] = [];
   @State private expandedReasoning: string[] = [];
   @State private inspectedTool: string = '';
+  private readonly composer: TextAreaController = new TextAreaController();
+  private readonly paletteScroller: Scroller = new Scroller();
+  private slashFrame: number = -1;
+  private slashToken?: DesktopSlashToken;
+  private paletteDraft: string = '';
+  private dismissedDraft?: string;
+  @State private palette: string = '';
+  @State private query: string = '';
+  @State private leading: boolean = true;
+  @State private paletteFilter: string = '';
+  @State private highlight: number = 0;
+  @State private riskPreset: string = '';
+  @State private agreed: boolean = false;
+  @State private paletteNotice: string = '';
 
   aboutToDisappear(): void {
+    this.cancelSlashRefresh();
     if (this.scrollTimer !== -1) {
       clearTimeout(this.scrollTimer);
       this.scrollTimer = -1;
@@ -75,6 +102,8 @@ export struct DesktopConversationPane {
       this.expandedProcesses = [];
       this.expandedReasoning = [];
       this.inspectedTool = '';
+      this.dismissedDraft = undefined;
+      this.closePalette();
     } else if (count === this.messageCount && partial === this.partial) {
       return;
     }
@@ -88,6 +117,231 @@ export struct DesktopConversationPane {
         }
       }, 30);
     }
+  }
+
+  private closePalette(): void {
+    this.cancelSlashRefresh();
+    this.palette = '';
+    this.slashToken = undefined;
+    this.riskPreset = '';
+    this.agreed = false;
+  }
+
+  private cancelSlashRefresh(): void {
+    if (this.slashFrame !== -1) { clearTimeout(this.slashFrame); this.slashFrame = -1; }
+  }
+
+  private refreshSlash(): void {
+    if (this.slashFrame !== -1 || this.palette === 'model' || this.palette === 'permission') { return; }
+    // ArkUI may report selection before updating the bound draft in the current input frame.
+    this.slashFrame = setTimeout((): void => {
+      this.slashFrame = -1;
+      this.detectSlash(this.draft, this.composer.getCaretOffset().index);
+    }, 16);
+  }
+
+  private detectSlash(text: string, caret: number): void {
+    if (this.palette === 'model' || this.palette === 'permission') { return; }
+    if (text === this.dismissedDraft || this.busy || this.snapshot?.loading !== false) {
+      this.closePalette();
+      return;
+    }
+    const token = activeDesktopSlash(text, caret);
+    if (token === undefined) { this.closePalette(); return; }
+    const refresh = this.palette !== 'commands' || this.query !== token.query || this.leading !== token.leading;
+    this.slashToken = token;
+    this.paletteDraft = text;
+    this.query = token.query;
+    this.leading = token.leading;
+    if (refresh) { this.highlight = 0; }
+    this.palette = 'commands';
+    if (!this.snapshot.commands && !this.snapshot.commandLoading && !this.snapshot.commandError) {
+      this.onLoadCommands();
+    }
+  }
+
+  private paletteCommands(): DesktopCommand[] {
+    return commandCandidates(this.snapshot?.commands ?? [], this.query, this.leading);
+  }
+
+  private modelKey(option: ModelOption): string {
+    return JSON.stringify([option.provider, option.modelId]);
+  }
+
+  private paletteRows(): DesktopPaletteRow[] {
+    if (this.palette === 'commands') {
+      return this.paletteCommands().map((row: DesktopCommand): DesktopPaletteRow => {
+        return { id: row.name, title: row.label, detail: row.description, token: `/${row.alias}`,
+          section: ['file', 'goal', 'plan', 'feedback'].includes(row.kind) ? '添加' : '指令' };
+      });
+    }
+    const needle = this.paletteFilter.trim().toLowerCase();
+    if (this.palette === 'model') {
+      return (this.snapshot?.models ?? []).filter((row: ModelOption): boolean =>
+        `${row.modelName} ${row.providerName} ${row.modelId}`.toLowerCase().includes(needle))
+        .map((row: ModelOption): DesktopPaletteRow => {
+          const current = this.snapshot?.selection;
+          return { id: this.modelKey(row), title: row.modelName, detail: row.providerName, section: '',
+            token: current?.provider === row.provider && current?.modelId === row.modelId ? '✓' : '' };
+        });
+    }
+    return (this.snapshot?.permissions ?? []).filter((row: DesktopPermissionOption): boolean =>
+      `${row.title} ${row.detail} ${row.value}`.toLowerCase().includes(needle))
+      .map((row: DesktopPermissionOption): DesktopPaletteRow => ({ id: row.value, title: row.title, detail: row.detail,
+        section: '', token: this.snapshot?.permission === row.value ? '✓' : '' }));
+  }
+
+  private replaceSlash(original: string, token: DesktopSlashToken, replacement: string): void {
+    if (this.draft !== original) { return; }
+    const text = original.slice(0, token.start) + replacement + original.slice(token.end);
+    this.dismissedDraft = text;
+    this.onDraft(text);
+    const session = this.sessionId;
+    this.getUIContext().getFocusController().requestFocus('desktopSlashComposer');
+    setTimeout((): void => {
+      if (session === this.sessionId && text === this.draft) {
+        this.composer.caretPosition(token.start + replacement.length);
+      }
+    }, 0);
+  }
+
+  private openChoice(kind: string): void {
+    this.paletteFilter = '';
+    this.highlight = 0;
+    this.riskPreset = '';
+    this.agreed = false;
+    this.palette = kind;
+    if (kind === 'model') { this.onLoadModels(); }
+  }
+
+  private async pickPalette(id: string): Promise<void> {
+    const token = this.slashToken;
+    const original = this.paletteDraft;
+    if (token === undefined || original !== this.draft || this.busy) { return; }
+    const session = this.sessionId;
+    const view = this.palette;
+    let problem = '';
+    if (view === 'commands') {
+      const row = this.paletteCommands().find((item: DesktopCommand): boolean => item.name === id);
+      if (row === undefined) { return; }
+      if (row.kind === 'file') {
+        this.closePalette();
+        this.replaceSlash(original, token, '');
+        this.onAddAttachment();
+        return;
+      }
+      if (row.kind === 'model' || (row.kind === 'permission' && (this.snapshot?.permissions.length ?? 0) > 0)) {
+        this.openChoice(row.kind);
+        return;
+      }
+      this.closePalette();
+      if (row.hint !== undefined) {
+        this.replaceSlash(original, token, `/${row.alias} `);
+        return;
+      }
+      this.following = true;
+      problem = await this.onCommand(row.name);
+    } else if (view === 'model') {
+      const option = this.snapshot?.models.find((row: ModelOption): boolean => this.modelKey(row) === id);
+      if (option === undefined) { return; }
+      this.closePalette();
+      problem = await this.onSlashModel({ provider: option.provider, modelId: option.modelId,
+        effort: option.defaultEffort });
+    } else if (view === 'permission') {
+      const preset = this.riskPreset || id;
+      if (id === 'confirm' && (!this.riskPreset || !this.agreed)) { return; }
+      if (id !== 'confirm' && this.snapshot?.permission !== preset &&
+        (preset === 'danger-full-access' || preset === 'auto')) {
+        this.riskPreset = preset;
+        this.agreed = false;
+        return;
+      }
+      this.closePalette();
+      problem = await this.onSlashPermission(preset);
+    }
+    if (session === this.sessionId && !problem) { this.replaceSlash(original, token, ''); }
+  }
+
+  private handleSend(): void {
+    if (this.busy || this.snapshot?.loading !== false) { return; }
+    const command = commandInvocation(this.draft);
+    if (command !== undefined && !command.suffix) {
+      const choices = commandCandidates(this.snapshot.commands ?? [], '', true);
+      const row = resolveDesktopCommand(choices, command.token);
+      if (row?.kind === 'file' || row?.kind === 'model' ||
+        (row?.kind === 'permission' && this.snapshot.permissions.length > 0)) {
+        if (row.kind !== 'file' && this.attachments.length > 0) {
+          this.paletteNotice = `/${command.token} 不接受附件，请先移除附件`;
+          return;
+        }
+        this.slashToken = activeDesktopSlash(this.draft, this.draft.trimEnd().length);
+        this.paletteDraft = this.draft;
+        this.query = command.token;
+        this.leading = true;
+        this.palette = 'commands';
+        this.pickPalette(row.name);
+        return;
+      }
+    }
+    this.dismissedDraft = this.draft;
+    this.closePalette();
+    this.following = true;
+    this.onSend();
+  }
+
+  private paletteKey(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down) { return false; }
+    if (this.palette && event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+      if (this.riskPreset) { this.riskPreset = ''; this.agreed = false; }
+      else { this.dismissedDraft = this.draft; this.closePalette(); }
+      return true;
+    }
+    if (this.riskPreset) { return false; }
+    const rows = this.palette ? this.paletteRows() : [];
+    const up = event.keyCode === KeyCode.KEYCODE_DPAD_UP;
+    if (rows.length > 0 && (up || event.keyCode === KeyCode.KEYCODE_DPAD_DOWN)) {
+      this.highlight = (this.highlight + (up ? -1 : 1) + rows.length) % rows.length;
+      this.paletteScroller.scrollToIndex(this.highlight, false, ScrollAlign.AUTO);
+      return true;
+    }
+    if (event.keyCode !== KeyCode.KEYCODE_ENTER || event.getModifierKeyState?.(['Shift']) || this.snapshot?.running) {
+      return false;
+    }
+    const item = rows[this.highlight] ?? rows[0];
+    if (item !== undefined) { this.pickPalette(item.id); }
+    else { this.handleSend(); }
+    return true;
+  }
+
+  @Builder
+  private CommandPopup() {
+    DesktopCommandPalette({ rows: this.paletteRows(), viewMode: this.palette, filter: this.paletteFilter,
+      highlight: this.highlight, scroller: this.paletteScroller, agreed: this.agreed,
+      riskName: this.snapshot?.permissions.find((row: DesktopPermissionOption): boolean =>
+        row.value === this.riskPreset)?.title ?? '', loading: this.palette === 'commands' ?
+        this.snapshot?.commandLoading === true : (this.palette === 'model' && this.snapshot?.modelsLoading === true),
+      error: this.palette === 'commands' ? this.snapshot?.commandError ?? '' : '',
+      onPick: (id: string): void => { this.pickPalette(id); },
+      onAgree: (value: boolean): void => { this.agreed = value; },
+      onFilter: (value: string): void => { this.paletteFilter = value; this.highlight = 0; },
+      onRetry: (): void => { this.onLoadCommands(); },
+      onModelsSettings: (): void => { this.closePalette(); this.onModelsSettings(); },
+      onBack: (): void => { this.riskPreset = ''; this.agreed = false; },
+      onKey: (event: KeyEvent): boolean => this.paletteKey(event) })
+  }
+
+  @Builder
+  private CommandCard(row: DesktopCommandRecord) {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        Text(`/${row.name}${row.args.trim() ? ' ' + row.args.trimStart() : ''}`).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor($r('sys.color.font_primary')).layoutWeight(1).copyOption(CopyOptions.LocalDevice)
+        Text(row.completed < 0 ? '执行中' : (row.outcome === 'success' ? '完成' : '失败'))
+          .fontSize(12).fontColor($r('sys.color.font_secondary'))
+      }.width('100%')
+      if (row.text) { MarkdownRenderer({ text: row.text }) }
+    }.width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start).padding(12)
+      .borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
   }
 
   private visibleInteraction(): DesktopInteraction[] {
@@ -116,7 +370,7 @@ export struct DesktopConversationPane {
 
   private modelMenu(): Array<MenuElement> {
     if ((this.snapshot?.models.length ?? 0) === 0) {
-      return [{ value: $r('app.string.desktop_chat_model_settings'), action: this.onWeb }];
+      return [{ value: $r('app.string.desktop_chat_model_settings'), action: this.onModelsSettings }];
     }
     return (this.snapshot?.models ?? []).map((option: ModelOption): MenuElement => {
       return {
@@ -240,11 +494,28 @@ export struct DesktopConversationPane {
         }
         .scrollable(ScrollDirection.Horizontal).width('100%').padding({ left: 8, right: 8 })
       }
-      TextArea({ text: this.draft, placeholder: this.snapshot?.planMode === true ?
+      TextArea({ text: this.draft, controller: this.composer, placeholder: this.snapshot?.planMode === true ?
         '描述你的任务以生成计划' : $r('app.string.desktop_chat_placeholder') })
+        .key('desktopSlashComposer').enterKeyType(EnterKeyType.Send)
         .width('100%').height(66).fontSize(15).borderRadius(16).padding({ left: 12, right: 12, top: 10 })
         .fontColor($r('sys.color.font_primary')).backgroundColor(Color.Transparent)
-        .onChange(this.onDraft)
+        .onChange((text: string): void => {
+          this.paletteNotice = '';
+          this.onDraft(text);
+          if (text !== this.dismissedDraft) { this.dismissedDraft = undefined; }
+          this.refreshSlash();
+        })
+        .onTextSelectionChange((start: number, end: number): void => {
+          if (start === end) { this.refreshSlash(); }
+        })
+        .onKeyPreIme((event: KeyEvent): boolean => this.paletteKey(event))
+        .onSubmit((): void => { if (!this.snapshot?.running) { this.handleSend(); } })
+        .bindPopup(this.palette !== '', { builder: this.CommandPopup(), placement: Placement.TopLeft,
+          enableArrow: false, mask: false, focusable: this.palette !== 'commands',
+          systemMaterial: desktopMenuOptions(Placement.TopLeft).systemMaterial,
+          onStateChange: (event): void => {
+            if (!event.isVisible && this.palette) { this.dismissedDraft = this.draft; this.closePalette(); }
+          } })
       Row({ space: 4 }) {
         this.ComposerControls()
         Button({ type: ButtonType.Circle }) {
@@ -262,8 +533,7 @@ export struct DesktopConversationPane {
           if (this.snapshot?.running) {
             this.onStop();
           } else {
-            this.following = true;
-            this.onSend();
+            this.handleSend();
           }
         })
       }
@@ -318,6 +588,8 @@ export struct DesktopConversationPane {
             Row() {
               if (item.plan !== undefined) {
                 this.PlanCard(item.plan)
+              } else if (item.command !== undefined) {
+                this.CommandCard(item.command)
               } else if (item.message !== undefined) {
                 this.Message(item.message)
               } else if (item.artifacts !== undefined) {
@@ -336,7 +608,7 @@ export struct DesktopConversationPane {
             }
             .width('100%').justifyContent(FlexAlign.Center)
           }
-        }, (item: DesktopTranscriptItem): string => item.id + (item.process?.version ?? ''))
+        }, (item: DesktopTranscriptItem): string => item.id + (item.process?.version ?? '') + (item.command?.completed ?? ''))
         if ((this.snapshot?.partial.length ?? 0) > 0) {
           ListItem() {
             Row() {
@@ -380,8 +652,8 @@ export struct DesktopConversationPane {
       } else if (this.snapshot?.waitingForInput) {
         Text('正在读取待处理请求…').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(8)
       }
-      if (this.commandError.length > 0 || (this.snapshot?.error.length ?? 0) > 0) {
-        Text(this.commandError || this.snapshot?.error || '')
+      if (this.paletteNotice || this.commandError || this.snapshot?.error) {
+        Text(this.paletteNotice || this.commandError || this.snapshot?.error || '')
           .fontSize(13).fontColor($r('sys.color.warning'))
           .maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
           .padding({ left: 16, right: 16, bottom: 6 })

@@ -588,6 +588,13 @@ export class Connection {
     return value === undefined ? rpcFail(RemoteFailure.parse('宿主资源格式无效')) : rpcOk(value);
   }
 
+  downloadSessionArchive(sessionId: string, onData: (chunk: ArrayBuffer) => void): Promise<string> {
+    const address = this.address;
+    if (address === undefined || !sessionId) { return Promise.resolve('尚未连接当前会话'); }
+    const url = `${address.baseUrl}${this.surface.apiChannel}/session.export?sessionId=${encodeURIComponent(sessionId)}`;
+    return this.http.download(url, address.authority, onData);
+  }
+
   // ─────────────────────────── 逻辑流 ───────────────────────────
 
   /**

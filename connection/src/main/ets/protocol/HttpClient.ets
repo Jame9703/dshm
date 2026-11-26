@@ -140,6 +140,35 @@ export class HttpClient {
     return outcome;
   }
 
+  /** Stream an authenticated download to the caller's private staging file. */
+  async download(url: string, authority: string, onData: (chunk: ArrayBuffer) => void): Promise<string> {
+    const request = http.createHttp();
+    const cookie = this.jar.headerFor(authority);
+    if (cookie === undefined) {
+      request.destroy();
+      return '宿主会话未认证';
+    }
+    let writeError = '';
+    try {
+      request.on('dataReceive', (chunk: ArrayBuffer): void => {
+        if (writeError) { return; }
+        try {
+          onData(chunk);
+        } catch (_) {
+          writeError = '无法写入下载缓存';
+        }
+      });
+      const header: Record<string, string> = { 'accept': 'application/zip', 'cookie': cookie };
+      const status = await request.requestInStream(url, { method: http.RequestMethod.GET, header: header,
+        readTimeout: 120000, connectTimeout: 15000, usingCache: false });
+      return writeError || (status === 200 ? '' : `下载失败（HTTP ${status}）`);
+    } catch (_) {
+      return writeError || '下载连接中断';
+    } finally {
+      request.destroy();
+    }
+  }
+
   /** 从响应头或原始 cookie 字符串中收获 cookie 并合并进 jar */
   private harvestCookies(responseHeader: Object | undefined, rawCookies: string, authority: string): void {
     let records = parseSetCookieHeader(responseHeader, authority);

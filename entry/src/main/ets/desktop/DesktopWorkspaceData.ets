@@ -2,7 +2,7 @@ import { projectSessionCreate, projectSessionList, sessionCreatePayload, session
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { EventSink, StreamSink } from 'connection';
-import { argsFor, SESSION_CREATE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { argsFor, EVENT_COMMANDS_CHANGE, SESSION_CREATE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopInteractions } from './DesktopInteractions';
 import type { DesktopInteraction } from './DesktopInteractions';
@@ -75,8 +75,11 @@ export class DesktopWorkspaceData {
       return;
     }
     const eventSink: EventSink = {
-      onReady: (): void => { this.openWorkspaceStream(); },
-      onEvent: (frame: Object): void => { this.interactions.onEvent(frame); },
+      onReady: (): void => { this.openWorkspaceStream(); this.conversation.invalidateCommands(); },
+      onEvent: (frame: Object): void => {
+        this.interactions.onEvent(frame);
+        if (getString(frame, 'event') === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
+      },
       onEnd: (): void => { this.interactions.resetEvents(); }
     };
     const opening: Promise<boolean> = this.connection.start(eventSink);

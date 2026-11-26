@@ -1,5 +1,6 @@
 import {
-  filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress, modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
+  commandsListEndpoint, commandsListPayload, filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress,
+  modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
   projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, SessionPageValue, sessionCancelPayload,
   sessionFollowPayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
 } from 'appstate';
@@ -12,9 +13,11 @@ import {
 } from 'dshcompat';
 
 import { DesktopInteractions } from './DesktopInteractions';
-import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument, isDesktopPlanCommand } from './DesktopPlan';
+import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
 import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
+import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopCommandRecord, observeDesktopCommand,
+  resolveDesktopCommand } from './DesktopCommands';
 
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
@@ -23,6 +26,7 @@ const PAGE_MESSAGES: number = 50;
 export interface DesktopPermissionOption {
   value: string;
   title: string;
+  detail: string;
 }
 
 export interface DesktopTranscriptItem {
@@ -32,6 +36,7 @@ export interface DesktopTranscriptItem {
   plan?: DesktopPlanDocument;
   artifacts?: DesktopTurnArtifacts;
   process?: DesktopProcessGroup;
+  command?: DesktopCommandRecord;
 }
 
 export interface DesktopConversationSnapshot {
@@ -44,12 +49,16 @@ export interface DesktopConversationSnapshot {
   running: boolean;
   waitingForInput: boolean;
   models: ModelOption[];
+  modelsLoading: boolean;
   permissions: DesktopPermissionOption[];
   permission: string;
   modelLabel: string;
   planMode?: boolean;
   selection?: ModelSelection;
   error: string;
+  commands?: DesktopCommand[];
+  commandLoading: boolean;
+  commandError: string;
 }
 
 interface DraftRequest {
@@ -70,9 +79,15 @@ export class DesktopConversation {
   private transcript: DesktopTranscriptItem[] = [];
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private readonly toolLog: DesktopToolLog = new DesktopToolLog();
+  private readonly commandRecords: Map<string, DesktopCommandRecord> = new Map();
+  private commands?: DesktopCommand[];
+  private commandTask?: Promise<DesktopCommand[] | undefined>;
+  private commandError: string = '';
+  private commandVersion: number = 0;
   private planMode?: boolean;
   private planAsOf: number = -1;
   private models: ModelOption[] = [];
+  private modelsLoading: boolean = false;
   private modelsRequested: boolean = false;
   private defaultModel?: ModelSelection;
   private model?: ModelSelection;
@@ -100,8 +115,8 @@ export class DesktopConversation {
     this.refreshSessions = refreshSessions;
   }
 
-  private async loadModels(): Promise<void> {
-    if (this.modelsRequested) {
+  async loadModels(refresh: boolean = false): Promise<void> {
+    if (this.modelsLoading || (this.modelsRequested && !refresh)) {
       return;
     }
     const empty: Record<string, Object> = {};
@@ -109,15 +124,17 @@ export class DesktopConversation {
     if (args === undefined) {
       return;
     }
-    this.modelsRequested = true;
+    this.modelsLoading = true;
+    if (refresh) { this.publish(); }
     const response = await this.connection.call(MODEL_CATALOG_ENDPOINT, args);
-    if (response.ok && !this.closed) {
+    this.modelsLoading = false;
+    if (this.closed) { return; }
+    if (response.ok) {
+      this.modelsRequested = true;
       this.models = projectModelCatalog(response.value);
       this.defaultModel = projectDefaultSelection(response.value);
-      this.publish();
-    } else {
-      this.modelsRequested = false;
     }
+    this.publish();
   }
 
   open(sessionId: string): void {
@@ -131,6 +148,11 @@ export class DesktopConversation {
     this.transcript = [];
     this.turnArtifacts.clear();
     this.toolLog.clear();
+    this.commandRecords.clear();
+    this.commandVersion++;
+    this.commands = undefined;
+    this.commandTask = undefined;
+    this.commandError = '';
     this.planMode = undefined;
     this.planAsOf = -1;
     this.model = undefined;
@@ -198,9 +220,23 @@ export class DesktopConversation {
     return attachment;
   }
 
-  async send(sessionId: string, text: string, attachments: PendingAttachment[]): Promise<string> {
-    if (isDesktopPlanCommand(text)) {
-      return this.executePlan(sessionId, text, attachments);
+  async send(sessionId: string, text: string, attachments: PendingAttachment[],
+    onExport: (sessionId: string) => Promise<string>): Promise<string> {
+    const invocation = commandInvocation(text);
+    if (invocation !== undefined) {
+      const commands = await this.loadCommands(sessionId);
+      if (commands === undefined) { return this.commandError || '无法读取当前会话的指令'; }
+      const command = resolveDesktopCommand(commands, invocation.token);
+      if (command !== undefined && (command.hint !== undefined || !invocation.suffix)) {
+        if (attachments.length > 0 && !command.attachments) {
+          return `/${invocation.token} 不接受附件，请先移除附件`;
+        }
+        const result = await this.executeCommand(sessionId, '/' + command.name + invocation.suffix, attachments);
+        if (result === '' && command.kind === 'export' && !invocation.suffix) {
+          return onExport(sessionId);
+        }
+        return result;
+      }
     }
     const ids = attachments.map((file: PendingAttachment): string => file.receiptId);
     const signature = JSON.stringify([text, ...ids]);
@@ -223,10 +259,57 @@ export class DesktopConversation {
   }
 
   async togglePlanMode(sessionId: string, enabled: boolean): Promise<string> {
-    return this.executePlan(sessionId, enabled ? '/plan' : '/plan off', []);
+    return this.executeCommand(sessionId, enabled ? '/plan' : '/plan off', []);
   }
 
-  private async executePlan(sessionId: string, line: string, files: PendingAttachment[]): Promise<string> {
+  async runCommandChoice(sessionId: string, name: string,
+    onExport: (sessionId: string) => Promise<string>): Promise<string> {
+    const commands = await this.loadCommands(sessionId);
+    const command = commands?.find((item: DesktopCommand): boolean => item.name === name);
+    if (command === undefined) { return this.commandError || '此指令已不可用'; }
+    const result = await this.executeCommand(sessionId, '/' + command.name, []);
+    return result === '' && command.kind === 'export' ? onExport(sessionId) : result;
+  }
+
+  downloadLog(sessionId: string, onData: (chunk: ArrayBuffer) => void): Promise<string> {
+    return this.connection.downloadSessionArchive(sessionId, onData);
+  }
+
+  loadCommands(sessionId: string): Promise<DesktopCommand[] | undefined> {
+    if (this.closed || !sessionId || sessionId !== this.sessionId) {
+      return Promise.resolve(undefined);
+    }
+    if (this.commands !== undefined) { return Promise.resolve(this.commands); }
+    if (this.commandTask !== undefined) { return this.commandTask; }
+    const version = this.commandVersion;
+    const task = this.fetchCommands(sessionId, version);
+    this.commandTask = task;
+    this.publish();
+    return task;
+  }
+
+  invalidateCommands(): void {
+    if (this.commands === undefined && this.commandTask === undefined) { return; }
+    this.commandVersion++;
+    this.commands = undefined;
+    this.commandTask = undefined;
+    this.loadCommands(this.sessionId);
+  }
+
+  private async fetchCommands(sessionId: string, version: number): Promise<DesktopCommand[] | undefined> {
+    const args = commandsListPayload(sessionId);
+    const reply = await (args === undefined ? Promise.resolve(undefined) : this.connection.call(commandsListEndpoint(), args));
+    if (this.closed || this.sessionId !== sessionId || version !== this.commandVersion) {
+      return undefined;
+    }
+    this.commandTask = undefined;
+    this.commands = reply?.ok ? desktopCommandCatalog(reply.value) : undefined;
+    this.commandError = this.commands === undefined ? this.failure(reply, '无法读取当前会话的指令') : '';
+    this.publish();
+    return this.commands;
+  }
+
+  private async executeCommand(sessionId: string, line: string, files: PendingAttachment[]): Promise<string> {
     const attachments = files.map((file: PendingAttachment): PromptContentPart => filePart(file.receiptId));
     const body: Record<string, Object> = {
       'agentId': sessionId, 'line': line, 'submittedAttachments': attachments
@@ -235,11 +318,11 @@ export class DesktopConversation {
     const generation = this.generation;
     const response = args === undefined ? undefined : await this.connection.call(COMMANDS_EXECUTE_ENDPOINT, args);
     if (!response?.ok) {
-      return this.failure(response, '无法提交计划模式命令');
+      return this.failure(response, '无法提交指令');
     }
     const result = getRecord(response.value, 'result');
     if (getString(result, 'kind') !== 'success') {
-      return getString(result, 'text') || '当前宿主未接受计划模式命令';
+      return getString(result, 'text') || '当前宿主未接受该指令';
     }
     if (this.current(generation) && this.sessionId === sessionId) {
       await this.loadSelection(generation);
@@ -333,13 +416,14 @@ export class DesktopConversation {
     const result: Map<string, DesktopTranscriptItem> = new Map<string, DesktopTranscriptItem>();
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
-        if (item.artifacts === undefined && item.process === undefined) {
+        if (item.artifacts === undefined && item.process === undefined && item.command === undefined) {
           result.set(item.id, item);
         }
       });
     } else {
       this.turnArtifacts.clear();
       this.toolLog.clear();
+      this.commandRecords.clear();
     }
     for (const record of records) {
       const seq = getNumber(getRecord(record, 'event'), 'seq') ?? -1;
@@ -349,6 +433,7 @@ export class DesktopConversation {
       const event = getRecord(record, 'event');
       observeDesktopArtifacts(this.turnArtifacts, event);
       this.toolLog.observe(record);
+      observeDesktopCommand(this.commandRecords, event);
       const plan = desktopSubmittedPlan(event);
       if (plan !== undefined) {
         const id = 'plan:' + plan.callId;
@@ -378,6 +463,12 @@ export class DesktopConversation {
       const id = `process:${this.sessionId}:${process.id}`;
       result.set(id, { id: id, sequence: process.sequence, process: process });
     }
+    this.commandRecords.forEach((command: DesktopCommandRecord): void => {
+      if (command.sequence >= 0 && command.name) {
+        const id = `command:${this.sessionId}:${command.id}`;
+        result.set(id, { id: id, sequence: command.sequence, command: command });
+      }
+    });
     const ordered = Array.from(result.values()).sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
       a.sequence - b.sequence);
     const transcript: DesktopTranscriptItem[] = [];
@@ -481,7 +572,7 @@ export class DesktopConversation {
     for (const row of getArray(result.value, 'options') ?? []) {
       const value = getString(row, 'value') ?? '';
       if (value.length > 0) {
-        options.push({ value: value, title: getString(row, 'name') ?? value });
+        options.push({ value: value, title: getString(row, 'name') ?? value, detail: getString(row, 'description') ?? '' });
       }
     }
     this.permissions = options;
@@ -602,9 +693,10 @@ export class DesktopConversation {
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
-      models: this.models, selection: selection, error: this.error,
+      models: this.models, modelsLoading: this.modelsLoading, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
-      modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode
+      modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
+      commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError
     });
   }
 }

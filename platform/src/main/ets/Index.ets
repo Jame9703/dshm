@@ -26,7 +26,7 @@ export { clearClipboard, copyText, readText } from './system/Clipboard';
 export { hapticTap } from './system/Haptic';
 export { isOpenableUrl, openExternalUrl } from './system/OpenLink';
 // ArkWeb 网页下载落地（Session 日志 / 工作区文件）：见 system/WebDownloads.ets
-export { installWebDownloadDelegate, safeDownloadName } from './system/WebDownloads';
+export { installWebDownloadDelegate, safeDownloadName, saveCachedDownload } from './system/WebDownloads';
 // 原生朗读（TextReader 优先，textToSpeech 兜底）：见 system/ReadAloud.ets
 export { ReadAloud } from './system/ReadAloud';
 export { shareText } from './system/ShareBoard';

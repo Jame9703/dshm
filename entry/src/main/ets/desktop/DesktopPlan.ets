@@ -25,10 +25,6 @@ export function desktopPlanMode(projection?: Object): boolean | undefined {
   return active === undefined ? undefined : (getBoolean(plan, 'pending') === true ? !active : active);
 }
 
-export function isDesktopPlanCommand(text: string): boolean {
-  return new RegExp('^/plan(?:$|[\\t\\n\\r ])').test(text);
-}
-
 export function desktopSubmittedPlan(event?: Object): DesktopPlanDocument | undefined {
   const kind = getString(event, 'type');
   if (kind !== 'tool/call' && kind !== 'tool/ptc-dispatch-start' && kind !== 'tool/ptc-dispatch') {

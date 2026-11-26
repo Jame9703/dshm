@@ -7,6 +7,7 @@ import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
 import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
 import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
+import { exportDesktopLog } from '../desktop/DesktopLogExport';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome, pickDocument, pickFolder,
@@ -401,17 +402,17 @@ struct DesktopWorkspace {
     }
   }
 
-  private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string): Promise<void> {
+  private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string): Promise<string> {
     const id = this.sessionId;
     const data = this.data;
     if (id.length === 0 || data === undefined || this.busySessions.includes(id)) {
-      return;
+      return '当前会话暂不可操作';
     }
     this.busySessions = [...this.busySessions, id];
     this.chatError = '';
     const error = await run(id);
     if (!this.pageActive || this.data !== data) {
-      return;
+      return error;
     }
     this.busySessions = this.busySessions.filter((other: string): boolean => other !== id);
     if (error.length === 0 && sentDraft !== undefined && this.drafts.get(id) === sentDraft) {
@@ -423,6 +424,7 @@ struct DesktopWorkspace {
     if (this.sessionId === id) {
       this.chatError = error;
     }
+    return error;
   }
 
   private attachDocument(): void {
@@ -509,13 +511,22 @@ struct DesktopWorkspace {
     const files = this.attachments;
     if (conversation !== undefined && (text.trim().length > 0 || files.length > 0)) {
       this.chatAction(async (id: string): Promise<string> => {
-        const result = await conversation.send(id, text, files);
+        const result = await conversation.send(id, text, files, (sessionId: string): Promise<string> =>
+          this.exportLog(sessionId));
         if (result.length === 0 && conversation === this.data?.conversation) {
           this.setAttachments(id, []);
         }
         return result;
       }, text);
     }
+  }
+
+  private exportLog(id: string): Promise<string> {
+    const conversation = this.data?.conversation;
+    const context = this.getUIContext().getHostContext();
+    if (conversation === undefined || context === undefined) { return Promise.resolve('当前会话暂不可导出'); }
+    return exportDesktopLog(context, id, (onData: (chunk: ArrayBuffer) => void): Promise<string> =>
+      conversation.downloadLog(id, onData));
   }
 
   private showPlan(document: DesktopPlanDocument): void {
@@ -1123,6 +1134,25 @@ struct DesktopWorkspace {
           menuOptions: desktopMenuOptions(Placement.TopLeft),
           onDraft: (value: string): void => this.changeDraft(value),
           onSend: (): void => this.sendMessage(),
+          onLoadModels: (): void => { this.data?.conversation.loadModels(true); },
+          onModelsSettings: (): void => { this.openSettings('settings.models'); },
+          onLoadCommands: (): void => { this.data?.conversation.loadCommands(this.sessionId); },
+          onCommand: (name: string): Promise<string> => {
+            const conversation = this.data?.conversation;
+            return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
+              (id: string): Promise<string> => conversation.runCommandChoice(id, name,
+                (sessionId: string): Promise<string> => this.exportLog(sessionId)));
+          },
+          onSlashModel: (selection: ModelSelection): Promise<string> => {
+            const conversation = this.data?.conversation;
+            return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
+              (id: string): Promise<string> => conversation.selectModel(id, selection));
+          },
+          onSlashPermission: (preset: string): Promise<string> => {
+            const conversation = this.data?.conversation;
+            return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
+              (id: string): Promise<string> => conversation.selectPermission(id, preset));
+          },
           onStop: (): void => this.stopMessage(),
           onEarlier: (): void => this.data?.conversation.loadEarlier(),
           onWeb: (): void => { this.openWeb(false); },

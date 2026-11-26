@@ -89,20 +89,12 @@ function ensureDownloadDir(context: common.Context): string {
  */
 async function saveToPickedUri(context: common.Context, srcPath: string, name: string): Promise<void> {
   try {
-    const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(context);
-    const uris: string[] = await view.save({ newFileNames: [name] });
-    if (uris.length === 0) {
+    const uri = await saveCachedDownload(context, srcPath, name);
+    if (uri.length === 0) {
       writeDiag(context, `save-cancel ${name}`);
       return;
     }
-    const dest = fileIo.openSync(uris[0],
-      fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-    try {
-      await fileIo.copyFile(srcPath, dest.fd);
-    } finally {
-      fileIo.closeSync(dest);
-    }
-    writeDiag(context, `saved ${name} -> ${uris[0]}`);
+    writeDiag(context, `saved ${name} -> ${uri}`);
     hilog.info(DOMAIN, TAG, '网页下载已保存：%{public}s', name);
     try {
       fileIo.unlinkSync(srcPath);
@@ -114,6 +106,20 @@ async function saveToPickedUri(context: common.Context, srcPath: string, name: s
     writeDiag(context, `save-fail ${name} code=${e.code} ${e.message}`);
     hilog.warn(DOMAIN, TAG, '网页下载保存失败：%{public}s', e.message);
   }
+}
+
+/** Save a complete cached download to the destination explicitly chosen by the user. */
+export async function saveCachedDownload(context: common.Context, source: string, name: string): Promise<string> {
+  const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(context);
+  const uris = await view.save({ newFileNames: [safeDownloadName(name)] });
+  if (uris.length === 0) { return ''; }
+  const destination = fileIo.openSync(uris[0], fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+  try {
+    await fileIo.copyFile(source, destination.fd);
+  } finally {
+    fileIo.closeSync(destination);
+  }
+  return uris[0];
 }
 
 /**
