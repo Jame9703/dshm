@@ -2,11 +2,13 @@ import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import type { DesktopInteraction, DesktopQuestion, DesktopQuestionAnswer, DesktopQuestionDraft,
   DesktopQuestionOption, DesktopQuestionProgress } from './DesktopInteractions';
 import type { DesktopPlanDocument } from './DesktopPlan';
+import type { DesktopTypography } from './DesktopTheme';
 
 @Component
 export struct DesktopInteractionPane {
   @Prop request?: DesktopInteraction = undefined;
   @Prop busy: boolean = false;
+  @Prop typography: DesktopTypography | undefined = undefined;
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
     (_id: string, _answers: DesktopQuestionAnswer[]): void => {};
@@ -257,7 +259,8 @@ export struct DesktopInteractionPane {
               .copyOption(CopyOptions.InApp)
             this.DetailToggle('', 'desktopQuestionPromptDetail')
           }.width('100%')
-          if (question.detail) { MarkdownRenderer({ text: question.detail, onLink: this.onLink }) }
+          if (question.detail) { MarkdownRenderer({ text: question.detail, onLink: this.onLink,
+            typography: this.typography }) }
           ForEach(question.options, (option: DesktopQuestionOption, index: number) => {
             this.Choice(question, option, index)
           }, (option: DesktopQuestionOption, index: number): string => question.id + ':' + option.label + ':' + index)

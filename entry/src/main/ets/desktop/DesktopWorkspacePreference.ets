@@ -33,3 +33,9 @@ export async function setDesktopWorkspaceEnabled(context: common.Context, enable
   }
   await prefs.flush();
 }
+
+export async function saveDesktopWorkspaceAppearance(context: common.Context, appearance: string): Promise<void> {
+  const prefs = preferences.getPreferencesSync(context, { name: PREFERENCES });
+  prefs.putSync(KEY_APPEARANCE, appearance);
+  await prefs.flush();
+}

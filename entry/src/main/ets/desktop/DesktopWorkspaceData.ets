@@ -7,6 +7,8 @@ import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LL
   SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
+import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
+import type { DesktopTheme } from './DesktopTheme';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
 import type { DesktopAccountNotice } from './DesktopAccountNotices';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -70,6 +72,7 @@ export class DesktopWorkspaceData {
   readonly accountNotices: DesktopAccountNotices;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private readonly afterFrame: (run: () => void) => void;
+  private readonly onTheme: (theme: DesktopTheme) => void;
   private accountWatchScheduled: boolean = false;
   private accountWatchEnabled: boolean = false;
   private active: boolean = true;
@@ -96,9 +99,10 @@ export class DesktopWorkspaceData {
     onInteractions: (items: DesktopInteraction[]) => void,
     onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void,
     onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void,
-    onAccountNotices: (notices: DesktopAccountNotice[]) => void) {
+    onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void) {
     this.listener = listener;
     this.afterFrame = afterFrame;
+    this.onTheme = onTheme;
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices);
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
@@ -168,7 +172,8 @@ export class DesktopWorkspaceData {
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
-          if (namespace === 'ui-conversation' || namespace === 'ui-chat' || namespace === 'locale') {
+          if (namespace === 'ui-conversation' || namespace === 'ui-chat' || namespace === 'locale' ||
+            namespace === DESKTOP_THEME_NS) {
             this.readConversationPreferences();
           }
           if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
@@ -209,6 +214,9 @@ export class DesktopWorkspaceData {
     const chat = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'ui-chat');
     this.browserInDock = getString(getRecord(chat, 'value'), 'linkOpening') !== 'new-tab';
     const locale = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'locale');
+    const theme = namespaces?.find((row: Object): boolean => getString(row, 'ns') === DESKTOP_THEME_NS);
+    const appearance = getRecord(theme, 'value');
+    if (appearance !== undefined) { this.onTheme(desktopThemeFrom(appearance)); }
     this.accountNotices.setLocale(getString(getRecord(locale, 'value'), 'preference') ?? 'system');
     this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';
     this.conversation.setBusyEnter(this.busyEnterSteers);

@@ -17,6 +17,7 @@
 
 import { Border, Fs, Lh, MdBlock, MdBlockKind, MdSpan, Radius, SemanticColor, Sp, parseMarkdown, plainTextOf } from 'appstate';
 import { openExternalUrl } from 'platform';
+import type { DesktopTypography } from '../desktop/DesktopTheme';
 import hilog from '@ohos.hilog';
 
 const DOMAIN: number = 0xD5A2;
@@ -38,6 +39,7 @@ export struct MarkdownRenderer {
    * 包一层等于把渲染逻辑抄两遍。
    */
   @Prop muted: boolean = false;
+  @Prop typography: DesktopTypography | undefined = undefined;
   onLink?: (href: string) => void;
 
   @State blocks: MdBlock[] = [];
@@ -52,13 +54,18 @@ export struct MarkdownRenderer {
 
   /** 标题字号（官方 Markdown 的层级感：标题比正文大，级别越高越大） */
   private headingSize(level: number): number {
+    const delta = (this.typography?.textSize ?? Fs.BODY) - Fs.BODY;
     if (level <= 1) {
-      return Fs.TITLE_L;
+      return Fs.TITLE_L + delta;
     }
     if (level === 2) {
-      return Fs.TITLE_M;
+      return Fs.TITLE_M + delta;
     }
-    return Fs.TITLE_S;
+    return Fs.TITLE_S + delta;
+  }
+
+  private inlineSize(block: MdBlock): number {
+    return block.kind === MdBlockKind.HEADING ? this.headingSize(block.level) : this.typography?.textSize ?? Fs.BODY;
   }
 
   /** 正文基色：次要语气降一级（与 `muted` 对应） */
@@ -79,7 +86,7 @@ export struct MarkdownRenderer {
   @Builder
   blockView(b: MdBlock) {
     if (b.kind === MdBlockKind.HEADING) {
-      this.inlineText(b, this.headingSize(b.level), FontWeight.Bold)
+      this.inlineText(b, FontWeight.Bold)
     } else if (b.kind === MdBlockKind.CODE) {
       this.codeBlock(b)
     } else if (b.kind === MdBlockKind.LIST_ITEM) {
@@ -89,7 +96,7 @@ export struct MarkdownRenderer {
     } else if (b.kind === MdBlockKind.RULE) {
       Divider().color(SemanticColor.DIVIDER).width('100%')
     } else {
-      this.inlineText(b, Fs.BODY, FontWeight.Normal)
+      this.inlineText(b, FontWeight.Normal)
     }
   }
 
@@ -100,11 +107,11 @@ export struct MarkdownRenderer {
    * 段落级的行高与宽度在 `Text` 上。这样换行由文字流自己决定，不需要任何布局技巧。
    */
   @Builder
-  inlineText(b: MdBlock, size: number, weight: FontWeight) {
+  inlineText(b: MdBlock, weight: FontWeight) {
     Text() {
       ForEach(b.spans, (sp: MdSpan) => {
         Span(sp.text)
-          .fontSize(size)
+          .fontSize(sp.code && this.typography !== undefined ? this.typography.codeSize + 1 : this.inlineSize(b))
           .fontWeight(sp.bold ? FontWeight.Bold : weight)
           .fontStyle(sp.italic ? FontStyle.Italic : FontStyle.Normal)
           .fontColor(sp.code ? SemanticColor.BRAND
@@ -114,7 +121,7 @@ export struct MarkdownRenderer {
               : (sp.href.length > 0 ? TextDecorationType.Underline : TextDecorationType.None),
             color: sp.href.length > 0 ? SemanticColor.BRAND : this.bodyColor()
           })
-          .fontFamily(sp.code ? 'monospace' : '')
+          .fontFamily(sp.code ? this.typography?.codeFamily ?? 'monospace' : this.typography?.textFamily ?? '')
           .onClick(() => {
             if (sp.href.length > 0) {
               this.openLink(sp.href);
@@ -122,8 +129,8 @@ export struct MarkdownRenderer {
           })
       })
     }
-    .fontSize(size)
-    .lineHeight(size * Lh.BODY)
+    .fontSize(this.inlineSize(b))
+    .lineHeight(this.typography === undefined ? this.inlineSize(b) * Lh.BODY : this.inlineSize(b) + 10)
     .width('100%')
     .textAlign(TextAlign.Start)
     .copyOption(CopyOptions.LocalDevice)
@@ -145,8 +152,8 @@ export struct MarkdownRenderer {
           .fontColor(SemanticColor.TEXT_TERTIARY)
       }
       Text(b.closed ? b.text : b.text + ' ▌')
-        .fontSize(Fs.SECONDARY)
-        .fontFamily('monospace')
+        .fontSize(this.typography?.codeSize ?? Fs.SECONDARY)
+        .fontFamily(this.typography?.codeFamily ?? 'monospace')
         .fontColor(this.bodyColor())
         .width('100%')
         .textAlign(TextAlign.Start)
@@ -165,12 +172,13 @@ export struct MarkdownRenderer {
   listRow(b: MdBlock) {
     Row({ space: Sp.S }) {
       Text(b.marker)
-        .fontSize(Fs.BODY)
+        .fontSize(this.typography?.textSize ?? Fs.BODY)
+        .fontFamily(this.typography?.textFamily ?? '')
         .fontColor(SemanticColor.BRAND)
         .textAlign(TextAlign.End)
         .width(Sp.XL)
       Column() {
-        this.inlineText(b, Fs.BODY, FontWeight.Normal)
+        this.inlineText(b, FontWeight.Normal)
       }
       .layoutWeight(1)
     }
@@ -188,7 +196,8 @@ export struct MarkdownRenderer {
         .backgroundColor(SemanticColor.BRAND)
       Column() {
         Text(this.spansText(b.spans))
-          .fontSize(Fs.SECONDARY)
+          .fontSize(this.typography?.textSize ?? Fs.SECONDARY)
+          .fontFamily(this.typography?.textFamily ?? '')
           .fontColor(SemanticColor.TEXT_SECONDARY)
           .width('100%')
           .textAlign(TextAlign.Start)

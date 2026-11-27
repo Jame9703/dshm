@@ -59,7 +59,10 @@ import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/Des
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
-import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
+import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
+  WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
+import { DEFAULT_DESKTOP_TYPOGRAPHY, sameDesktopTypography } from '../desktop/DesktopTheme';
+import type { DesktopTheme, DesktopTypography } from '../desktop/DesktopTheme';
 import lazy { IndexContent } from './IndexContent';
 import { DesktopSessionGrouping, DesktopSessionOrdering, desktopReorderSessions, desktopSessionAccount,
   desktopSessionOrder, desktopSessionOrdersEqual, desktopSessionRows, desktopSidebarSections,
@@ -174,6 +177,7 @@ struct DesktopWorkspace {
   @State private query: string = '';
   @State private selectedWorkspaceTitle: ResourceStr = '';
   @State private appearance: string = 'system';
+  @State private typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @State private shortcutsOpen: boolean = false;
   @State private shortcutBindings: DesktopShortcutRow[] = desktopShortcutRows([]);
   @State private terminalCreateSession: string = '';
@@ -440,8 +444,27 @@ struct DesktopWorkspace {
       this.raiseSidebarWatermarks();
     }, (notices: DesktopAccountNotice[]): void => {
       if (this.pageActive) { this.accountNotices = notices; }
+    }, (theme: DesktopTheme): void => {
+      this.applyHostTheme(theme);
     });
     this.data.start(this.hostUrl);
+  }
+
+  private applyHostTheme(theme: DesktopTheme): void {
+    if (!this.pageActive) { return; }
+    if (!sameDesktopTypography(this.typography, theme.typography)) { this.typography = theme.typography; }
+    AppStorage.setOrCreate<string>('dshAppearanceMode', theme.appearance);
+    if (this.appearance === theme.appearance) { return; }
+    this.appearance = theme.appearance;
+    const context = this.getUIContext().getHostContext();
+    if (context !== undefined) {
+      saveDesktopWorkspaceAppearance(context, theme.appearance).catch((): void => {});
+    }
+  }
+
+  private workspaceColorMode(): ThemeColorMode {
+    return this.appearance === 'dark' ? ThemeColorMode.DARK :
+      this.appearance === 'light' ? ThemeColorMode.LIGHT : ThemeColorMode.SYSTEM;
   }
 
   private updateGroups(workspaces: DesktopWorkspaceRow[], sessions: SessionListItem[], newPins: string[]): void {
@@ -1889,10 +1912,12 @@ struct DesktopWorkspace {
 
   @Builder
   private SettingsDialog() {
-    IndexContent({ desktopSection: this.settingsSection,
-      onCloseSettings: (): void => { this.closeSettings(); },
-      onSettingsSection: (section: string): void => { this.settingsSection = section; },
-      onOpenPlugins: (): void => { this.settingsOpeningPlugins = true; } })
+    WithTheme({ colorMode: this.workspaceColorMode() }) {
+      IndexContent({ desktopSection: this.settingsSection,
+        onCloseSettings: (): void => { this.closeSettings(); },
+        onSettingsSection: (section: string): void => { this.settingsSection = section; },
+        onOpenPlugins: (): void => { this.settingsOpeningPlugins = true; } })
+    }
   }
 
   private async openSettings(section: string = ''): Promise<void> {
@@ -2123,7 +2148,7 @@ struct DesktopWorkspace {
     Row({ space: 8 }) {
       SymbolGlyph(icon).fontSize(16).fontColor([$r('sys.color.font_primary')])
       if (!this.sidebarCollapsed) {
-        Text(label).fontSize(14).fontColor($r('sys.color.font_primary'))
+        Text(label).fontSize(14).fontFamily(this.typography.textFamily).fontColor($r('sys.color.font_primary'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
     }
@@ -2309,7 +2334,7 @@ struct DesktopWorkspace {
           Image($r('app.media.dsh_sidebar_workspace_arrow')).width(10).height(10).supportSvg2(true)
             .fillColor($r('sys.color.font_tertiary')).draggable(false).accessibilityLevel('no')
             .rotate({ angle: this.isExpanded(group.id) ? 90 : 0 })
-          Text(group.title).fontSize(14).fontColor($r('sys.color.font_primary'))
+          Text(group.title).fontSize(14).fontFamily(this.typography.textFamily).fontColor($r('sys.color.font_primary'))
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
         .width('100%')
@@ -2543,7 +2568,7 @@ struct DesktopWorkspace {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 6 }) {
           this.SidebarSessionDot(session, archived)
-          Text(this.sessionLabel(session)).fontSize(14).fontColor(archived ?
+          Text(this.sessionLabel(session)).fontSize(14).fontFamily(this.typography.textFamily).fontColor(archived ?
             $r('sys.color.font_tertiary') : $r('sys.color.font_primary'))
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           if (!session.blank) {
@@ -2894,7 +2919,7 @@ struct DesktopWorkspace {
           workspaceTitle: this.selectedWorkspaceTitle,
           sessionDirectory: this.selectedSessionDirectory,
           draft: this.draft,
-          appearance: this.appearance,
+          appearance: this.appearance, typography: this.typography,
           referenceOffer: this.referenceOffer,
           attachments: this.attachments,
           onAddAttachment: (): void => this.attachDocument(),
@@ -3312,6 +3337,7 @@ struct DesktopWorkspace {
         } })
     } else if (tab.kind === DesktopDockKind.TERMINAL) {
       DesktopTerminalPane({ host: this.data?.actions, sessionId: this.sessionId, appearance: this.appearance,
+        cellFontSize: this.typography.terminalSize, cellFontFamily: this.typography.terminalFamily,
         preferredTerminal: this.terminalSelections.get(this.sessionId) ?? '',
         createSession: this.terminalCreateSession, onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
         onTerminalSelected: (sessionId: string, id: string): void => { this.terminalSelections.set(sessionId, id); },
@@ -3331,7 +3357,7 @@ struct DesktopWorkspace {
       DesktopDockChatPane({ data: this.data, actions: this.dockChatActions(this.data), target: tab.chat,
         title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
         busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,
-        appearance: this.appearance, summaries: this.sessionSummaries })
+        appearance: this.appearance, typography: this.typography, summaries: this.sessionSummaries })
     } else if (tab.kind === DesktopDockKind.BROWSER) {
       DesktopBrowserPane({ address: tab.browserAddress ?? '', restore: tab.restoreBrowser ?? false,
         workspaceOrigin: this.browserOrigin(), onNavigated: (href: string, title: string): void => {
@@ -3570,10 +3596,7 @@ struct DesktopWorkspace {
   }
 
   build() {
-    WithTheme({
-      colorMode: this.appearance === 'dark' ? ThemeColorMode.DARK :
-        this.appearance === 'light' ? ThemeColorMode.LIGHT : ThemeColorMode.SYSTEM
-    }) {
+    WithTheme({ colorMode: this.workspaceColorMode() }) {
       Stack({ alignContent: Alignment.Bottom }) {
         Column() {
           this.TopBar()

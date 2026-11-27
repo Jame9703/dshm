@@ -18,6 +18,8 @@ import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import type { DesktopChangeTarget } from './DesktopArtifacts';
 import type { DesktopRating } from './DesktopFeedback';
+import { DEFAULT_DESKTOP_TYPOGRAPHY } from './DesktopTheme';
+import type { DesktopTypography } from './DesktopTheme';
 
 export interface DesktopDockChatActions {
   run: (id: string, operation: (id: string) => Promise<string>) => Promise<string>;
@@ -56,6 +58,7 @@ export struct DesktopDockChatPane {
   @Prop title: string = '';
   @Prop directory: string = '';
   @Prop appearance: string = 'system';
+  @Prop typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @Prop @Watch('syncVisibility') shown: boolean = false;
   @Prop busy: boolean = false;
   @Prop forking: boolean = false;
@@ -165,7 +168,7 @@ export struct DesktopDockChatPane {
     Column() {
       if (this.snapshot !== undefined && this.target !== undefined) {
         DesktopConversationPane({ host: this.data?.actions, snapshot: this.snapshot, embedded: true,
-          title: this.title, sessionDirectory: this.directory, appearance: this.appearance,
+          title: this.title, sessionDirectory: this.directory, appearance: this.appearance, typography: this.typography,
           sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, forking: this.forking,
           referenceOffer: this.referenceOffer,
           draft: this.draft, attachments: this.attachments, commandError: this.problem,

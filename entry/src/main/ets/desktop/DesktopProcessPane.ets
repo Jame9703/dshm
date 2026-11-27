@@ -9,6 +9,8 @@ export struct DesktopProcessPane {
   @Prop group: DesktopProcessGroup | undefined = undefined;
   @Prop expanded: boolean = false;
   @Prop inspected: string = '';
+  @Prop codeSize: number = 11;
+  @Prop codeFamily: string = 'monospace';
   @Prop hiddenQuestions: DesktopInteraction[] = [];
   onToggle: () => void = (): void => {};
   onInspect: (id: string) => void = (_id: string): void => {};
@@ -61,12 +63,12 @@ export struct DesktopProcessPane {
     Column({ space: 6 }) {
       if (row.item.toolArgs) {
         Text('参数').fontSize(12).fontColor($r('sys.color.font_secondary'))
-        Text(row.item.toolArgs.slice(0, 16000)).fontFamily('monospace').fontSize(12).width('100%')
+        Text(row.item.toolArgs.slice(0, 16000)).fontFamily(this.codeFamily).fontSize(this.codeSize).width('100%')
           .copyOption(CopyOptions.LocalDevice)
       }
       if (row.item.toolOutput || row.error) {
         Text('结果').fontSize(12).fontColor($r('sys.color.font_secondary'))
-        Text((row.item.toolOutput || row.error).slice(0, 24000)).fontFamily('monospace').fontSize(12)
+        Text((row.item.toolOutput || row.error).slice(0, 24000)).fontFamily(this.codeFamily).fontSize(this.codeSize)
           .width('100%').copyOption(CopyOptions.LocalDevice)
       }
       if (row.item.toolOutput.length > 24000 || row.item.toolArgs.length > 16000) {

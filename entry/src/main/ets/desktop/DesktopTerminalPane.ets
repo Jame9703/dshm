@@ -7,11 +7,10 @@ import { DesktopTerminalClient } from './DesktopTerminalClient';
 import type { DesktopShell, DesktopTerminalRow, DesktopTerminalState } from './DesktopTerminalClient';
 import type { TerminalCellPaint, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
-const FONT_SIZE: number = 13;
-const LINE_HEIGHT: number = 19;
 const INSET: number = 10;
 const INPUT_ID: string = 'desktopNativeTerminalInput';
 const ESC: string = '\x1b';
+const CANVAS_FONT_FAMILIES: Set<string> = new Set(['monospace', 'sans-serif', 'serif']);
 const FUNCTION_KEYS: string[] = ['OP', 'OQ', 'OR', 'OS', '[15~', '[17~',
   '[18~', '[19~', '[20~', '[21~', '[23~', '[24~'];
 
@@ -20,6 +19,8 @@ export struct DesktopTerminalPane {
   host?: DesktopHostActions;
   @Prop @Watch('reloadSession') sessionId: string = '';
   @Prop @Watch('draw') appearance: string = 'system';
+  @Prop @Watch('applyFont') cellFontSize: number = 13;
+  @Prop @Watch('applyFontFamily') cellFontFamily: string = 'monospace';
   @Prop @Watch('createFromShortcut') createSession: string = '';
   preferredTerminal: string = '';
   onHidePanel: () => void = (): void => {};
@@ -42,12 +43,14 @@ export struct DesktopTerminalPane {
   private canvasWidth: number = 0;
   private canvasHeight: number = 0;
   private charWidth: number = 8;
+  private canvasFontFamily: string = 'monospace';
   private scrollY: number = 0;
   private ctrl: boolean = false;
   private createIssued: boolean = false;
 
   aboutToAppear(): void {
     this.active = true;
+    this.canvasFontFamily = this.resolveCanvasFontFamily();
     this.reloadSession();
   }
 
@@ -228,10 +231,42 @@ export struct DesktopTerminalPane {
     if (!this.measured || this.canvasWidth <= INSET * 2 || this.canvasHeight <= INSET * 2) {
       return;
     }
-    this.canvas.font = FONT_SIZE + 'vp monospace';
+    this.canvas.font = 'normal normal ' + this.fontSpec();
     this.charWidth = this.canvas.measureText('M').width || this.charWidth;
     this.client?.resize(Math.max(2, Math.floor((this.canvasWidth - INSET * 2) / this.charWidth)),
-      Math.max(1, Math.floor((this.canvasHeight - INSET * 2) / LINE_HEIGHT)));
+      Math.max(1, Math.floor((this.canvasHeight - INSET * 2) / this.lineHeight())));
+  }
+
+  private resolveCanvasFontFamily(): string {
+    for (const part of this.cellFontFamily.split(',')) {
+      const family = part.trim();
+      const generic = family.toLowerCase();
+      if (CANVAS_FONT_FAMILIES.has(generic)) { return generic; }
+      if (family) {
+        try {
+          const font = this.getUIContext().getFont().getFontByName(family);
+          if (font?.postScriptName) { return font.postScriptName; }
+        } catch (_) {
+          // A font saved on another device may be unavailable here.
+        }
+      }
+    }
+    return 'monospace';
+  }
+
+  private fontSpec(): string { return `${this.cellFontSize}vp ${this.canvasFontFamily}`; }
+
+  private lineHeight(): number { return this.cellFontSize + 6; }
+
+  private applyFont(): void {
+    this.scrollY = 0;
+    this.fit();
+    this.draw();
+  }
+
+  private applyFontFamily(): void {
+    this.canvasFontFamily = this.resolveCanvasFontFamily();
+    this.applyFont();
   }
 
   private draw(): void {
@@ -252,10 +287,12 @@ export struct DesktopTerminalPane {
     canvas.fillStyle = paper;
     canvas.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
     canvas.textBaseline = 'top';
+    const lineHeight = this.lineHeight();
+    const baseFont = this.fontSpec();
     let font = '';
     let foreground = '';
     for (let row = 0; row < frame.rows.length; row++) {
-      const y = INSET + row * LINE_HEIGHT;
+      const y = INSET + row * lineHeight;
       if (y >= this.canvasHeight) {
         break;
       }
@@ -264,7 +301,7 @@ export struct DesktopTerminalPane {
         const width = cell.cells * this.charWidth;
         if (cell.background) {
           canvas.fillStyle = cell.background === 'foreground' ? ink : cell.background;
-          canvas.fillRect(x, y, width, LINE_HEIGHT);
+          canvas.fillRect(x, y, width, lineHeight);
           foreground = '';
         }
         const next = cell.foreground === 'background' ? paper : cell.foreground || ink;
@@ -273,7 +310,7 @@ export struct DesktopTerminalPane {
           foreground = next;
         }
         if (cell.text) {
-          const nextFont = this.fontFor(cell);
+          const nextFont = this.fontFor(cell, baseFont);
           if (nextFont !== font) {
             canvas.font = nextFont;
             font = nextFont;
@@ -285,25 +322,25 @@ export struct DesktopTerminalPane {
           canvas.globalAlpha = 1.0;
         }
         if (cell.underline || cell.strike) {
-          canvas.fillRect(x, y + (cell.underline ? LINE_HEIGHT - 3 : LINE_HEIGHT / 2), width, 1);
+          canvas.fillRect(x, y + (cell.underline ? lineHeight - 3 : lineHeight / 2), width, 1);
         }
       }
     }
     if (frame.cursorVisible && this.state?.writable) {
       canvas.fillStyle = ink;
       const x = INSET + frame.cursorColumn * this.charWidth;
-      const y = INSET + frame.cursorRow * LINE_HEIGHT;
+      const y = INSET + frame.cursorRow * lineHeight;
       if (this.inputFocused) {
-        canvas.fillRect(x, y + 2, 1.5, LINE_HEIGHT - 4);
+        canvas.fillRect(x, y + 2, 1.5, lineHeight - 4);
       } else {
         canvas.strokeStyle = ink;
-        canvas.strokeRect(x, y + 2, this.charWidth, LINE_HEIGHT - 4);
+        canvas.strokeRect(x, y + 2, this.charWidth, lineHeight - 4);
       }
     }
   }
 
-  private fontFor(cell: TerminalCellPaint): string {
-    return (cell.italic ? 'italic ' : '') + (cell.bold ? 'bold ' : '') + FONT_SIZE + 'vp monospace';
+  private fontFor(cell: TerminalCellPaint, baseFont: string): string {
+    return `${cell.italic ? 'italic' : 'normal'} ${cell.bold ? 'bold' : 'normal'} ${baseFont}`;
   }
 
   @Builder
@@ -334,9 +371,9 @@ export struct DesktopTerminalPane {
         .gesture(PanGesture({ direction: PanDirection.Vertical })
           .onActionStart((): void => { this.scrollY = 0; })
           .onActionUpdate((event: GestureEvent): void => {
-            const lines = Math.trunc((this.scrollY - event.offsetY) / LINE_HEIGHT);
+            const lines = Math.trunc((this.scrollY - event.offsetY) / this.lineHeight());
             if (lines !== 0) {
-              this.scrollY -= lines * LINE_HEIGHT;
+              this.scrollY -= lines * this.lineHeight();
               this.client?.scroll(lines);
             }
           }))

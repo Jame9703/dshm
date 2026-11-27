@@ -69,6 +69,8 @@ export struct DesktopReferenceMessage {
   @Prop @Watch('refresh') referenceLabels: string[] = [];
   @Prop @Watch('refresh') sessionId: string = '';
   @Prop nodeKey: string = '';
+  @Prop bodySize: number = 14;
+  @Prop bodyFamily: string = '';
   host?: DesktopHostActions;
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   @Prop canAddReference: boolean = false;
@@ -249,7 +251,8 @@ export struct DesktopReferenceMessage {
               Span(run.raw)
             }
           }, (run: DesktopReferenceRun): string => String(run.start) + ':' + run.raw)
-        }.key(this.nodeKey).fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
+        }.key(this.nodeKey).fontSize(this.bodySize).fontFamily(this.bodyFamily)
+        .fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
           .onMouse((event: MouseEvent): void => {
             if (event.button !== MouseButton.Right) { return; }
             if (event.action === MouseAction.Press && this.fileAt(event.x, event.y) !== undefined) {

@@ -47,6 +47,8 @@ import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAtta
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
 import type { QueueActionBody } from 'appstate';
 import { DesktopDraftEditor } from './DesktopDraftEditor';
+import { DEFAULT_DESKTOP_TYPOGRAPHY } from './DesktopTheme';
+import type { DesktopTypography } from './DesktopTheme';
 import { desktopDraftEditorOffset, desktopDraftTriggerText, desktopDraftWireOffset, EMPTY_DESKTOP_DRAFT,
   replaceDesktopDraftRange, sameDesktopDraft } from './DesktopDraftReferences';
 import type { DesktopComposerDraft, DesktopDraftReference } from './DesktopDraftReferences';
@@ -66,6 +68,7 @@ export struct DesktopConversationPane {
   @Prop sessionDirectory: string = '';
   @Prop @Watch('scheduleComposerSync') draft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
   @Prop @Watch('scheduleComposerSync') appearance: string = 'system';
+  @Prop @Watch('scheduleComposerSync') typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @Prop @Watch('insertFileReference') referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
   @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: DesktopDraftAttachment[] = [];
@@ -153,6 +156,8 @@ export struct DesktopConversationPane {
   private composerSession: string = '';
   private composerDraft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
   private composerDark: boolean = false;
+  private composerTextSize: number = 0;
+  private composerTextFamily: string = '';
   private composerSyncTimer: number = -1;
   private composerSelectionEnd: number = -1;
   private readonly paletteScroller: Scroller = new Scroller();
@@ -499,12 +504,15 @@ export struct DesktopConversationPane {
   private syncComposer(): void {
     const dark = this.appearance === 'dark' || (this.appearance === 'system' &&
       this.getUIContext().getHostContext()?.resourceManager.getConfigurationSync().colorMode === resourceManager.ColorMode.DARK);
-    if (this.composerSession === this.sessionId && this.composerDark === dark &&
-      sameDesktopDraft(this.composerDraft, this.draft)) { return; }
     const sampleCaret = this.composerSession === this.sessionId && sameDesktopDraft(this.composerDraft, this.draft);
+    if (sampleCaret && this.composerDark === dark && this.composerTextSize === this.typography.textSize &&
+      this.composerTextFamily === this.typography.textFamily) { return; }
     const caret = sampleCaret ? this.composerCaret() : this.draft.text.length;
     this.composerSession = this.sessionId;
     this.composerDark = dark;
+    this.composerTextSize = this.typography.textSize;
+    this.composerTextFamily = this.typography.textFamily;
+    this.composer.controller.setTypingStyle({ fontSize: this.composerTextSize, fontFamily: this.composerTextFamily });
     this.renderComposer(this.draft);
     this.composerSelectionEnd = caret;
     this.composer.controller.setCaretOffset(desktopDraftEditorOffset(this.draft, caret));
@@ -512,7 +520,8 @@ export struct DesktopConversationPane {
 
   private renderComposer(draft: DesktopComposerDraft): void {
     this.composerDraft = draft;
-    this.composer.controller.setStyledString(this.composer.format(draft, this.getUIContext(), this.composerDark));
+    this.composer.controller.setStyledString(this.composer.format(draft, this.getUIContext(), this.composerDark,
+      this.typography.textSize, this.typography.textFamily));
   }
 
   private prepareComposer(): void {
@@ -819,7 +828,7 @@ export struct DesktopConversationPane {
         Text(row.completed < 0 ? '执行中' : (row.outcome === 'success' ? '完成' : '失败'))
           .fontSize(12).fontColor($r('sys.color.font_secondary'))
       }.width('100%')
-      if (row.text) { MarkdownRenderer({ text: row.text, onLink: this.onLink }) }
+      if (row.text) { MarkdownRenderer({ text: row.text, onLink: this.onLink, typography: this.typography }) }
     }.width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start).padding(12)
       .borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
   }
@@ -980,11 +989,13 @@ export struct DesktopConversationPane {
         }
         if (item.body.includes('@') || referenceLabels.length > 0) {
           DesktopReferenceMessage({ text: item.body, referenceLabels: referenceLabels,
+            bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily,
             sessionId: this.sessionId, host: this.host, nodeKey: 'desktopInlineReferences-' + item.id,
             canAddReference: this.acceptsAttachments(), onFile: this.onArtifactFile, onAction: this.onReferenceFileAction })
         } else if (item.body) {
-          Text(item.body)
-            .fontSize(15).fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
+          Text(item.body).key('desktopUserMessage-' + item.id)
+            .fontSize(this.typography.textSize).fontFamily(this.typography.textFamily)
+            .fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
             .padding({ left: 14, right: 14, top: 10, bottom: 10 })
             .constraintSize({ maxWidth: '82%' }).borderRadius(16)
             .backgroundColor($r('app.color.workspace_panel'))
@@ -998,10 +1009,10 @@ export struct DesktopConversationPane {
                 this.expandedReasoning.filter((id: string): boolean => id !== item.id) : [...this.expandedReasoning, item.id];
             })
           if (this.expandedReasoning.includes(item.id)) {
-            MarkdownRenderer({ text: item.reasoning, onLink: this.onLink })
+            MarkdownRenderer({ text: item.reasoning, onLink: this.onLink, typography: this.typography })
           }
         }
-        if (item.body) { MarkdownRenderer({ text: item.body, onLink: this.onLink }) }
+        if (item.body) { MarkdownRenderer({ text: item.body, onLink: this.onLink, typography: this.typography }) }
       }
     }
     .width('100%').constraintSize({ maxWidth: 712 })
@@ -1075,7 +1086,8 @@ export struct DesktopConversationPane {
       RichEditor({ controller: this.composer.controller })
         .placeholder(this.snapshot?.planMode === true ?
         '描述你的任务以生成计划' : (this.canSteerQueue() ? '按 Ctrl+Enter 插话发送排队消息' :
-          $r('app.string.desktop_chat_placeholder')), { font: { size: 15 } })
+          $r('app.string.desktop_chat_placeholder')),
+        { font: { size: this.typography.textSize, family: this.typography.textFamily } })
         .key('desktopSlashComposer').enterKeyType(EnterKeyType.Send)
         .width('100%').height(66).borderRadius(16).padding({ left: 12, right: 12, top: 10 })
         .backgroundColor(Color.Transparent)
@@ -1278,6 +1290,7 @@ export struct DesktopConversationPane {
                   onReview: this.onChanges })
               } else if (item.process !== undefined) {
                 DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
+                  codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
                   inspected: this.inspectedTool, onFile: this.onArtifactFile,
                   hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
                   onToggle: (): void => {
@@ -1295,7 +1308,8 @@ export struct DesktopConversationPane {
         if ((this.snapshot?.partial.length ?? 0) > 0) {
           ListItem() {
             Row() {
-              Text(this.snapshot?.partial ?? '').fontSize(15).fontColor($r('sys.color.font_primary'))
+              Text(this.snapshot?.partial ?? '').fontSize(this.typography.textSize).fontFamily(this.typography.textFamily)
+                .fontColor($r('sys.color.font_primary'))
                 .width('100%').constraintSize({ maxWidth: 712 })
             }
             .width('100%').justifyContent(FlexAlign.Center)
@@ -1320,6 +1334,7 @@ export struct DesktopConversationPane {
           ForEach(this.visibleInteraction(), (row: DesktopInteraction) => {
             DesktopInteractionPane({
               request: row, busy: this.busy, onDecision: this.onDecision, onAnswer: this.onAnswer,
+              typography: this.typography,
               onPlanDecision: this.onPlanDecision, onPlanPreview: this.onPlanPreview, onLink: this.onLink,
               onQuestionProgress: this.onQuestionProgress, onQuestionHold: this.onQuestionHold,
               onQuestionClose: this.onQuestionClose

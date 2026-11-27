@@ -19,6 +19,8 @@ import { Fs, Radius, SettingGroup, SettingItem, Sp } from 'appstate';
 import { SettingRow } from './SettingRow';
 import { SettingsUsage } from './SettingsUsage';
 import { DesktopShortcutSettingsRow } from '../desktop/DesktopShortcutDialog';
+import { DesktopThemeSettings } from '../desktop/DesktopThemeSettings';
+import { DESKTOP_THEME_NS } from '../desktop/DesktopTheme';
 
 
 /**
@@ -69,9 +71,23 @@ export struct SettingsGeneral {
   onResetSetting: (key: string) => void = () => {
   };
 
+  private themeItems(): SettingItem[] {
+    if (!this.desktopShortcuts) { return []; }
+    return this.groups.flatMap((group: SettingGroup): SettingItem[] =>
+      group.items.filter((item: SettingItem): boolean => item.key.startsWith(DESKTOP_THEME_NS + '.')));
+  }
+
+  private otherGroups(): SettingGroup[] {
+    if (this.themeItems().length === 0) { return this.groups; }
+    return this.groups.map((group: SettingGroup): SettingGroup => ({ title: group.title,
+      items: group.items.filter((item: SettingItem): boolean => !item.key.startsWith(DESKTOP_THEME_NS + '.') &&
+        item.key !== 'local.themeMode') })).filter((group: SettingGroup): boolean => group.items.length > 0);
+  }
+
   // 【ArkUI 约束】组件的 build() 只能有一个根节点 ⇒ 多段内容包进 Column
   build() {
     Column({ space: Sp.L }) {
+          if (this.themeItems().length > 0) { DesktopThemeSettings({ items: this.themeItems() }) }
           /* 用量统计（docs/178）：桌面卡片同源数据，应用内也能看四档 token 用量 */
           SettingsUsage()
           if (this.desktopShortcuts) {
@@ -123,7 +139,7 @@ export struct SettingsGeneral {
           .borderRadius(Radius.M)
           .backgroundColor($r('sys.color.background_secondary'))
 
-          ForEach(this.groups, (group: SettingGroup) => {
+          ForEach(this.otherGroups(), (group: SettingGroup) => {
             Column({ space: Sp.XS }) {
               Text(group.title)
                 .fontSize(Fs.CAPTION)
