@@ -3,12 +3,20 @@ import { getField, getNumber, getRecord, getString, randomUuid } from 'connectio
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTimelineRuler } from './DesktopTimelineRuler';
+import { desktopTimelineControlDeadline, desktopTimelinePlayback } from './DesktopTimelineControl';
+import type { DesktopTimelinePlayback } from './DesktopTimelineControl';
 import { desktopTimelineDiscussionKey, desktopTimelineDiscussionNotice, desktopTimelineDiscussionPayload,
   desktopTimelineOwnAnnotation, TIMELINE_DISCUSSION_LIMIT, TIMELINE_PRIORITIES } from './DesktopTimelineActions';
 import type { DesktopTimelineDiscussionTarget, DesktopTimelineNoticeLabels } from './DesktopTimelineActions';
 import { desktopTimelineValue, readDesktopTimeline } from './DesktopTimelineModel';
 import type { DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
+
+interface TimelineControlAttempt {
+  key: string;
+  id: string;
+  text: string;
+}
 
 interface TimelineDetailTarget {
   tree: string;
@@ -43,6 +51,10 @@ export struct DesktopTimelinePane {
   @State private discussionText: string = '';
   @State private discussionScope: string = '';
   @State private discussionExpanded: boolean = false;
+  @State private controlNow: number = 0;
+  @State private acknowledgedControls: Object[] = [];
+  private controlTimer: number = -1;
+  private controlAttempt?: TimelineControlAttempt;
   private publishedDiscussionText: string = '';
   private discussionId: string = '';
   private actionScope: string = '';
@@ -86,6 +98,10 @@ export struct DesktopTimelinePane {
     if (source.sequence <= this.sequence) { return; }
     this.sequence = source.sequence;
     this.view = readDesktopTimeline(source.value);
+    const observed = new Set<string>(this.view.annotations.map((row: Object): string => getString(row, 'id') ?? ''));
+    this.acknowledgedControls = this.acknowledgedControls.filter((row: Object): boolean =>
+      !observed.has(getString(row, 'id') ?? ''));
+    this.scheduleControlTimer();
     this.reportById.clear();
     for (const row of this.view.reports) { this.reportById.set(row.id, row); }
     this.viewRevision++;
@@ -99,6 +115,7 @@ export struct DesktopTimelinePane {
     this.stopFollow?.();
     this.stopFollow = undefined;
     if (this.retryTimer >= 0) { clearTimeout(this.retryTimer); this.retryTimer = -1; }
+    if (this.controlTimer >= 0) { clearTimeout(this.controlTimer); this.controlTimer = -1; }
   }
 
   private current(generation: number): boolean {
@@ -110,6 +127,7 @@ export struct DesktopTimelinePane {
     const generation = this.generation;
     const host = this.host;
     if (!this.current(generation) || host === undefined || !this.sessionId) { return; }
+    this.scheduleControlTimer();
     const address: Record<string, Object> = { 'sessionId': this.sessionId };
     this.updating = true;
     this.failed = false;
@@ -146,6 +164,8 @@ export struct DesktopTimelinePane {
     } else if (sequence >= this.sequence) {
       this.sequence = sequence;
       this.view = readDesktopTimeline();
+      this.acknowledgedControls = [];
+      this.scheduleControlTimer();
       this.reportById.clear();
       this.viewRevision++;
       this.ready = true;
@@ -234,6 +254,7 @@ export struct DesktopTimelinePane {
     else { this.reportScroll = this.recordedScrollOffset(); }
     if (tab === 'reports') { this.rulerVisited = true; }
     this.tab = tab;
+    this.scheduleControlTimer();
     this.moveScroll(tab === 'tasks' ? this.taskScroll : this.reportScroll);
   }
 
@@ -252,6 +273,124 @@ export struct DesktopTimelinePane {
     this.moveScroll(offset);
   }
 
+  private controlAnnotations(): Object[] {
+    return this.acknowledgedControls.length ? this.view.annotations.concat(this.acknowledgedControls) : this.view.annotations;
+  }
+
+  private scheduleControlTimer(): void {
+    if (this.controlTimer >= 0) { clearTimeout(this.controlTimer); this.controlTimer = -1; }
+    this.controlNow = Date.now();
+    if (!this.mounted || !this.active || this.tab !== 'tasks') { return; }
+    const deadline = desktopTimelineControlDeadline(this.controlAnnotations(), this.controlNow);
+    if (!Number.isFinite(deadline)) { return; }
+    this.controlTimer = setTimeout((): void => {
+      this.controlTimer = -1;
+      this.scheduleControlTimer();
+    }, Math.max(1, deadline - this.controlNow));
+  }
+
+  private playback(scope: DesktopTimelineDiscussionTarget, now: number = this.controlNow): DesktopTimelinePlayback {
+    const tree = this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === scope.tree);
+    return desktopTimelinePlayback(tree, scope, this.controlAnnotations(), now);
+  }
+
+  private rememberControl(annotation: Object): void {
+    const id = getString(annotation, 'id');
+    if (!id || this.view.annotations.some((row: Object): boolean => getString(row, 'id') === id)) { return; }
+    const pending = this.acknowledgedControls.filter((row: Object): boolean => getString(row, 'id') !== id);
+    this.acknowledgedControls = [...pending.slice(-15), annotation];
+    this.scheduleControlTimer();
+  }
+
+  private playbackLabel(scope: DesktopTimelineDiscussionTarget, playback: DesktopTimelinePlayback): Resource {
+    if (playback.complete) { return $r('app.string.desktop_timeline_done'); }
+    if (playback.waiting) {
+      return playback.intent === 'pause' ? $r('app.string.desktop_timeline_pause_wait') :
+        $r('app.string.desktop_timeline_resume_wait');
+    }
+    if (playback.retry) {
+      return playback.intent === 'pause' ? $r('app.string.desktop_timeline_retry_pause') :
+        $r('app.string.desktop_timeline_retry_resume');
+    }
+    if (playback.intent === 'pause') {
+      return scope.kind === 'tree' ? $r('app.string.desktop_timeline_pause_plan') : $r('app.string.desktop_timeline_pause_task');
+    }
+    return scope.kind === 'tree' ? $r('app.string.desktop_timeline_resume_plan') : $r('app.string.desktop_timeline_resume_task');
+  }
+
+  private playbackKey(scope: DesktopTimelineDiscussionTarget): string {
+    const state = this.playback(scope);
+    const control = getRecord(state.receipt, 'control');
+    return desktopTimelineDiscussionKey(scope) + ':' + state.available + ':' + state.complete + ':' + state.intent + ':' +
+      state.waiting + ':' + state.retry + ':' + (getString(control, 'delivery') ?? '');
+  }
+
+  private async sendControl(scope: DesktopTimelineDiscussionTarget): Promise<void> {
+    const host = this.host;
+    const state = this.playback(scope, Date.now());
+    if (!this.canWrite() || host === undefined || !state.available || state.waiting) { return; }
+    const session = this.sessionId;
+    const intent = state.intent;
+    const key = desktopTimelineDiscussionKey(scope);
+    const attemptKey = key + ':' + intent;
+    const message = this.resourceText(intent === 'pause' ? $r('app.string.desktop_timeline_pause_request') :
+      $r('app.string.desktop_timeline_resume_request'));
+    if (this.controlAttempt === undefined || this.controlAttempt.key !== attemptKey || this.controlAttempt.text !== message) {
+      this.controlAttempt = { key: attemptKey, id: randomUuid(), text: message };
+    }
+    const id = this.controlAttempt.id;
+    const payload: Record<string, Object> = { 'action': 'control', 'sessionId': session,
+      'target': desktopTimelineDiscussionPayload(scope), 'id': id, 'intent': intent, 'text': message };
+    this.editBusy = true;
+    this.actionScope = key;
+    this.actionStatus = '';
+    const reply = await host.editTimeline(payload);
+    const annotation = getRecord(reply.value, 'annotation');
+    const control = getRecord(annotation, 'control');
+    const target = getRecord(annotation, 'target');
+    const dispatch = getField(reply.value, 'dispatch');
+    const valid = reply.ok && getString(reply.value, 'action') === 'control' &&
+      annotation !== undefined && !!getString(annotation, 'id') && control !== undefined &&
+      getString(target, 'tree') === scope.tree && (dispatch === true || dispatch === false) &&
+      (dispatch !== true || (desktopTimelineOwnAnnotation(annotation, id, scope, message) &&
+        getString(control, 'action') === intent && getString(control, 'delivery') === 'sending' &&
+        getField(control, 'outcome') === null));
+    if (!valid || annotation === undefined) {
+      if (this.mounted) {
+        this.actionStatus = reply.error?.message || this.resourceText($r('app.string.desktop_timeline_control_failed'));
+        this.editBusy = false;
+        await this.refreshEditedTimeline();
+      }
+      return;
+    }
+    this.controlAttempt = undefined;
+    if (this.mounted) { this.rememberControl(annotation); }
+    let deliveryConfirmed = true;
+    let notified = true;
+    if (dispatch === true) {
+      notified = false;
+      if (this.mounted && this.sessionId === session && this.writable) {
+        const labels = this.noticeLabels();
+        labels.header = this.resourceText($r('app.string.desktop_timeline_control_title'));
+        labels.instructions = this.resourceText($r('app.string.desktop_timeline_control_instructions'));
+        const text = desktopTimelineDiscussionNotice(scope, id, message, getRecord(reply.value, 'context'), labels, true);
+        try { notified = (await this.onNotify(session, text)).length === 0; }
+        catch (_) { notified = false; }
+      }
+      const delivery: Record<string, Object> = { 'action': 'delivery', 'sessionId': session, 'id': id,
+        'delivery': notified ? 'accepted' : 'unknown' };
+      const receipt = await host.editTimeline(delivery);
+      deliveryConfirmed = receipt.ok && getString(receipt.value, 'action') === 'delivery';
+    }
+    if (!this.mounted) { return; }
+    if (!deliveryConfirmed || !notified) {
+      this.actionStatus = this.resourceText(!deliveryConfirmed ? $r('app.string.desktop_timeline_control_failed') :
+        $r('app.string.desktop_timeline_delivery_unknown'));
+    }
+    await this.refreshEditedTimeline();
+    if (this.mounted) { this.editBusy = false; }
+  }
+
   private writeScope(): DesktopTimelineDiscussionTarget | undefined {
     const target = this.target();
     if (target === undefined) { return undefined; }
@@ -264,7 +403,8 @@ export struct DesktopTimelinePane {
   private actionKey(): string {
     const scope = this.writeScope();
     if (scope === undefined) { return ''; }
-    return desktopTimelineDiscussionKey(scope) + ':' + (scope.kind === 'task' ? this.task(this.target())?.ownPriority ?? '' : '');
+    return scope.kind === 'task' ? this.playbackKey(scope) + ':' + (this.task(this.target())?.ownPriority ?? '') :
+      desktopTimelineDiscussionKey(scope);
   }
 
   private canWrite(): boolean {
@@ -397,6 +537,27 @@ export struct DesktopTimelinePane {
   }
 
   @Builder
+  private ControlButton(scope: DesktopTimelineDiscussionTarget, state: DesktopTimelinePlayback) {
+    if (this.writable && (scope.kind === 'task' || state.available)) {
+      Button(this.playbackLabel(scope, state), { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .height(30).key(scope.kind === 'task' ? 'desktopTimelineTaskControl' : 'desktopTimelineTreeControl')
+        .enabled(this.canWrite() && state.available && !state.waiting)
+        .onClick((): void => { this.sendControl(scope); })
+    }
+  }
+
+  @Builder
+  private TreeControl(scope: DesktopTimelineDiscussionTarget) {
+    ForEach([this.playbackKey(scope)], (_key: string): void => {
+      this.ControlButton(scope, this.playback(scope))
+    }, (key: string): string => key)
+    if (this.actionStatus && this.actionScope === desktopTimelineDiscussionKey(scope)) {
+      Text(this.actionStatus).key('desktopTimelineTreeControlStatus').width('100%')
+        .fontSize(12).fontColor($r('sys.color.font_secondary'))
+    }
+  }
+
+  @Builder
   private EditFooter(scope?: DesktopTimelineDiscussionTarget) {
     if (scope !== undefined && this.writable) {
       Column({ space: 7 }) {
@@ -425,6 +586,7 @@ export struct DesktopTimelinePane {
               this.resourceText($r('app.string.desktop_timeline_priority_none'))), { buttonStyle: ButtonStyleMode.TEXTUAL })
               .key('desktopTimelineTaskPriority').height(30).enabled(this.canWrite())
               .bindMenu(this.priorityOptions(), desktopMenuOptions(Placement.TopLeft))
+            this.ControlButton(scope, this.playback(scope))
           }
           Button($r('app.string.desktop_timeline_discussion_add'), { buttonStyle: ButtonStyleMode.TEXTUAL })
             .key('desktopTimelineDiscuss').height(30).enabled(this.canWrite())
@@ -505,19 +667,39 @@ export struct DesktopTimelinePane {
     }.width('100%').padding({ left: 8 + Math.min(5, task.depth) * 10 })
   }
 
+  private controlReceiptLabel(entry: Object): Resource {
+    const control = getRecord(entry, 'control');
+    switch (getString(getRecord(control, 'outcome'), 'status')) {
+      case 'applied': return $r('app.string.desktop_timeline_control_applied');
+      case 'completed': return $r('app.string.desktop_timeline_done');
+      case 'unavailable': return $r('app.string.desktop_timeline_control_unavailable');
+      case 'superseded': return $r('app.string.desktop_timeline_control_superseded');
+      case 'answered': return $r('app.string.desktop_timeline_control_answered');
+      default: return getString(control, 'delivery') === 'unknown' ? $r('app.string.desktop_timeline_delivery_unknown') :
+        $r('app.string.desktop_timeline_control_waiting');
+    }
+  }
+
   @Builder
   private Discussions(kind: string, tree: string, id: string) {
     if (this.targetAnnotations(kind, tree, id).length > 0) {
       Text($r('app.string.desktop_timeline_discussions')).width('100%').fontSize(14).fontWeight(FontWeight.Medium)
       ForEach(this.targetAnnotations(kind, tree, id), (entry: Object): void => {
         Column({ space: 6 }) {
+          if (getRecord(entry, 'control') !== undefined) {
+            Text(this.controlReceiptLabel(entry)).fontSize(11).fontColor($r('sys.color.font_secondary'))
+              .key('desktopTimelineControlReceipt-' + (getString(entry, 'id') ?? ''))
+          }
           Text(getString(entry, 'text') ?? '').fontSize(13).copyOption(CopyOptions.LocalDevice)
           if (getString(getRecord(entry, 'reply'), 'text')) {
             Text(getString(getRecord(entry, 'reply'), 'text') ?? '').fontSize(13)
               .fontColor($r('sys.color.font_secondary')).copyOption(CopyOptions.LocalDevice)
           }
         }.width('100%').padding(8).alignItems(HorizontalAlign.Start).backgroundColor($r('app.color.workspace_panel'))
-      }, (entry: Object): string => (getString(entry, 'id') ?? '') + ':' + (getString(getRecord(entry, 'reply'), 'text') ?? ''))
+      }, (entry: Object): string => (getString(entry, 'id') ?? '') + ':' +
+        (getString(getRecord(entry, 'reply'), 'text') ?? '') + ':' +
+        (getString(getRecord(entry, 'control'), 'delivery') ?? '') + ':' +
+        (getString(getRecord(getRecord(entry, 'control'), 'outcome'), 'status') ?? ''))
     }
   }
 
@@ -533,6 +715,7 @@ export struct DesktopTimelinePane {
       }.width('100%')
       Progress({ value: tree.progress * 100, total: 100, type: ProgressType.Linear }).width('100%')
       if (tree.description) { Text(tree.description).fontSize(13).width('100%') }
+      this.TreeControl({ kind: 'tree', tree: tree.id, id: '' })
       ForEach(this.visibleTasks(tree), (task: DesktopTimelineTask): void => { this.TaskRow(tree, task) },
         (task: DesktopTimelineTask): string => tree.id + ':' + task.id + ':' + task.status + ':' + task.progress + ':' +
           task.title + ':' + task.note + ':' + task.priority + ':' + task.depth + ':' + task.children)

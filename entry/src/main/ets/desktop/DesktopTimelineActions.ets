@@ -50,7 +50,7 @@ function titled(title: string | undefined, fallback: string): string {
 }
 
 export function desktopTimelineDiscussionNotice(target: DesktopTimelineDiscussionTarget, id: string, message: string,
-  context: Object | undefined, labels: DesktopTimelineNoticeLabels): string {
+  context: Object | undefined, labels: DesktopTimelineNoticeLabels, control: boolean = false): string {
   const lines: string[] = [labels.header, ''];
   if (target.kind === 'report') {
     const start = getString(context, 'start');
@@ -69,6 +69,8 @@ export function desktopTimelineDiscussionNotice(target: DesktopTimelineDiscussio
     const note = getString(context, 'note') || getString(context, 'description') || '';
     if (note) { lines.push(note.length > 200 ? note.slice(0, 200) + '…' : note); }
   }
-  lines.push(labels.reference + ' ' + id, '', labels.instructions, '', labels.message, message);
+  lines.push(labels.reference + ' ' + id, '');
+  if (control) { lines.push(message, labels.instructions); }
+  else { lines.push(labels.instructions, '', labels.message, message); }
   return lines.join('\n');
 }

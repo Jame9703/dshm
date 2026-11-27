@@ -27,6 +27,7 @@ export interface DesktopTimelineTree {
   title: string;
   description: string;
   tasks: DesktopTimelineTask[];
+  status: string;
   progress: number;
 }
 
@@ -139,7 +140,8 @@ function parseTree(raw: Object): DesktopTimelineTree | undefined {
       task.status = groupStatus(children);
     }
   }
-  return { id: id, title: title, description: getString(raw, 'description') ?? '', tasks: tasks, progress: weighted(root) };
+  return { id: id, title: title, description: getString(raw, 'description') ?? '', tasks: tasks,
+    status: root.length > 0 ? groupStatus(root) : 'pending', progress: weighted(root) };
 }
 
 function readSavedPeriod(report: Object, level: number): number | undefined {
