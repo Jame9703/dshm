@@ -1,5 +1,6 @@
 import {
-  desktopAppliedDiff, desktopChangedPath, desktopFileDiff, desktopFileName, DesktopChangedFile, DesktopChangeTarget, DesktopDiff,
+  desktopAppliedDiff, desktopChangedPath, desktopFileDiff, desktopFileName, DesktopChangedFile, DesktopChangeLocation,
+  DesktopChangeTarget, DesktopDiff,
   DesktopDiffCell, DesktopDiffRow
 } from './DesktopArtifacts';
 import { DesktopHostActions } from './DesktopHostActions';
@@ -24,7 +25,10 @@ class DiffRows implements IDataSource {
 @Component
 export struct DesktopChangesPane {
   host?: DesktopHostActions;
+  @Prop sessionId: string = '';
+  @Prop @Watch('onTarget') changeLocation: DesktopChangeLocation | undefined = undefined;
   @Prop @Watch('onTarget') target: DesktopChangeTarget | undefined = undefined;
+  @Prop @Watch('onTarget') shown: boolean = false;
   onClose: () => void = (): void => {};
   onFile: (path: string, name: string, target: DesktopChangeTarget) => void =
     (_path: string, _name: string, _target: DesktopChangeTarget): void => {};
@@ -38,6 +42,9 @@ export struct DesktopChangesPane {
   @State private wrap: boolean = false;
   @State private viewport: number = 300;
   @State private lineWidth: number = 300;
+  @State private restored: DesktopChangeTarget | undefined = undefined;
+  private loadedTarget?: DesktopChangeTarget;
+  private loadedLocation?: DesktopChangeLocation;
   private readonly rows: DiffRows = new DiffRows();
   private revision: number = 0;
 
@@ -45,19 +52,62 @@ export struct DesktopChangesPane {
   aboutToDisappear(): void { this.revision++; }
 
   private onTarget(): void {
-    this.split = this.target?.split === true;
-    this.wrap = this.target?.wrap === true;
-    this.select(this.target?.index ?? 0);
+    if (!this.shown) { return; }
+    const target = this.target;
+    const location = this.changeLocation;
+    if (target !== undefined && target !== this.loadedTarget) {
+      this.loadedTarget = target;
+      this.useTarget(target);
+    } else if (target === undefined && location !== undefined && location !== this.loadedLocation) {
+      this.loadedLocation = location;
+      this.restore(location);
+    }
+  }
+
+  private resolvedTarget(): DesktopChangeTarget | undefined {
+    return this.target ?? this.restored;
+  }
+
+  private useTarget(target: DesktopChangeTarget): void {
+    this.split = target.split === true;
+    this.wrap = target.wrap === true;
+    this.select(target.summary.files[target.index] ? target.index : 0);
+  }
+
+  private async restore(location: DesktopChangeLocation): Promise<void> {
+    const revision = ++this.revision;
+    this.loading = true;
+    this.error = false;
+    const summary = await this.host?.changeSummary(this.sessionId, location.sequence);
+    if (revision !== this.revision) { return; }
+    if (summary === undefined || summary.files.length === 0) {
+      this.error = true;
+      this.loading = false;
+      return;
+    }
+    const target: DesktopChangeTarget = { sessionId: this.sessionId, sequence: location.sequence, summary: summary,
+      index: location.index, split: location.split, wrap: location.wrap };
+    this.restored = target;
+    this.useTarget(target);
+  }
+
+  private retry(): void {
+    if (this.resolvedTarget() !== undefined) {
+      this.select(this.selected);
+    } else if (this.changeLocation !== undefined) {
+      this.restore(this.changeLocation);
+    }
   }
 
   private selectedFile(): DesktopChangedFile | undefined {
-    return this.target?.summary.files[this.selected];
+    return this.resolvedTarget()?.summary.files[this.selected];
   }
 
   private fileOptions(): MenuElement[] {
-    return this.target?.summary.files.map((file: DesktopChangedFile, index: number): MenuElement => {
+    const target = this.resolvedTarget();
+    return target?.summary.files.map((file: DesktopChangedFile, index: number): MenuElement => {
       const counts = file.binary ? '二进制' : file.oversized ? '过大' :
-        this.target?.summary.applied ? '' : `+${file.added} −${file.deleted}`;
+        target.summary.applied ? '' : `+${file.added} −${file.deleted}`;
       return { value: (this.selected === index ? '✓ ' : '') + `${file.display}   ${counts}`,
         action: (): void => { this.select(index); } };
     }) ?? [];
@@ -65,7 +115,7 @@ export struct DesktopChangesPane {
 
   private async select(index: number): Promise<void> {
     const revision = ++this.revision;
-    const target = this.target;
+    const target = this.resolvedTarget();
     const host = this.host;
     const file = target?.summary.files[index];
     if (target === undefined || host === undefined || file === undefined) {
@@ -106,7 +156,7 @@ export struct DesktopChangesPane {
 
   private openFile(): void {
     const file = this.selectedFile();
-    const target = this.target;
+    const target = this.resolvedTarget();
     if (file !== undefined && target !== undefined) {
       this.onFile(desktopChangedPath(target.summary.cwd, file.path), desktopFileName(file.path), {
         sessionId: target.sessionId, sequence: target.sequence, summary: target.summary,
@@ -177,7 +227,7 @@ export struct DesktopChangesPane {
       Row({ space: 4 }) {
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 4 }) {
-            Text(this.selectedFile()?.display ?? `第 ${this.target?.summary.turn ?? 0} 轮改动`)
+            Text(this.selectedFile()?.display ?? '改动审阅')
               .fontSize(13).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
             SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10).rotate({ angle: 90 })
           }.width('100%')
@@ -205,7 +255,7 @@ export struct DesktopChangesPane {
         Row({ space: 7 }) {
           Text(this.missing ? '这轮改动的内容已不可用' : '无法读取改动').fontSize(13)
           if (this.error) {
-            Button('重试', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.select(this.selected); })
+            Button('重试', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.retry(); })
           }
         }.padding(10)
       } else {

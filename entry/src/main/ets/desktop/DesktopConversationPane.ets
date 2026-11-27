@@ -116,6 +116,7 @@ export struct DesktopConversationPane {
   private partial: string = '';
   private scrollTimer: number = -1;
   @State private attachmentOver: boolean = false;
+  @State private compactHeader: boolean = true;
   @State private expandedProcesses: string[] = [];
   @State private expandedReasoning: string[] = [];
   @State private inspectedTool: string = '';
@@ -982,7 +983,7 @@ export struct DesktopConversationPane {
 
   build() {
     Column() {
-      Row({ space: 8 }) {
+      Row({ space: this.compactHeader ? 4 : 8 }) {
         Column({ space: 2 }) {
           Text(this.title).fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1001,7 +1002,7 @@ export struct DesktopConversationPane {
           .key('desktopWorkspaceFiles').width(34).height(34).padding(0).focusOnTouch(false)
           .accessibilityText('工作区文件').accessibilitySelected(this.filesOpen).onClick(this.onFiles)
         Button('终端', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .height(34).focusOnTouch(false)
+          .width(44).height(34).padding(0).focusOnTouch(false)
           .accessibilitySelected(this.terminalOpen)
           .onClick(this.onTerminal)
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
@@ -1010,9 +1011,17 @@ export struct DesktopConversationPane {
         }.key('desktopToggleRightDock').width(34).height(34).padding(0).focusOnTouch(false)
           .accessibilityText(this.rightDockOpen ? '收起右侧栏' : '展开右侧栏')
           .accessibilitySelected(this.rightDockOpen).onClick(this.onRightDock)
-        Button($r('app.string.desktop_experiment_open_web'),
-          { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .height(34).focusOnTouch(false).onClick(this.onWeb)
+        if (this.compactHeader) {
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            SymbolGlyph($r('sys.symbol.link')).fontSize(16).fontColor([$r('sys.color.font_primary')])
+              .accessibilityLevel('no')
+          }.key('desktopOpenCompatSession').width(34).height(34).padding(0).focusOnTouch(false)
+            .accessibilityText($r('app.string.desktop_experiment_open_web')).onClick(this.onWeb)
+        } else {
+          Button($r('app.string.desktop_experiment_open_web'),
+            { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopOpenCompatSession').height(34).focusOnTouch(false).onClick(this.onWeb)
+        }
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_session_ellipsis')).width(18).height(18).supportSvg2(true).draggable(false)
             .accessibilityLevel('no')
@@ -1020,7 +1029,8 @@ export struct DesktopConversationPane {
           .accessibilityText('会话菜单').enabled(this.snapshot?.loading === false)
           .bindMenu(this.sessionMenu(), desktopMenuOptions(Placement.BottomRight))
       }
-      .width('100%').height(50).padding({ left: 20, right: 16 })
+      .width('100%').height(50).padding({ left: this.compactHeader ? 8 : 20, right: this.compactHeader ? 8 : 16 })
+      .onAreaChange((_, area: Area): void => { this.compactHeader = Number(area.width) < 500; })
       if (this.snapshot?.loading) {
         LoadingProgress().width(22).height(22).color($r('sys.color.brand'))
       }

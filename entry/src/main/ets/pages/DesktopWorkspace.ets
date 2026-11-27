@@ -35,8 +35,10 @@ import { DesktopShortcut, desktopShortcutEqual, desktopShortcutFromEvent, deskto
   desktopShortcutValue, readDesktopShortcuts } from '../desktop/DesktopShortcuts';
 import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseTab, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSelect,
-  desktopDockSplit, desktopDockTab, DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
+  desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
+  DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
 import type { DesktopDockLayout, DesktopDockPane, DesktopDockTab } from '../desktop/DesktopRightDock';
+import { readDesktopDock, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
 import { desktopReferenceText } from '../desktop/DesktopReferences';
@@ -52,11 +54,26 @@ import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_P
 
 const DOMAIN: number = 0xD000;
 const TAG: string = 'DshDesktopWorkspace';
+const DOCK_HANDLE_WIDTH: number = 7;
+const DOCK_MIN_WIDTH: number = 220;
+const DOCK_SPLIT_MIN_WIDTH: number = 540;
 
 interface DesktopWorkspaceGroup {
   id: string;
   title: ResourceStr;
   sessions: SessionListItem[];
+}
+
+interface DesktopDockDrag {
+  session: string;
+  pane: number;
+  tab: string;
+}
+
+interface DesktopDockDrop {
+  pane: number;
+  before: string;
+  side: string;
 }
 
 @Entry({ useSharedStorage: true })
@@ -76,8 +93,24 @@ struct DesktopWorkspace {
   @State private expandedIds: string[] = [];
   @State private sidebarCollapsed: boolean = false;
   @State private sidebarWidth: number = 280;
-  @State private rightPaneWidth: number = 340;
+  @State private defaultDockWidth: number = 340;
   @State private rightDock: DesktopDockLayout = emptyDesktopDock();
+  @State private dockDragWidth: number = 0;
+  @State private dockDragFraction: number = 0;
+  @State private dockGripHover: number = 0;
+  @State private dockDropCue: string = '';
+  @State private dockDragTitle: string = '';
+  @State private dockDragX: number = 0;
+  @State private dockDragY: number = 0;
+  private dockBounds?: Area;
+  private dockDrag?: DesktopDockDrag;
+  private dockDrop?: DesktopDockDrop;
+  private dockPanActive: boolean = false;
+  private readonly dockTabBounds = new Map<string, Area>();
+  private readonly dockPaneBounds = new Map<number, Area>();
+  private dockSessionId: string = '';
+  private dockResizeStart: number = 0;
+  private dockResizeSession: string = '';
   private readonly docks = new Map<string, DesktopDockLayout>();
   private readonly shownPlanReviews: Set<string> = new Set<string>();
   @State private searchOpen: boolean = false;
@@ -254,7 +287,9 @@ struct DesktopWorkspace {
     this.archivedIds = [];
     this.shownPlanReviews.clear();
     this.docks.clear();
+    this.dockSessionId = '';
     this.rightDock = emptyDesktopDock();
+    this.clearDockGesture();
     this.terminalCreateSession = '';
     this.chatError = '';
     this.creating = false;
@@ -734,9 +769,14 @@ struct DesktopWorkspace {
   }
 
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
+    if (this.dockSessionId !== session.id) {
+      this.dockSessionId = session.id;
+      this.clearDockGesture();
+      this.rightDock = this.docks.get(session.id) ?? readDesktopDock(this.getUIContext().getHostContext(), session.id);
+      this.docks.set(session.id, this.rightDock);
+    }
     if (this.sessionId !== session.id) {
       this.terminalCreateSession = '';
-      this.rightDock = this.docks.get(session.id) ?? emptyDesktopDock();
       this.referenceOffer = undefined;
       this.closeFeedback();
       this.closeImagePreview();
@@ -768,6 +808,8 @@ struct DesktopWorkspace {
     this.closeImagePreview();
     this.sessionId = '';
     this.terminalCreateSession = '';
+    this.dockSessionId = '';
+    this.clearDockGesture();
     this.rightDock = emptyDesktopDock();
     this.referenceOffer = undefined;
     this.selectedTitle = '';
@@ -1221,9 +1263,10 @@ struct DesktopWorkspace {
   }
 
   private setDock(layout: DesktopDockLayout): void {
-    if (!this.sessionId) { return; }
+    if (!this.sessionId || layout === this.rightDock) { return; }
     this.rightDock = layout;
     this.docks.set(this.sessionId, layout);
+    saveDesktopDock(this.getUIContext().getHostContext(), this.sessionId, layout);
   }
 
   private dockShows(kind: DesktopDockKind): boolean {
@@ -1233,21 +1276,15 @@ struct DesktopWorkspace {
 
   private focusDockPane(index: number): void {
     if (this.rightDock.focus === index || index >= this.rightDock.panes.length) { return; }
-    const next: DesktopDockLayout = { panes: this.rightDock.panes, focus: index,
-      expanded: this.rightDock.expanded, fullscreen: this.rightDock.fullscreen };
-    this.setDock(next);
+    this.setDock(desktopDockPresentation(this.rightDock, index, this.rightDock.expanded, this.rightDock.fullscreen));
   }
 
   private toggleRightDock(): void {
-    const next: DesktopDockLayout = { panes: this.rightDock.panes, focus: this.rightDock.focus,
-      expanded: !this.rightDock.expanded, fullscreen: false };
-    this.setDock(next);
+    this.setDock(desktopDockPresentation(this.rightDock, this.rightDock.focus, !this.rightDock.expanded, false));
   }
 
   private toggleDockFullscreen(): void {
-    const next: DesktopDockLayout = { panes: this.rightDock.panes, focus: this.rightDock.focus,
-      expanded: true, fullscreen: !this.rightDock.fullscreen };
-    this.setDock(next);
+    this.setDock(desktopDockPresentation(this.rightDock, this.rightDock.focus, true, !this.rightDock.fullscreen));
   }
 
   private splitDock(): void {
@@ -1256,16 +1293,25 @@ struct DesktopWorkspace {
   }
 
   private canSplitDock(): boolean {
-    return this.rightDock.panes.length === 1 && this.workbenchWidth >= 540;
+    return this.rightDock.panes.length === 1 && this.workbenchWidth >= DOCK_SPLIT_MIN_WIDTH;
   }
 
   private dockAvailableWidth(): number {
-    return this.workbenchWidth - (this.sidebarCollapsed ? 52 : this.sidebarWidth) - 275;
+    return this.workbenchWidth - (this.sidebarCollapsed ? 52 : this.sidebarWidth) - 275 - DOCK_HANDLE_WIDTH;
   }
 
   private dockWidth(): number {
-    const ideal = this.rightDock.panes.length === 1 ? this.rightPaneWidth : Math.max(540, this.rightPaneWidth);
-    return Math.min(ideal, Math.max(220, this.dockAvailableWidth()));
+    return this.clampDockWidth(this.dockDragWidth || this.rightDock.width || this.defaultDockWidth);
+  }
+
+  private clampDockWidth(width: number): number {
+    const minimum = this.rightDock.panes.length === 1 ? DOCK_MIN_WIDTH : DOCK_SPLIT_MIN_WIDTH;
+    return Math.min(Math.max(minimum, width), Math.max(minimum, this.dockAvailableWidth()));
+  }
+
+  private dockPaneWeight(index: number): number {
+    const fraction = this.dockDragFraction || this.rightDock.fraction;
+    return this.rightDock.panes.length === 1 ? 1 : Math.round(1000 * (index === 0 ? fraction : 1 - fraction));
   }
 
   private dockFullscreen(): boolean {
@@ -1273,11 +1319,47 @@ struct DesktopWorkspace {
   }
 
   private dockAutoFullscreen(): boolean {
-    return (this.rightDock.panes.length > 1 && this.dockAvailableWidth() < 540) || this.dockAvailableWidth() < 220;
+    const minimum = this.rightDock.panes.length === 1 ? DOCK_MIN_WIDTH : DOCK_SPLIT_MIN_WIDTH;
+    return this.dockAvailableWidth() < minimum;
+  }
+
+  private startDockResize(split: boolean): void {
+    this.dockResizeSession = this.sessionId;
+    this.dockResizeStart = split ? this.rightDock.fraction : this.dockWidth();
+  }
+
+  private updateDockResize(split: boolean, offset: number): void {
+    if (!this.dockResizeSession || this.dockResizeSession !== this.sessionId) { return; }
+    if (split) {
+      const width = Number(this.dockBounds?.width ?? 0) - DOCK_HANDLE_WIDTH;
+      if (width > 0) { this.dockDragFraction = desktopDockSplitFraction(this.dockResizeStart + offset / width); }
+    } else {
+      this.dockDragWidth = this.clampDockWidth(this.dockResizeStart - offset);
+    }
+  }
+
+  private finishDockResize(commit: boolean): void {
+    const width = this.dockDragWidth;
+    const fraction = this.dockDragFraction;
+    const session = this.dockResizeSession;
+    this.dockResizeSession = '';
+    this.dockDragWidth = 0;
+    this.dockDragFraction = 0;
+    if (commit && session && session === this.sessionId && (width || fraction)) {
+      this.setDock(desktopDockResize(this.rightDock, width || this.rightDock.width, fraction || this.rightDock.fraction));
+    }
+  }
+
+  private clearDockGesture(): void {
+    this.endDockDrag(false);
+    this.dockTabBounds.clear();
+    this.dockGripHover = 0;
+    this.finishDockResize(false);
   }
 
   private closeDockTab(index: number, id: string): void {
     if (id === DesktopDockKind.TERMINAL) { this.terminalCreateSession = ''; }
+    this.dockTabBounds.delete(id);
     this.setDock(desktopDockCloseTab(this.rightDock, index, id));
   }
 
@@ -1310,7 +1392,8 @@ struct DesktopWorkspace {
   private showChanges(target: DesktopChangeTarget): void {
     if (target.sessionId !== this.sessionId) { return; }
     const tab: DesktopDockTab = { id: 'changes:' + target.sequence, kind: DesktopDockKind.CHANGES,
-      title: '改动审阅', changes: target };
+      title: '改动审阅', changes: target, changeLocation: !target.summary.applied && target.sequence >= 0 ?
+        { sequence: target.sequence, index: target.index, split: target.split, wrap: target.wrap } : undefined };
     this.setDock(desktopDockOpen(this.rightDock, tab));
   }
 
@@ -2051,6 +2134,7 @@ struct DesktopWorkspace {
         .layoutWeight(1).visibility(this.dockFullscreen() ? Visibility.None : Visibility.Visible)
         if (this.data !== undefined && (this.rightDock.expanded || this.rightDock.panes[0].tabs.length > 0 ||
           this.rightDock.panes.length > 1)) {
+          if (this.rightDock.expanded && !this.dockFullscreen()) { this.DockResizeHandle(false) }
           Column() { this.RightDock() }
             .width(this.dockFullscreen() ? '100%' : this.dockWidth()).height('100%')
             .visibility(this.rightDock.expanded ? Visibility.Visible : Visibility.None)
@@ -2107,6 +2191,102 @@ struct DesktopWorkspace {
     return this.rightDock.panes[index]?.tabs.find((tab: DesktopDockTab): boolean => tab.id === id);
   }
 
+  private dockTabShown(index: number, id: string): boolean {
+    return this.rightDock.expanded && this.rightDock.panes[index]?.active === id;
+  }
+
+  private beginDockDrag(event: GestureEvent, index: number, tab: DesktopDockTab, moving: boolean): void {
+    if (!moving && this.dockPanActive) { return; }
+    this.dockPanActive = moving;
+    this.dockDrag = { session: this.sessionId, pane: index, tab: tab.id };
+    this.dockDragTitle = tab.title;
+    this.updateDockDrag(event);
+  }
+
+  private disarmDockDrag(): void {
+    if (!this.dockPanActive) { this.endDockDrag(false); }
+  }
+
+  private endDockDrag(commit: boolean): void {
+    const source = this.dockDrag;
+    const drop = this.dockDrop;
+    this.dockDrag = undefined;
+    this.dockDrop = undefined;
+    this.dockPanActive = false;
+    this.dockDropCue = '';
+    this.dockDragTitle = '';
+    if (!commit || source?.session !== this.sessionId || drop === undefined) { return; }
+    if (drop.side && this.canSplitDock()) {
+      const target = drop.side === 'left' ? 0 : 1;
+      const split = desktopDockSplit(this.rightDock, target);
+      this.setDock(desktopDockMoveTab(split, 1 - target, source.tab, target));
+    } else {
+      this.setDock(desktopDockMoveTab(this.rightDock, source.pane, source.tab, drop.pane, drop.before));
+    }
+  }
+
+  private dockAreaContains(area: Area | undefined, x: number, y: number): boolean {
+    if (area === undefined) { return false; }
+    const left = Number(area.globalPosition.x);
+    const top = Number(area.globalPosition.y);
+    return x >= left && x < left + Number(area.width) && y >= top && y < top + Number(area.height);
+  }
+
+  private dockDropSide(x: number, y: number): string {
+    const bounds = this.dockBounds;
+    if (!this.canSplitDock() || bounds === undefined || y < Number(bounds.globalPosition.y) + 39) { return ''; }
+    const width = Number(bounds.width);
+    const offset = x - Number(bounds.globalPosition.x);
+    const edge = Math.min(60, width * 0.2);
+    return offset < edge ? 'left' : (offset >= width - edge ? 'right' : '');
+  }
+
+  private updateDockDrag(event: GestureEvent): void {
+    if (this.dockDrag?.session !== this.sessionId) { return; }
+    const finger = event.fingerInfos?.[0] ?? event.fingerList[0];
+    if (finger === undefined) { return; }
+    const x = finger.globalX;
+    const y = finger.globalY;
+    this.dockDragX = Math.max(0, Math.min(this.workbenchWidth - 160, x + 12));
+    this.dockDragY = Math.max(0, Math.min(this.workbenchHeight - 28, y + 9));
+    const pane = this.rightDock.panes.findIndex((_pane: DesktopDockPane, index: number): boolean =>
+      this.dockAreaContains(this.dockPaneBounds.get(index), x, y));
+    const hit = this.rightDock.panes[pane]?.tabs.find((tab: DesktopDockTab): boolean =>
+      this.dockAreaContains(this.dockTabBounds.get(tab.id), x, y));
+    if (pane < 0 || hit?.id === this.dockDrag?.tab) {
+      this.dockDrop = undefined;
+      this.dockDropCue = '';
+      return;
+    }
+    const side = hit === undefined ? this.dockDropSide(x, y) : '';
+    this.dockDrop = { pane: pane, before: hit?.id ?? '', side: side };
+    this.dockDropCue = hit?.id ?? (side ? 'split-' + side : 'pane-' + pane);
+  }
+
+  @Builder
+  private DockDragPreview(title: string) {
+    Text(title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      .fontColor($r('sys.color.font_primary')).padding({ left: 9, right: 9, top: 5, bottom: 5 })
+      .constraintSize({ maxWidth: 160 }).borderRadius(7).backgroundColor($r('app.color.workspace_selection'))
+      .position({ x: this.dockDragX, y: this.dockDragY }).hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+  }
+
+  @Builder
+  private DockResizeHandle(split: boolean) {
+    Stack() {
+      Divider().vertical(true).height('100%').color($r('app.color.workspace_border'))
+    }.key(split ? 'desktopDockSplitResize' : 'desktopDockOuterResize')
+      .width(DOCK_HANDLE_WIDTH).height('100%')
+      .backgroundColor(this.dockGripHover === (split ? 2 : 1) ? $r('app.color.workspace_selection') : Color.Transparent)
+      .accessibilityText(split ? '调整分栏宽度' : '调整右侧栏宽度')
+      .onHover((hover: boolean): void => { this.dockGripHover = hover ? (split ? 2 : 1) : 0; })
+      .gesture(PanGesture({ direction: PanDirection.Horizontal, distance: 1 })
+        .onActionStart((): void => { this.startDockResize(split); })
+        .onActionUpdate((event: GestureEvent): void => { this.updateDockResize(split, event.offsetX); })
+        .onActionEnd((): void => { this.finishDockResize(true); })
+        .onActionCancel((): void => { this.finishDockResize(false); }))
+  }
+
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
@@ -2127,10 +2307,13 @@ struct DesktopWorkspace {
           return this.terminalShortcut(event);
         }, onHidePanel: (): void => this.toggleRightDock() })
     } else if (tab.kind === DesktopDockKind.PLAN) {
-      DesktopPlanPreviewPane({ markdown: this.dockStoredTab(index, tab.id)?.plan?.markdown ?? '',
+      DesktopPlanPreviewPane({ host: this.data?.actions, sessionId: this.sessionId,
+        document: this.dockStoredTab(index, tab.id)?.plan, shown: this.dockTabShown(index, tab.id),
         onClosePreview: (): void => this.closeDockTab(index, tab.id) })
     } else {
-      DesktopChangesPane({ host: this.data?.actions, target: this.dockStoredTab(index, tab.id)?.changes,
+      DesktopChangesPane({ host: this.data?.actions, sessionId: this.sessionId,
+        target: this.dockStoredTab(index, tab.id)?.changes, changeLocation: this.dockStoredTab(index, tab.id)?.changeLocation,
+        shown: this.dockTabShown(index, tab.id),
         onClose: (): void => this.closeDockTab(index, tab.id),
         onFile: (path: string, name: string, target: DesktopChangeTarget): void => {
           this.showChanges(target);
@@ -2149,6 +2332,16 @@ struct DesktopWorkspace {
       }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
         .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
         .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
+        .priorityGesture(GestureGroup(GestureMode.Parallel,
+          PanGesture({ direction: PanDirection.All, distance: 8 })
+            .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, true); })
+            .onActionUpdate((event: GestureEvent): void => { this.updateDockDrag(event); })
+            .onActionEnd((event: GestureEvent): void => { this.updateDockDrag(event); this.endDockDrag(true); })
+            .onActionCancel((): void => { this.endDockDrag(false); }),
+          LongPressGesture({ duration: 300 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+            .onAction((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, false); })
+            .onActionEnd((): void => { this.disarmDockDrag(); })
+            .onActionCancel((): void => { this.disarmDockDrag(); })))
       Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Image($r('app.media.dsh_dock_close')).width(11).height(11).accessibilityLevel('no')
       }.key('desktopDockClose-' + index + '-' + tab.id).width(21).height(24).padding(0)
@@ -2159,7 +2352,9 @@ struct DesktopWorkspace {
           .bindMenu(this.dockTabMenu(index, tab), desktopMenuOptions(Placement.BottomLeft))
       }
     }.height(30).borderRadius(7)
+      .border({ width: { left: 2 }, color: this.dockDropCue === tab.id ? $r('sys.color.ohos_id_color_activated') : Color.Transparent })
       .backgroundColor(this.rightDock.panes[index]?.active === tab.id ? $r('app.color.workspace_selection') : Color.Transparent)
+      .onAreaChange((_, area: Area): void => { this.dockTabBounds.set(tab.id, area); })
   }
 
   @Builder
@@ -2180,9 +2375,10 @@ struct DesktopWorkspace {
           Row({ space: 4 }) {
             ForEach(this.rightDock.panes[index]?.tabs ?? [], (tab: DesktopDockTab): void => {
               this.DockTab(index, tab)
-            }, (tab: DesktopDockTab): string => tab.id + ':' + tab.title)
+            }, (tab: DesktopDockTab): string => this.sessionId + ':' + tab.id + ':' + tab.title)
           }
-        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
+          .enableScrollInteraction(!this.dockDragTitle).layoutWeight(1)
         Button('＋', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockAdd-' + index)
           .height(30).width(28).padding(0).accessibilityText('新建标签页')
           .bindMenu(this.dockMenu(index), desktopMenuOptions(Placement.BottomRight))
@@ -2200,6 +2396,7 @@ struct DesktopWorkspace {
             .onClick((): void => this.toggleRightDock())
         }
       }.width('100%').height(39).padding({ left: 5, right: 5 })
+        .backgroundColor(this.dockDropCue === 'pane-' + index ? $r('app.color.workspace_selection') : Color.Transparent)
         .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
       Stack() {
         if (!this.rightDock.panes[index]?.tabs.length) {
@@ -2211,8 +2408,15 @@ struct DesktopWorkspace {
               .visibility(this.rightDock.panes[index]?.active === tab.id ? Visibility.Visible : Visibility.None)
           }, (tab: DesktopDockTab): string => this.sessionId + ':' + tab.id)
         }
+        if (this.dockDropCue === 'split-left' || this.dockDropCue === 'split-right') {
+          Row() {
+            if (this.dockDropCue === 'split-right') { Blank() }
+            Column().width('20%').height('100%').backgroundColor($r('app.color.workspace_selection'))
+          }.width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        }
       }.width('100%').layoutWeight(1)
-    }.key('desktopDockPane-' + index).layoutWeight(1).height('100%')
+    }.key('desktopDockPane-' + index).layoutWeight(this.dockPaneWeight(index)).height('100%')
+      .onAreaChange((_, area: Area): void => { this.dockPaneBounds.set(index, area); })
       .onTouch((event: TouchEvent): void => { if (event.type === TouchType.Down) { this.focusDockPane(index); } })
   }
 
@@ -2221,11 +2425,11 @@ struct DesktopWorkspace {
     Row() {
       this.DockPane(0)
       if (this.rightDock.panes.length === 2) {
-        Divider().vertical(true).color($r('app.color.workspace_border')).height('100%')
+        this.DockResizeHandle(true)
         this.DockPane(1)
       }
     }.key('desktopRightDock').width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
-      .border({ width: { left: 1 }, color: $r('app.color.workspace_border') })
+      .onAreaChange((_, area: Area): void => { this.dockBounds = area; })
   }
 
   @Builder
@@ -2329,13 +2533,16 @@ struct DesktopWorkspace {
         if (this.archiveNotice !== undefined) {
           this.ArchiveNoticeContent(this.archiveNotice)
         }
+        if (this.dockDragTitle) {
+          this.DockDragPreview(this.dockDragTitle)
+        }
       }
       .width('100%').height('100%')
       .onAreaChange((_, area: Area): void => {
         this.workbenchWidth = Number(area.width);
         this.workbenchHeight = Number(area.height);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
-        this.rightPaneWidth = Math.max(220, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
+        this.defaultDockWidth = Math.max(DOCK_MIN_WIDTH, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })
     }
   }

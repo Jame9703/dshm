@@ -1,4 +1,4 @@
-import type { DesktopChangeTarget } from './DesktopArtifacts';
+import type { DesktopChangeLocation, DesktopChangeTarget } from './DesktopArtifacts';
 import type { DesktopFileNavigation } from './DesktopFilesPane';
 import type { DesktopPlanDocument } from './DesktopPlan';
 
@@ -11,6 +11,7 @@ export interface DesktopDockTab {
   file?: DesktopFileNavigation;
   plan?: DesktopPlanDocument;
   changes?: DesktopChangeTarget;
+  changeLocation?: DesktopChangeLocation;
 }
 
 export interface DesktopDockPane {
@@ -23,16 +24,33 @@ export interface DesktopDockLayout {
   focus: number;
   expanded: boolean;
   fullscreen: boolean;
+  width: number;
+  fraction: number;
 }
 
 export function emptyDesktopDock(): DesktopDockLayout {
-  return { panes: [{ tabs: [], active: '' }], focus: 0, expanded: false, fullscreen: false };
+  return { panes: [{ tabs: [], active: '' }], focus: 0, expanded: false, fullscreen: false, width: 0, fraction: 0.5 };
 }
 
 function copyDock(layout: DesktopDockLayout): DesktopDockLayout {
   return { panes: layout.panes.map((pane: DesktopDockPane): DesktopDockPane =>
     ({ tabs: pane.tabs.slice(), active: pane.active })), focus: layout.focus, expanded: layout.expanded,
-    fullscreen: layout.fullscreen };
+    fullscreen: layout.fullscreen, width: layout.width, fraction: layout.fraction };
+}
+
+export function desktopDockPresentation(layout: DesktopDockLayout, focus: number, expanded: boolean,
+  fullscreen: boolean): DesktopDockLayout {
+  return { panes: layout.panes, focus: focus, expanded: expanded, fullscreen: fullscreen,
+    width: layout.width, fraction: layout.fraction };
+}
+
+export function desktopDockResize(layout: DesktopDockLayout, width: number, fraction: number): DesktopDockLayout {
+  return { panes: layout.panes, focus: layout.focus, expanded: layout.expanded, fullscreen: layout.fullscreen,
+    width: width, fraction: fraction };
+}
+
+export function desktopDockSplitFraction(fraction: number): number {
+  return Number.isFinite(fraction) ? Math.min(0.8, Math.max(0.2, fraction)) : 0.5;
 }
 
 export function desktopDockTab(layout: DesktopDockLayout, index: number = layout.focus): DesktopDockTab | undefined {
@@ -81,16 +99,18 @@ export function desktopDockCloseTab(layout: DesktopDockLayout, pane: number, tab
   if (next.panes.length > 1 && next.panes[pane].tabs.length === 0) {
     next.panes.splice(pane, 1);
     next.focus = 0;
+    next.fraction = 0.5;
   }
   return next;
 }
 
-export function desktopDockSplit(layout: DesktopDockLayout): DesktopDockLayout {
+export function desktopDockSplit(layout: DesktopDockLayout, side: number = 1): DesktopDockLayout {
   if (layout.panes.length > 1) { return layout; }
   const next = copyDock(layout);
-  next.panes.push({ tabs: [], active: '' });
-  next.focus = 1;
+  next.panes.splice(side, 0, { tabs: [], active: '' });
+  next.focus = side;
   next.expanded = true;
+  next.fraction = 0.5;
   return next;
 }
 
@@ -103,17 +123,20 @@ export function desktopDockMerge(layout: DesktopDockLayout, target: number): Des
   if (!keep.active) { keep.active = from.active; }
   next.panes = [keep];
   next.focus = 0;
+  next.fraction = 0.5;
   return next;
 }
 
-export function desktopDockMoveTab(layout: DesktopDockLayout, from: number, id: string): DesktopDockLayout {
+export function desktopDockMoveTab(layout: DesktopDockLayout, from: number, id: string, to: number = 1 - from,
+  before: string = ''): DesktopDockLayout {
   const index = layout.panes[from]?.tabs.findIndex((tab: DesktopDockTab): boolean => tab.id === id) ?? -1;
-  if (layout.panes.length !== 2 || index < 0) { return layout; }
+  if (index < 0 || layout.panes[to] === undefined || id === before) { return layout; }
   const next = copyDock(layout);
   const tab = removeTab(next.panes[from], index);
-  const other = next.panes[1 - from];
-  other.tabs.push(tab);
-  other.active = id;
-  next.focus = 1 - from;
+  const target = next.panes[to];
+  const insertion = target.tabs.findIndex((item: DesktopDockTab): boolean => item.id === before);
+  target.tabs.splice(insertion < 0 ? target.tabs.length : insertion, 0, tab);
+  target.active = id;
+  next.focus = to;
   return next;
 }

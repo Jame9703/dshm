@@ -1,4 +1,7 @@
+import { followSessionAddress, projectSessionPage } from 'appstate';
 import { getBoolean, getNumber, getRecord, getString, parseJson } from 'connection';
+import { SESSION_PAGE_ENDPOINT } from 'dshcompat';
+import type { DesktopHostActions } from './DesktopHostActions';
 
 export interface DesktopPlanDocument {
   callId: string;
@@ -42,4 +45,17 @@ export function desktopSubmittedPlan(event?: Object): DesktopPlanDocument | unde
     return undefined;
   }
   return { callId: callId, title: desktopPlanTitle(markdown), markdown: markdown, sequence: sequence };
+}
+
+export async function readDesktopPlan(host: DesktopHostActions, sessionId: string,
+  target: DesktopPlanDocument): Promise<string> {
+  const result = await host.call(SESSION_PAGE_ENDPOINT, {
+    'address': followSessionAddress(sessionId), 'throughSeq': target.sequence, 'maxMessages': 1
+  });
+  if (!result.ok) { return ''; }
+  for (const row of projectSessionPage(result.value).records) {
+    const plan = desktopSubmittedPlan(getRecord(row, 'event'));
+    if (plan?.callId === target.callId && plan.sequence === target.sequence) { return plan.markdown; }
+  }
+  return '';
 }

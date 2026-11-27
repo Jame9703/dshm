@@ -48,13 +48,16 @@ export interface DesktopChangeSummary {
   applied?: boolean;
 }
 
-export interface DesktopChangeTarget {
-  sessionId: string;
+export interface DesktopChangeLocation {
   sequence: number;
-  summary: DesktopChangeSummary;
   index: number;
   split?: boolean;
   wrap?: boolean;
+}
+
+export interface DesktopChangeTarget extends DesktopChangeLocation {
+  sessionId: string;
+  summary: DesktopChangeSummary;
 }
 
 export interface DesktopDiffCell {
