@@ -9,7 +9,7 @@ import {
 } from 'appstate';
 import type { FeedbackRow, ModelOption, ModelSelection, PromptContentPart, QueueActionBody } from 'appstate';
 import { Connection, ConnectionState, getArray, getBoolean, getField, getNumber, getRecord, getString, randomUuid,
-  toStringArray } from 'connection';
+  stringifyJson, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
   argsFor, COMMANDS_EXECUTE_ENDPOINT, EVENT_TURN_END, mayChangeSessionTitle, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
@@ -65,6 +65,7 @@ import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopComman
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
 const PAGE_MESSAGES: number = 50;
+const FOLLOW_OPENING_GRACE_MS: number = 180;
 const STREAM_PRESENTATION_INTERVAL_MS: number = 16;
 
 export interface DesktopPermissionOption {
@@ -156,6 +157,12 @@ interface DraftRequest {
   id: string;
 }
 
+interface DesktopOpeningWindow {
+  cursor: number;
+  hasMore: boolean;
+  records: Object[];
+}
+
 export class DesktopConversation {
   private readonly cordis?: DesktopCordisRuntime;
   private readonly connection: Connection;
@@ -172,6 +179,13 @@ export class DesktopConversation {
   private closed: boolean = false;
   private stopFollow?: () => void;
   private followVersion: number = 0;
+  private openingTimer: number = -1;
+  private openingHistoryPending: boolean = false;
+  private openingProjectionPending: boolean = false;
+  private waitingForFollowSnapshot: boolean = false;
+  private openingWindow?: DesktopOpeningWindow;
+  private latestPageLoading: boolean = false;
+  private fullProjectionCursor: number = -1;
   private timer: number = -1;
   private transcript: DesktopTranscriptItem[] = [];
   private readonly recallLabels: Map<number, string[]> = new Map();
@@ -340,6 +354,8 @@ export class DesktopConversation {
     this.historyError = '';
     this.loading = sessionId.length > 0;
     this.pageLoading = false;
+    this.latestPageLoading = false;
+    this.fullProjectionCursor = -1;
     this.error = '';
     this.running = false;
     this.runningPaused = false;
@@ -358,8 +374,6 @@ export class DesktopConversation {
       return;
     }
     this.openFollow(generation);
-    this.loadPage(generation, false);
-    this.loadSelection(generation);
     this.loadModels();
     this.pollState(generation);
   }
@@ -367,13 +381,16 @@ export class DesktopConversation {
   reconnect(): void {
     if (!this.closed && this.sessionId && this.stopFollow === undefined) {
       this.openFollow(this.generation);
-      this.loadSelection(this.generation);
     }
   }
 
   private openFollow(generation: number): void {
+    this.openingHistoryPending = true;
+    this.openingProjectionPending = true;
+    this.openingWindow = undefined;
     const args = sessionFollowPayload(this.address(), PAGE_MESSAGES, true);
     if (args !== undefined) {
+      this.waitingForFollowSnapshot = true;
       const version = ++this.followVersion;
       const sink: StreamSink = {
         onItem: (frame: Object): void => {
@@ -385,6 +402,32 @@ export class DesktopConversation {
         onEnd: (): void => { if (version === this.followVersion) { this.followEnded(generation); } }
       };
       this.stopFollow = this.connection.openStream(SESSION_FOLLOW_ENDPOINT, args, sink);
+    }
+    if (this.stopFollow === undefined) {
+      this.waitingForFollowSnapshot = false;
+      this.readOpeningFallback(generation);
+    } else if (this.waitingForFollowSnapshot) {
+      this.openingTimer = setTimeout((): void => {
+        this.openingTimer = -1;
+        this.readOpeningFallback(generation);
+      }, FOLLOW_OPENING_GRACE_MS);
+    }
+  }
+
+  private clearOpeningTimer(): void {
+    clearTimeout(this.openingTimer);
+    this.openingTimer = -1;
+  }
+
+  private readOpeningFallback(generation: number): void {
+    if (!this.current(generation) || this.openingTimer >= 0) { return; }
+    if (this.openingHistoryPending && !this.pageLoading) {
+      this.openingHistoryPending = false;
+      this.loadPage(generation, false);
+    }
+    if (this.openingProjectionPending) {
+      this.openingProjectionPending = false;
+      this.loadSelection(generation);
     }
   }
 
@@ -816,6 +859,11 @@ export class DesktopConversation {
   private stopWatching(): void {
     this.stopFollow?.();
     this.stopFollow = undefined;
+    this.clearOpeningTimer();
+    this.openingHistoryPending = false;
+    this.openingProjectionPending = false;
+    this.waitingForFollowSnapshot = false;
+    this.openingWindow = undefined;
     clearTimeout(this.streamPresentationTimer);
     this.streamPresentationTimer = -1;
     if (this.timer !== -1) {
@@ -827,15 +875,21 @@ export class DesktopConversation {
   private followEnded(generation: number): void {
     if (this.current(generation)) {
       this.stopFollow = undefined;
+      this.waitingForFollowSnapshot = false;
+      this.clearOpeningTimer();
+      if (!this.latestPageLoading) { this.openingWindow = undefined; }
       this.attempt = '';
       this.preparingTool = '';
       this.runningPaused = true;
+      this.readOpeningFallback(generation);
       this.publish();
     }
   }
 
   private async loadPage(generation: number, earlier: boolean): Promise<void> {
+    if (!this.current(generation) || this.pageLoading) { return; }
     this.pageLoading = true;
+    this.latestPageLoading = !earlier;
     if (earlier) {
       this.historyError = '';
       this.publish();
@@ -852,6 +906,7 @@ export class DesktopConversation {
       return;
     }
     this.pageLoading = false;
+    this.latestPageLoading = false;
     if (result?.ok) {
       const page: SessionPageValue = projectSessionPage(result.value);
       this.historyLoaded = true;
@@ -865,8 +920,12 @@ export class DesktopConversation {
         })) {
           this.partial = '';
         }
-        this.addRecords(page.records, earlier || !this.loading, page.hasMore);
-        this.cursor = Math.max(this.cursor, cursor);
+        if (earlier) {
+          this.addRecords(page.records, true, page.hasMore);
+          this.cursor = Math.max(this.cursor, cursor);
+        } else {
+          this.applyLatestWindow(cursor, page.records, page.hasMore, this.waitingForFollowSnapshot);
+        }
       }
       this.error = '';
     } else if (this.loading || earlier) {
@@ -874,7 +933,35 @@ export class DesktopConversation {
       if (earlier) { this.historyError = this.error; }
     }
     this.loading = false;
+    if (!this.waitingForFollowSnapshot) { this.openingWindow = undefined; }
     this.publish();
+    this.readOpeningFallback(generation);
+  }
+
+  private applyLatestWindow(cursor: number, records: Object[], hasMore: boolean, awaitingCounterpart: boolean): void {
+    const prior = this.openingWindow;
+    this.openingWindow = awaitingCounterpart ? { cursor: cursor, hasMore: hasMore, records: records } : undefined;
+    if (prior !== undefined && prior.cursor === cursor && prior.hasMore === hasMore &&
+      this.sameHistoryRecords(prior.records, records)) {
+      // A submission receipt can arrive after the first copy of a record.
+      for (const record of records) { this.echoes.observe(this.sessionId, getRecord(record, 'event')); }
+      return;
+    }
+    const first = getNumber(getRecord(records[0], 'event'), 'seq') ?? -1;
+    const retainEarlier = this.earliest >= 0 && (first < 0 || first > this.earliest ||
+      (first === this.earliest && !this.hasEarlier));
+    this.addRecords(records, !this.loading, retainEarlier ? this.hasEarlier : hasMore);
+    this.cursor = Math.max(this.cursor, cursor);
+  }
+
+  private sameHistoryRecords(prior: Object[], records: Object[]): boolean {
+    if (prior.length !== records.length) { return false; }
+    for (let index = 0; index < records.length; index++) {
+      if (prior[index] === records[index]) { continue; }
+      const encoded = stringifyJson(prior[index]);
+      if (encoded === undefined || encoded !== stringifyJson(records[index])) { return false; }
+    }
+    return true;
   }
 
   private addRecords(records: Object[], merge: boolean, hasEarlier: boolean): boolean {
@@ -1071,12 +1158,15 @@ export class DesktopConversation {
     const args = argsFor(PROJECTIONS_ENDPOINT, request);
     const result = args === undefined ? undefined : await this.connection.call(PROJECTIONS_ENDPOINT, args);
     if (result?.ok && this.current(generation)) {
+      const projectionCursor = getNumber(result.value, 'asOfSeq');
+      if (projectionCursor !== undefined && projectionCursor < this.fullProjectionCursor) { return; }
       if (this.model === undefined) {
         this.readProjection(result.value);
         this.publish();
       } else {
         const values = getRecord(result.value, 'values');
-        const sequence = getNumber(result.value, 'asOfSeq') ?? -1;
+        const sequence = projectionCursor ?? -1;
+        if (values !== undefined) { this.fullProjectionCursor = Math.max(this.fullProjectionCursor, sequence); }
         const continuationChanged = this.readContinuation(values, sequence);
         const subagentsChanged = this.readSubagents(values, sequence);
         const questionsChanged = this.readQuestions(values, sequence);
@@ -1218,6 +1308,11 @@ export class DesktopConversation {
 
   private readProjection(projection: Object | undefined): void {
     const values = getRecord(projection, 'values');
+    const sequence = getNumber(projection, 'asOfSeq');
+    if (sequence !== undefined && sequence < this.fullProjectionCursor) { return; }
+    if (values !== undefined && sequence !== undefined) {
+      this.fullProjectionCursor = Math.max(this.fullProjectionCursor, sequence);
+    }
     this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.chatUsage.readProjection(values, getNumber(projection, 'asOfSeq') ?? -1);
@@ -1299,30 +1394,7 @@ export class DesktopConversation {
   private onFrame(frame: Object): void {
     const type = getString(frame, 'type');
     if (type === 'snapshot') {
-      this.runningPaused = false;
-      this.historyLoaded = true;
-      const cursor = getNumber(frame, 'cursor') ?? -1;
-      this.followCursor = Math.max(this.followCursor, cursor);
-      if (cursor >= this.cursor) {
-        this.addRecords(getArray(frame, 'records') ?? [], !this.loading, getBoolean(frame, 'hasMore') === true);
-        this.cursor = cursor;
-      }
-      this.loading = false;
-      this.error = '';
-      this.readProjection(getRecord(frame, 'projections'));
-      const pending = getRecord(getRecord(frame, 'assistantStream'), 'activeAttempt');
-      this.attempt = '';
-      this.partial = '';
-      this.preparingTool = '';
-      if (pending !== undefined) {
-        this.attempt = getString(pending, 'attemptId') ?? '';
-        for (const entry of getArray(pending, 'stream') ?? []) {
-          if (getString(entry, 'type') === 'text-chunks') {
-            this.partial += toStringArray(getArray(entry, 'texts') ?? []).join('');
-          }
-        }
-        this.running = true;
-      }
+      if (!this.readFollowSnapshot(frame)) { return; }
     } else if (type === 'projection') {
       const goalChanged = this.goals.observeDelta(frame);
       const changes = getRecord(frame, 'changes');
@@ -1340,11 +1412,17 @@ export class DesktopConversation {
         !outlineChanged && !usageChanged && !continuationChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
-      this.runningPaused = false;
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
       const sequence = getNumber(event, 'seq') ?? -1;
       const appended = sequence > this.followCursor;
+      if (!appended) {
+        // Late records can enrich history without replaying their live side effects.
+        if (this.addRecords([frame], true, this.hasEarlier)) { this.cordis?.refresh(); }
+        this.publish();
+        return;
+      }
+      this.runningPaused = false;
       this.followCursor = Math.max(this.followCursor, sequence);
       if (eventType === 'tool/call' || eventType === EVENT_TURN_END || eventType === 'assistant/message') {
         this.preparingTool = '';
@@ -1371,7 +1449,7 @@ export class DesktopConversation {
         this.partial = '';
         this.attempt = '';
         this.error = '';
-        if (appended) { this.onLiveTurnEnd(this.sessionId, frame); }
+        this.onLiveTurnEnd(this.sessionId, frame);
       } else if (eventType === 'assistant/message') {
         this.partial = '';
         this.attempt = '';
@@ -1408,6 +1486,56 @@ export class DesktopConversation {
       return;
     }
     this.publish();
+  }
+
+  private readFollowSnapshot(frame: Object): boolean {
+    const session = getString(getRecord(frame, 'header'), 'id');
+    if (session && session !== this.sessionId) { return false; }
+    this.waitingForFollowSnapshot = false;
+    this.clearOpeningTimer();
+    const cursor = getNumber(frame, 'cursor');
+    const validCursor = cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= -1;
+    const liveCursor = validCursor && cursor >= this.followCursor && cursor >= this.cursor;
+    const records = getArray(frame, 'records');
+    const hasMore = getBoolean(frame, 'hasMore');
+    if (validCursor && records !== undefined && hasMore !== undefined) {
+      if (cursor >= this.cursor) {
+        this.applyLatestWindow(cursor, records, hasMore, this.latestPageLoading);
+        this.historyLoaded = true;
+        this.loading = false;
+        this.error = '';
+      }
+      if (this.historyLoaded) { this.openingHistoryPending = false; }
+      this.followCursor = Math.max(this.followCursor, cursor);
+    }
+    const projection = getRecord(frame, 'projections');
+    const asOf = getNumber(projection, 'asOfSeq');
+    if (getRecord(projection, 'values') !== undefined && asOf !== undefined && Number.isSafeInteger(asOf) && asOf >= -1) {
+      this.openingProjectionPending = false;
+      this.readProjection(projection);
+    }
+    if (liveCursor) {
+      this.runningPaused = false;
+      const stream = getRecord(frame, 'assistantStream');
+      if (stream !== undefined) { this.readAssistantBaseline(stream); }
+    }
+    if (!this.latestPageLoading) { this.openingWindow = undefined; }
+    this.readOpeningFallback(this.generation);
+    return true;
+  }
+
+  private readAssistantBaseline(stream: Object): void {
+    const pending = getRecord(stream, 'activeAttempt');
+    this.attempt = getString(pending, 'attemptId') ?? '';
+    this.partial = '';
+    this.preparingTool = '';
+    if (pending === undefined) { return; }
+    for (const entry of getArray(pending, 'stream') ?? []) {
+      if (getString(entry, 'type') === 'text-chunks') {
+        this.partial += toStringArray(getArray(entry, 'texts') ?? []).join('');
+      }
+    }
+    this.running = true;
   }
 
   private publish(): void {
