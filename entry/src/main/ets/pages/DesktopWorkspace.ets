@@ -146,6 +146,14 @@ interface DesktopWorkspaceDropCue {
   after: boolean;
 }
 
+interface DesktopTerminalRenameTarget {
+  version: number;
+  sessionId: string;
+  tabId: string;
+  terminalId: string;
+  title: string;
+}
+
 interface DesktopDockDrop {
   pane: number;
   before: string;
@@ -290,6 +298,9 @@ struct DesktopWorkspace {
   private fileSearchBook?: DesktopFileSearchPreferenceBook;
   private readonly documentViews = new Map<string, DesktopDocumentViewState>();
   private readonly closingDockTerminals = new Set<string>();
+  private readonly pendingTerminalRenames = new Set<string>();
+  private terminalRenameVersion: number = 0;
+  @State private terminalRename?: DesktopTerminalRenameTarget = undefined;
   private readonly agentTerminals = new DesktopAgentTerminalInventory();
   private agentTerminalSession: string = '';
   private stopAgentTerminals?: () => void;
@@ -382,6 +393,7 @@ struct DesktopWorkspace {
     this.closeRename();
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
+    this.terminalRename = undefined;
     this.clearAgentTerminalWatch();
     this.data?.stop();
     this.data = undefined;
@@ -414,6 +426,7 @@ struct DesktopWorkspace {
   }
 
   private onPanelChanged(): void {
+    if (this.panel !== 'session') { this.terminalRename = undefined; }
     this.syncReading();
     this.syncAgentTerminalWatch();
   }
@@ -447,6 +460,7 @@ struct DesktopWorkspace {
   }
 
   onBackPress(): boolean {
+    if (this.terminalRename !== undefined) { this.terminalRename = undefined; return true; }
     if (this.quotaDialogToken >= 0) { this.data?.dismissQuota(this.quotaDialogToken); return true; }
     if (this.settingsOpen) { this.closeSettings(); return true; }
     if (this.panel === 'session' && this.rightDock.focusedFloat) {
@@ -501,6 +515,8 @@ struct DesktopWorkspace {
     this.docks.clear();
     this.documentViews.clear();
     this.closingDockTerminals.clear();
+    this.pendingTerminalRenames.clear();
+    this.terminalRename = undefined;
     this.dockSessionId = '';
     this.rightDock = emptyDesktopDock();
     this.clearDockGesture();
@@ -968,7 +984,8 @@ struct DesktopWorkspace {
   private workspaceShortcut(key: DesktopShortcut): boolean {
     if (!this.pageActive || !this.pageVisible || this.settingsOpen || this.shortcutsOpen || this.renameOpen || this.accountOpening ||
       this.accountDialog >= 0 || this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0 ||
-      this.archiveRequest !== undefined || this.imageDialog >= 0 || this.imageDialogOpening) { return false; }
+      this.archiveRequest !== undefined || this.imageDialog >= 0 || this.imageDialogOpening ||
+      this.terminalRename !== undefined) { return false; }
     if (key === DesktopShortcut.REFERENCE) { this.shortcutsOpen = true; return true; }
     if (key === DesktopShortcut.NEW_SESSION) { this.newSession(); return true; }
     if (key === DesktopShortcut.LEFT_SIDEBAR) { this.sidebarCollapsed = !this.sidebarCollapsed; return true; }
@@ -1213,6 +1230,7 @@ struct DesktopWorkspace {
     }
     const changing = this.sessionId !== session.id;
     if (changing) {
+      this.terminalRename = undefined;
       this.terminalCreateSession = '';
       this.referenceOffer = undefined;
       this.closeFeedback();
@@ -1285,6 +1303,7 @@ struct DesktopWorkspace {
   }
 
   private clearSession(): void {
+    this.terminalRename = undefined;
     this.closeFeedback();
     this.closeImagePreview();
     this.sessionId = '';
@@ -1799,6 +1818,8 @@ struct DesktopWorkspace {
 
   private setDock(layout: DesktopDockLayout): void {
     if (!this.sessionId || layout === this.rightDock) { return; }
+    const edit = this.terminalRename;
+    if (edit !== undefined && this.findTerminalRenameTab(layout, edit) === undefined) { this.terminalRename = undefined; }
     this.rightDock = layout;
     this.docks.set(this.sessionId, layout);
     this.data?.terminalRetentions.setTabs(this.sessionId, desktopDockTerminalIds(layout));
@@ -1901,6 +1922,54 @@ struct DesktopWorkspace {
     const terminalId = this.dockStoredTab(index, id)?.terminalId;
     if (terminalId) { this.closeDockTerminal(this.sessionId, id, terminalId); }
     else { this.removeDockTab(index, id); }
+  }
+
+  private findTerminalRenameTab(layout: DesktopDockLayout, target: DesktopTerminalRenameTarget): DesktopDockTab | undefined {
+    const matches = (tab: DesktopDockTab): boolean => tab.id === target.tabId && tab.terminalId === target.terminalId;
+    return layout.panes.flatMap((pane: DesktopDockPane): DesktopDockTab[] => pane.tabs).find(matches) ??
+      layout.floats.find((panel: DesktopDockFloat): boolean => matches(panel.tab))?.tab;
+  }
+
+  private startTerminalRename(index: number, id: string): void {
+    const tab = this.dockStoredTab(index, id);
+    if (!this.pageActive || this.panel !== 'session' || !this.sessionId || !tab?.terminalId ||
+      this.terminalRename !== undefined || this.data === undefined) { return; }
+    const key = JSON.stringify([this.sessionId, tab.terminalId]);
+    if (this.pendingTerminalRenames.has(key)) { return; }
+    if (index < 0) { this.focusFloat(id); }
+    else { this.setDock(desktopDockSelect(this.rightDock, index, id)); }
+    this.terminalRename = { version: ++this.terminalRenameVersion, sessionId: this.sessionId, tabId: id,
+      terminalId: tab.terminalId, title: tab.title };
+  }
+
+  private async finishTerminalRename(version: number, value: string, save: boolean): Promise<void> {
+    const target = this.terminalRename;
+    if (target?.version !== version) { return; }
+    this.terminalRename = undefined;
+    const title = value.trim();
+    const host = this.data?.actions;
+    const layout = this.docks.get(target.sessionId);
+    const tab = layout === undefined ? undefined : this.findTerminalRenameTab(layout, target);
+    if (!save || !title || title.length > 120 || title === target.title || title === tab?.title || tab === undefined ||
+      !this.pageActive || host === undefined) { return; }
+    const key = JSON.stringify([target.sessionId, target.terminalId]);
+    this.pendingTerminalRenames.add(key);
+    const result = await host.call('terminal/rename', { 'agentId': target.sessionId, 'id': target.terminalId, 'title': title });
+    if (!this.pageActive || this.data?.actions !== host) { return; }
+    this.pendingTerminalRenames.delete(key);
+    if (!result.ok) {
+      this.getUIContext().getPromptAction().showToast({ message: desktopHostProblem(result) });
+      return;
+    }
+    const latest = this.docks.get(target.sessionId);
+    // A later host title wins if it arrived while the request was in flight.
+    if (latest === undefined || this.findTerminalRenameTab(latest, target)?.title !== tab.title) { return; }
+    const next = desktopDockBindTerminal(latest, target.tabId, target.terminalId, title);
+    if (target.sessionId === this.sessionId) { this.setDock(next); }
+    else {
+      this.docks.set(target.sessionId, next);
+      saveDesktopDock(this.getUIContext().getHostContext(), target.sessionId, next);
+    }
   }
 
   private async closeDockTerminal(sessionId: string, tabId: string, terminalId: string): Promise<void> {
@@ -3545,6 +3614,11 @@ struct DesktopWorkspace {
 
   private dockTabMenu(index: number, tab: DesktopDockTab): MenuElement[] {
     const items: MenuElement[] = [];
+    if (this.dockStoredTab(index, tab.id)?.terminalId) {
+      items.push({ value: $r('app.string.desktop_terminal_rename_action'), action: (): void => {
+        this.startTerminalRename(index, tab.id);
+      } });
+    }
     if (this.rightDock.panes.length === 2) {
       items.push({ value: '移到另一侧', action: (): void => {
         this.setDock(desktopDockMoveTab(this.rightDock, index, tab.id));
@@ -3866,6 +3940,7 @@ struct DesktopWorkspace {
         createSession: (this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id :
           index === this.rightDock.focus && this.dockTabShown(index, tab.id)) ? this.terminalCreateSession : '',
         onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
+        onRename: (): void => { this.startTerminalRename(index, tab.id); },
         openInNewTab: (row: DesktopTerminalRow): boolean => this.openDockTerminal(index, tab.id, row),
         onTerminalSelected: (sessionId: string, id: string, title: string): void => {
           if (sessionId !== this.sessionId) { return; }
@@ -3915,38 +3990,56 @@ struct DesktopWorkspace {
   }
 
   @Builder
+  private DockTerminalHeading(index: number, tab: DesktopDockTab, compact: boolean) {
+    DesktopTerminalTitle({ title: this.terminalRename?.tabId === tab.id ? this.terminalRename?.title ?? tab.title :
+      this.dockStoredTab(index, tab.id)?.title ?? tab.title,
+      agentControlled: this.dockStoredTab(index, tab.id)?.agentControlled === true,
+      sandboxMode: this.dockStoredTab(index, tab.id)?.terminalSandbox ?? '',
+      keyPrefix: index < 0 ? 'desktopFloatTerminal-' + tab.id : 'desktopDockTerminal-' + index + '-' + tab.id,
+      compact: compact, editVersion: this.terminalRename?.tabId === tab.id ? this.terminalRename?.version ?? -1 : -1,
+      onRenameFinished: (version: number, value: string, save: boolean): void => {
+        this.finishTerminalRename(version, value, save);
+      } })
+  }
+
+  @Builder
   private DockTab(index: number, tab: DesktopDockTab) {
     Row({ space: 2 }) {
-      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        if (tab.kind === DesktopDockKind.TERMINAL) {
-          DesktopTerminalTitle({ title: this.dockStoredTab(index, tab.id)?.title ?? tab.title,
-            agentControlled: this.dockStoredTab(index, tab.id)?.agentControlled === true,
-            sandboxMode: this.dockStoredTab(index, tab.id)?.terminalSandbox ?? '',
-            keyPrefix: 'desktopDockTerminal-' + index + '-' + tab.id, compact: true })
-        } else {
-          Row({ space: 4 }) {
-            if (tab.kind === DesktopDockKind.BROWSER) {
-              Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
-            } else if (tab.kind === DesktopDockKind.COMPACTION) {
-              Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+      if (this.terminalRename?.tabId === tab.id) {
+        Row() { this.DockTerminalHeading(index, tab, true) }
+          .height(28).padding({ left: 7, right: 2 }).constraintSize({ maxWidth: 200 })
+      } else {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          if (tab.kind === DesktopDockKind.TERMINAL) {
+            this.DockTerminalHeading(index, tab, true)
+          } else {
+            Row({ space: 4 }) {
+              if (tab.kind === DesktopDockKind.BROWSER) {
+                Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
+              } else if (tab.kind === DesktopDockKind.COMPACTION) {
+                Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+              }
+              Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .fontColor($r('sys.color.font_primary'))
             }
-            Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              .fontColor($r('sys.color.font_primary'))
           }
-        }
-      }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
-        .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
-        .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
-        .priorityGesture(GestureGroup(GestureMode.Parallel,
-          PanGesture({ direction: PanDirection.All, distance: 8 })
-            .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, true); })
-            .onActionUpdate((event: GestureEvent): void => { this.updateDockDrag(event); })
-            .onActionEnd((event: GestureEvent): void => { this.updateDockDrag(event); this.endDockDrag(true); })
-            .onActionCancel((): void => { this.endDockDrag(false); }),
-          LongPressGesture({ duration: 300 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
-            .onAction((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, false); })
-            .onActionEnd((): void => { this.disarmDockDrag(); })
-            .onActionCancel((): void => { this.disarmDockDrag(); })))
+        }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
+          .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
+          .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
+          .priorityGesture(GestureGroup(GestureMode.Parallel,
+            PanGesture({ direction: PanDirection.All, distance: 8 })
+              .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, true); })
+              .onActionUpdate((event: GestureEvent): void => { this.updateDockDrag(event); })
+              .onActionEnd((event: GestureEvent): void => { this.updateDockDrag(event); this.endDockDrag(true); })
+              .onActionCancel((): void => { this.endDockDrag(false); }),
+            LongPressGesture({ duration: 300 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+              .onAction((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, false); })
+              .onActionEnd((): void => { this.disarmDockDrag(); })
+              .onActionCancel((): void => { this.disarmDockDrag(); }),
+            TapGesture({ count: 2, distanceThreshold: 6 }).onAction((): void => {
+              if (tab.kind === DesktopDockKind.TERMINAL) { this.startTerminalRename(index, tab.id); }
+            })))
+      }
       Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Image($r('app.media.dsh_dock_close')).width(11).height(11).accessibilityLevel('no')
       }.key('desktopDockClose-' + index + '-' + tab.id).width(21).height(24).padding(0)
@@ -4055,24 +4148,29 @@ struct DesktopWorkspace {
     Stack({ alignContent: Alignment.BottomEnd }) {
       Column() {
         Row({ space: 3 }) {
-          Row() {
-            if (panel.tab.kind === DesktopDockKind.TERMINAL) {
-              DesktopTerminalTitle({ title: this.floatingPanel(panel.tab.id)?.tab.title ?? panel.tab.title,
-                agentControlled: this.floatingPanel(panel.tab.id)?.tab.agentControlled === true,
-                sandboxMode: this.floatingPanel(panel.tab.id)?.tab.terminalSandbox ?? '',
-                keyPrefix: 'desktopFloatTerminal-' + panel.tab.id })
-            } else {
-              Text(panel.tab.title).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
+          if (this.terminalRename?.tabId === panel.tab.id) {
+            Row() { this.DockTerminalHeading(-1, panel.tab, false) }
+              .layoutWeight(1).height(36).padding({ left: 11 }).justifyContent(FlexAlign.Start)
+          } else {
+            Row() {
+              if (panel.tab.kind === DesktopDockKind.TERMINAL) {
+                this.DockTerminalHeading(-1, panel.tab, false)
+              } else {
+                Text(panel.tab.title).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
+              }
             }
+              .layoutWeight(1).height(36).padding({ left: 11 }).justifyContent(FlexAlign.Start)
+              .key('desktopDockFloatTitle-' + panel.tab.id)
+              .gesture(GestureGroup(GestureMode.Exclusive, PanGesture({ direction: PanDirection.All, distance: 3 })
+                .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, -1, panel.tab, true); })
+                .onActionUpdate((event: GestureEvent): void => { this.updateDockDrag(event); })
+                .onActionEnd((event: GestureEvent): void => { this.updateDockDrag(event); this.endDockDrag(true); })
+                .onActionCancel((): void => { this.endDockDrag(false); }),
+                TapGesture({ count: 2, distanceThreshold: 2 }).onAction((): void => {
+                  if (panel.tab.kind === DesktopDockKind.TERMINAL) { this.startTerminalRename(-1, panel.tab.id); }
+                })))
           }
-            .layoutWeight(1).height(36).padding({ left: 11 }).justifyContent(FlexAlign.Start)
-            .key('desktopDockFloatTitle-' + panel.tab.id)
-            .gesture(PanGesture({ direction: PanDirection.All, distance: 3 })
-              .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, -1, panel.tab, true); })
-              .onActionUpdate((event: GestureEvent): void => { this.updateDockDrag(event); })
-              .onActionEnd((event: GestureEvent): void => { this.updateDockDrag(event); this.endDockDrag(true); })
-              .onActionCancel((): void => { this.endDockDrag(false); }))
           Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Image($r('app.media.sidebar_toggle')).width(16).height(16).rotate({ angle: 180 })
               .fillColor($r('sys.color.font_primary')).accessibilityLevel('no')

@@ -1009,6 +1009,7 @@
     { "name": "desktop_pdf_next_page", "value": "Next page" },
     { "name": "desktop_pdf_page_count", "value": "Page %1$d of %2$d" },
     { "name": "desktop_terminal_chrome_title", "value": "Terminal" },
+    { "name": "desktop_terminal_rename_action", "value": "Rename" },
     { "name": "desktop_terminal_chrome_new", "value": "New terminal" },
     { "name": "desktop_terminal_chrome_description", "value": "Run commands in the Session workspace" },
     { "name": "desktop_terminal_chrome_loading", "value": "Reading terminal environment…" },

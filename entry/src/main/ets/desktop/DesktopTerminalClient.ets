@@ -310,21 +310,6 @@ export class DesktopTerminalClient {
     else { this.select(row.id); }
   }
 
-  async rename(id: string, title: string): Promise<void> {
-    const result = await this.host.call('terminal/rename', { 'agentId': this.sessionId, 'id': id, 'title': title });
-    if (!this.live) {
-      return;
-    }
-    this.error = desktopHostProblem(result);
-    if (result.ok) {
-      this.terminals = this.terminals.map((row: DesktopTerminalRow): DesktopTerminalRow => {
-        return row.id === id ? { id: row.id, title: title, state: row.state, cwd: row.cwd,
-          origin: row.origin, control: row.control, sandboxMode: row.sandboxMode } : row;
-      });
-    }
-    this.publish();
-  }
-
   async closeTerminal(id: string): Promise<void> {
     if (this.busy || !id) {
       return;

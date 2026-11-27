@@ -32,6 +32,7 @@ export struct DesktopTerminalPane {
   openInNewTab?: (row: DesktopTerminalRow) => boolean;
   onHidePanel: () => void = (): void => {};
   onCreateShortcut: () => void = () => {};
+  onRename: () => void = () => {};
   onTerminalSelected: (sessionId: string, terminalId: string, title: string) => void =
     (_sessionId: string, _terminalId: string, _title: string): void => {};
   onShortcut: (event: KeyEvent) => boolean = (_event: KeyEvent): boolean => false;
@@ -40,9 +41,6 @@ export struct DesktopTerminalPane {
   @State private input: string = '';
   @State private inputFocused: boolean = false;
   @State private visibleScreen: string = '';
-  @State private renameOpen: boolean = false;
-  @State private renameTitle: string = '';
-  private renameTerminalId: string = '';
   private canvas: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private client?: DesktopTerminalClient;
   private frame?: TerminalPaintFrame;
@@ -79,7 +77,6 @@ export struct DesktopTerminalPane {
     this.state = undefined;
     this.frame = undefined;
     this.visibleScreen = '';
-    this.renameOpen = false;
     this.draw();
     if (this.host === undefined || !this.active || !this.shown || this.sessionId.length === 0) {
       return;
@@ -186,12 +183,7 @@ export struct DesktopTerminalPane {
 
   private actions(): MenuElement[] {
     return [
-      { value: '重命名', action: (): void => {
-        this.renameTerminalId = this.state?.selected ?? '';
-        if (!this.renameTerminalId) { return; }
-        this.renameTitle = this.selected()?.title ?? '';
-        this.renameOpen = true;
-      } },
+      { value: $r('app.string.desktop_terminal_rename_action'), action: this.onRename },
       { value: '重连终端', action: (): void => { this.client?.reconnect(); } },
       { value: '复制当前屏幕', action: (): void => {
         this.copyScreen().catch((): void => {});
@@ -530,18 +522,6 @@ export struct DesktopTerminalPane {
       }
       .width('100%').height(42).padding({ left: 10, right: 7 })
       .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
-      if (this.renameOpen) {
-        Row({ space: 6 }) {
-          TextInput({ text: this.renameTitle, placeholder: '终端名称' }).layoutWeight(1).maxLength(120)
-            .onChange((value: string): void => { this.renameTitle = value; })
-          Button('保存').enabled(this.renameTitle.trim().length > 0).onClick((): void => {
-            this.client?.rename(this.renameTerminalId, this.renameTitle.trim());
-            this.renameOpen = false;
-          })
-          Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.renameOpen = false; })
-        }
-        .padding(8).width('100%')
-      }
       if (this.state?.selected) {
         if (this.state.canTakeInput) {
           Row({ space: 8 }) {

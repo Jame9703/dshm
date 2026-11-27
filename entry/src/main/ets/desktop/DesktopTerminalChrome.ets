@@ -8,6 +8,9 @@ export struct DesktopTerminalTitle {
   @Prop sandboxMode: string = '';
   @Prop keyPrefix: string = 'desktopTerminal';
   @Prop compact: boolean = false;
+  @Prop editVersion: number = -1;
+  onRenameFinished: (version: number, value: string, save: boolean) => void =
+    (_version: number, _value: string, _save: boolean): void => {};
 
   private sandboxed(): boolean {
     return this.sandboxMode === 'read-only' || this.sandboxMode === 'workspace-write';
@@ -32,10 +35,80 @@ export struct DesktopTerminalTitle {
           .backgroundColor(this.agentControlled ? $r('app.color.desktop_terminal_agent_fill') : $r('app.color.workspace_selection'))
           .accessibilityDescription(this.badgeHint())
       }
-      Text(this.title.length > 0 ? this.title : $r('app.string.desktop_terminal_chrome_title'))
-        .key(this.keyPrefix + 'TitleLabel').fontSize(this.compact ? 12 : 13).fontColor($r('sys.color.font_primary'))
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+      if (this.editVersion >= 0) {
+        DesktopTerminalNameInput({ initialTitle: this.title, version: this.editVersion,
+          compact: this.compact, onFinished: this.onRenameFinished })
+      } else {
+        Text(this.title.length > 0 ? this.title : $r('app.string.desktop_terminal_chrome_title'))
+          .key(this.keyPrefix + 'TitleLabel').fontSize(this.compact ? 12 : 13).fontColor($r('sys.color.font_primary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+      }
     }.key(this.keyPrefix + 'Title').width('100%')
+  }
+}
+
+@Component
+struct DesktopTerminalNameInput {
+  @Prop initialTitle: string = '';
+  @Prop version: number = -1;
+  @Prop compact: boolean = false;
+  onFinished: (version: number, value: string, save: boolean) => void =
+    (_version: number, _value: string, _save: boolean): void => {};
+  private draft: string = '';
+  private composing: boolean = false;
+  private controller = new TextInputController();
+  private hasFocused: boolean = false;
+  private finished: boolean = false;
+  private ownedVersion: number = -1;
+  private focusTimer: number = -1;
+
+  aboutToAppear(): void {
+    this.draft = this.initialTitle;
+    this.ownedVersion = this.version;
+    this.focusTimer = setTimeout((): void => {
+      if (!this.finished && !this.hasFocused) {
+        try { this.getUIContext().getFocusController().requestFocus('desktopTerminalRenameInput'); } catch (_) {}
+      }
+    }, 30);
+  }
+
+  aboutToDisappear(): void {
+    clearTimeout(this.focusTimer);
+    this.finished = true;
+  }
+
+  private finish(save: boolean, value: string): void {
+    if (this.finished) { return; }
+    this.finished = true;
+    this.onFinished(this.ownedVersion, value, save);
+  }
+
+  build() {
+    TextInput({ text: this.initialTitle, controller: this.controller })
+      .key('desktopTerminalRenameInput').accessibilityText($r('app.string.desktop_terminal_chrome_name'))
+      .width(120).constraintSize({ minWidth: 48 }).flexShrink(1).height(23).borderRadius(4)
+      .padding({ left: 4, right: 4, top: 0, bottom: 0 }).fontSize(this.compact ? 12 : 13)
+      .backgroundColor($r('app.color.workspace_canvas')).border({ width: 0.5, color: $r('app.color.workspace_border') })
+      .maxLength(120).enterKeyType(EnterKeyType.Done)
+      .onChange((value: string, preview?: PreviewText): void => {
+        this.composing = (preview?.value.length ?? 0) > 0;
+        if (!this.composing) { this.draft = value; }
+      })
+      .onFocus((): void => {
+        if (this.hasFocused || this.finished) { return; }
+        this.hasFocused = true;
+        this.controller.setTextSelection(0, this.draft.length, { menuPolicy: MenuPolicy.HIDE });
+      })
+      .onBlur((): void => { if (this.hasFocused) { this.finish(true, this.draft); } })
+      .onSubmit((_enter: EnterKeyType, event: SubmitEvent): void => {
+        if (this.composing) { event.keepEditableState(); }
+        else { this.finish(true, event.text); }
+      })
+      .onKeyEvent((event: KeyEvent): boolean => {
+        if (this.composing || event.type !== KeyType.Down || event.keyCode !== KeyCode.KEYCODE_ESCAPE) { return false; }
+        this.finish(false, this.draft);
+        return true;
+      })
   }
 }
 

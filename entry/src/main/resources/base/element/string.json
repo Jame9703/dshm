@@ -1050,6 +1050,7 @@
     { "name": "desktop_pdf_next_page", "value": "下一页" },
     { "name": "desktop_pdf_page_count", "value": "第 %1$d / %2$d 页" },
     { "name": "desktop_terminal_chrome_title", "value": "终端" },
+    { "name": "desktop_terminal_rename_action", "value": "重命名" },
     { "name": "desktop_terminal_chrome_new", "value": "新建终端" },
     { "name": "desktop_terminal_chrome_description", "value": "在会话工作区运行命令" },
     { "name": "desktop_terminal_chrome_loading", "value": "正在读取终端环境…" },
