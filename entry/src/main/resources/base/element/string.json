@@ -1011,6 +1011,14 @@
     { "name": "desktop_chat_usage_hit", "value": "缓存命中 %s" },
     { "name": "desktop_chat_usage_activity_title", "value": "会话统计" },
     { "name": "desktop_chat_usage_turn_title", "value": "本轮用量" },
-    { "name": "desktop_chat_usage_turn_label", "value": "用量 %s tok" }
+    { "name": "desktop_chat_usage_turn_label", "value": "用量 %s tok" },
+    { "name": "desktop_workspace_search_placeholder", "value": "搜索会话名称" },
+    { "name": "desktop_workspace_search_clear", "value": "清除搜索" },
+    { "name": "desktop_workspace_search_pending", "value": "正在搜索会话历史…" },
+    { "name": "desktop_workspace_search_empty", "value": "无匹配会话" },
+    { "name": "desktop_workspace_search_has_more", "value": "仅显示前 %d 条结果，请缩小搜索范围。" },
+    { "name": "desktop_workspace_search_ungrouped", "value": "未分组" },
+    { "name": "desktop_workspace_search_restore", "value": "取消归档" },
+    { "name": "desktop_workspace_search_unavailable", "value": "暂时无法搜索会话历史。" }
   ]
 }

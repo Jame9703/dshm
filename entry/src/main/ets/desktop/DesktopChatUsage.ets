@@ -6,6 +6,9 @@ import {
 import { desktopChatCachePercent, desktopChatCompactTokens, desktopChatExactTokens, desktopChatTokensPerSecond } from './DesktopChatUsageFormat';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 
+const READING_FONT_SIZE: number = 12;
+const READING_TIP_DELAY_MS: number = 200;
+
 interface ChatUsageDetail {
   id: string;
   label: Resource;
@@ -72,34 +75,194 @@ function tokenRows(input: number, output: number, hit: string, read?: number, wr
 @Component
 struct DesktopChatUsagePill {
   @Prop glyph: Resource = $r('app.media.dsh_chat_usage_database');
-  @Prop @Watch('closePopup') ownerKey: string = '';
-  @Prop @Watch('closePopup') simpleReading: boolean = false;
+  @Prop @Watch('resetPill') ownerKey: string = '';
+  @Prop @Watch('resetPill') simpleReading: boolean = false;
+  @Prop enableReadingTip: boolean = false;
+  @Prop @Watch('readingGeometryChanged') triggerMaxWidth: number = 400;
   @Prop triggerKey: string = '';
   @Prop popupKey: string = '';
   @Prop title: Resource = $r('app.string.desktop_chat_usage_session_title');
   @Prop titleValue: ResourceStr = '';
-  @Prop label: ResourceStr = '';
-  @Prop secondLabel: ResourceStr = '';
+  @Prop @Watch('scheduleClippingCheck') label: ResourceStr = '';
+  @Prop @Watch('scheduleClippingCheck') secondLabel: ResourceStr = '';
   @Prop detailRows: ChatUsageDetail[] = [];
   @Prop iconSize: number = 14;
   @Prop triggerHeight: number = 22;
   @Prop labelHidden: boolean = false;
-  @Prop availableWidth: number = 348;
+  @Prop @Watch('readingGeometryChanged') availableWidth: number = 348;
   @State private popupVisible: boolean = false;
   @State private hovering: boolean = false;
+  @State private readingClipped: boolean = false;
+  @State private readingTip: boolean = false;
+  @State private readingPinned: boolean = false;
+
+  private labelWidth: number = -1;
+  private secondLabelWidth: number = -1;
+  private measuring: number = -1;
+  private hoverDelay: number = -1;
+  private observing: boolean = false;
+  private labelFocused: boolean = false;
+
+  aboutToAppear(): void {
+    this.observing = true;
+    this.scheduleClippingCheck();
+  }
+
+  aboutToDisappear(): void {
+    this.observing = false;
+    if (this.measuring >= 0) { clearTimeout(this.measuring); this.measuring = -1; }
+    this.resetPill();
+  }
 
   private closePopup(): void { this.popupVisible = false; }
 
-  private detailValue(id: string): ResourceStr {
-    return this.detailRows.find((row: ChatUsageDetail): boolean => row.id === id)?.value ?? '';
+  private resetPill(): void {
+    this.closePopup();
+    this.dismissTip();
+    this.readingClipped = false;
+    this.scheduleClippingCheck();
+  }
+
+  private readingGeometryChanged(): void {
+    this.closeTip();
+    this.scheduleClippingCheck();
+  }
+
+  private readingSized(width: number, second: boolean): void {
+    if (!this.enableReadingTip || !Number.isFinite(width) || width < 0) { return; }
+    if (second) {
+      if (width === this.secondLabelWidth) { return; }
+      this.secondLabelWidth = width;
+    } else {
+      if (width === this.labelWidth) { return; }
+      this.labelWidth = width;
+    }
+    this.scheduleClippingCheck();
+  }
+
+  private isLabelClipped(label: ResourceStr, width: number): boolean {
+    if (label === '' || width < 0) { return false; }
+    const context = this.getUIContext();
+    const pixels = context.getMeasureUtils().measureText({ textContent: label, fontSize: READING_FONT_SIZE });
+    return Number.isFinite(pixels) && pixels > Math.ceil(context.vp2px(width));
+  }
+
+  private scheduleClippingCheck(): void {
+    if (!this.observing || !this.enableReadingTip || this.measuring >= 0) { return; }
+    // Size callbacks run during layout. Reconcile both segments outside that pass.
+    this.measuring = setTimeout((): void => {
+      this.measuring = -1;
+      if (!this.observing) { return; }
+      this.readingClipped = this.isLabelClipped(this.label, this.labelWidth) ||
+        this.isLabelClipped(this.secondLabel, this.secondLabelWidth);
+      if (!this.readingClipped) {
+        this.closeTip();
+      } else if (this.labelFocused) {
+        this.showTip();
+      } else if (this.hovering) {
+        this.scheduleHoverTip();
+      }
+    }, 0);
+  }
+
+  private cancelHoverDelay(): void {
+    if (this.hoverDelay < 0) { return; }
+    clearTimeout(this.hoverDelay);
+    this.hoverDelay = -1;
+  }
+
+  private closeTip(): void {
+    this.cancelHoverDelay();
+    this.readingTip = false;
+    this.readingPinned = false;
+  }
+
+  private dismissTip(): void {
+    this.closeTip();
+    this.hovering = false;
+    this.labelFocused = false;
+  }
+
+  private showTip(): void {
+    if (this.enableReadingTip && this.readingClipped && !this.popupVisible) { this.readingTip = true; }
+  }
+
+  private scheduleHoverTip(): void {
+    if (!this.readingClipped || this.popupVisible || this.readingTip || this.hoverDelay >= 0) { return; }
+    this.hoverDelay = setTimeout((): void => {
+      this.hoverDelay = -1;
+      if (this.observing && this.hovering) { this.showTip(); }
+    }, READING_TIP_DELAY_MS);
+  }
+
+  private hoverChanged(inside: boolean): void {
+    this.hovering = inside;
+    if (inside) {
+      this.scheduleHoverTip();
+    } else {
+      this.cancelHoverDelay();
+      if (!this.readingPinned) { this.closeTip(); }
+    }
+  }
+
+  private focusChanged(focused: boolean): void {
+    this.labelFocused = focused;
+    if (focused) {
+      this.cancelHoverDelay();
+      this.showTip();
+    } else if (!this.hovering && !this.readingPinned) {
+      this.closeTip();
+    }
+  }
+
+  private togglePlainTip(): void {
+    if (!this.enableReadingTip || !this.readingClipped) { return; }
+    if (this.readingPinned) {
+      this.dismissTip();
+      return;
+    }
+    this.cancelHoverDelay();
+    this.readingPinned = true;
+    this.showTip();
+  }
+
+  private toggleDetails(): void {
+    this.dismissTip();
+    this.popupVisible = !this.popupVisible;
   }
 
   private dismissOnEscape(event: KeyEvent): boolean {
-    if (this.popupVisible && event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+    if (event.type !== KeyType.Down || event.keyCode !== KeyCode.KEYCODE_ESCAPE) { return false; }
+    if (this.popupVisible) {
       this.closePopup();
       return true;
     }
+    if (this.readingTip || this.hoverDelay >= 0) {
+      this.dismissTip();
+      return true;
+    }
     return false;
+  }
+
+  private handleKey(event: KeyEvent, plain: boolean = false): boolean {
+    if (event.type !== KeyType.Down) { return false; }
+    if (this.dismissOnEscape(event)) { return true; }
+    if (event.keyCode === KeyCode.KEYCODE_TAB && this.simpleReading) { this.dismissTip(); }
+    if (plain && (event.keyCode === KeyCode.KEYCODE_ENTER || event.keyCode === KeyCode.KEYCODE_SPACE)) {
+      this.togglePlainTip();
+      return true;
+    }
+    return false;
+  }
+
+  private labelMaxWidth(second: boolean): number {
+    const width = this.triggerMaxWidth - this.iconSize - 21;
+    if (this.secondLabel === '') { return Math.max(1, width); }
+    return Math.max(1, (width - 16) * (second ? 0.43 : 0.57));
+  }
+
+  private detailValue(id: string): ResourceStr {
+    return this.detailRows.find((row: ChatUsageDetail): boolean => row.id === id)?.value ?? '';
   }
 
   @Builder
@@ -111,12 +274,16 @@ struct DesktopChatUsagePill {
   @Builder
   private Reading() {
     Row({ space: 6 }) {
-      Text(this.label).fontSize(12).fontColor($r('sys.color.font_tertiary'))
+      Text(this.label).fontSize(READING_FONT_SIZE).fontColor($r('sys.color.font_tertiary'))
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+        .constraintSize({ maxWidth: this.labelMaxWidth(false) })
+        .onSizeChange((_old: SizeOptions, size: SizeOptions): void => { this.readingSized(Number(size.width), false); })
       if (this.secondLabel !== '') {
         Text('·').fontSize(12).fontColor($r('sys.color.font_tertiary')).accessibilityLevel('no')
-        Text(this.secondLabel).fontSize(12).fontColor($r('sys.color.font_tertiary'))
+        Text(this.secondLabel).fontSize(READING_FONT_SIZE).fontColor($r('sys.color.font_tertiary'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+          .constraintSize({ maxWidth: this.labelMaxWidth(true) })
+          .onSizeChange((_old: SizeOptions, size: SizeOptions): void => { this.readingSized(Number(size.width), true); })
       }
     }.flexShrink(1)
   }
@@ -149,7 +316,7 @@ struct DesktopChatUsagePill {
     }.key(this.popupKey).accessibilityText(this.title)
       .width(Math.max(180, Math.min(360, this.availableWidth - 24))).constraintSize({ maxHeight: 315 })
       .align(Alignment.TopStart).focusable(true).defaultFocus(true)
-      .onKeyEvent((event: KeyEvent): boolean => this.dismissOnEscape(event))
+      .onKeyEvent((event: KeyEvent): boolean => this.handleKey(event))
   }
 
   @Builder
@@ -157,24 +324,58 @@ struct DesktopChatUsagePill {
     Row({ space: 5 }) {
       this.Glyph()
       if (!this.labelHidden) { this.Reading() }
-    }.padding({ left: this.labelHidden ? 6 : 8, right: this.labelHidden ? 6 : 8 })
+    }.padding({ left: this.labelHidden ? 6 : 8, right: this.labelHidden ? 6 : 8 }).flexShrink(1)
+  }
+
+  @Builder
+  private ReadingTip() {
+    Text() {
+      Span(this.label)
+      if (this.secondLabel !== '') {
+        Span(' · ')
+        Span(this.secondLabel)
+      }
+    }.key(this.triggerKey + 'Tooltip').fontSize(READING_FONT_SIZE)
+      .fontColor($r('sys.color.font_primary')).textAlign(TextAlign.Center)
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .constraintSize({ maxWidth: Math.max(100, Math.min(320, this.availableWidth - 24)) })
+      .focusable(this.readingPinned).defaultFocus(this.readingPinned)
+      .onKeyEvent((event: KeyEvent): boolean => this.handleKey(event))
   }
 
   build() {
     Row() {
-      if (this.simpleReading) {
-        Row() { this.Content() }.height(this.triggerHeight)
-      } else {
-        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          this.Content()
-        }.height(this.triggerHeight).padding(0).borderRadius(6).focusOnTouch(false)
-          .accessibilityGroup(true).accessibilityText(this.title)
-          .backgroundColor(this.popupVisible || this.hovering ? $r('app.color.workspace_selection') : Color.Transparent)
-          .onHover((inside: boolean): void => { this.hovering = inside; })
-          .onClick((): void => { this.popupVisible = !this.popupVisible; })
-          .onKeyEvent((event: KeyEvent): boolean => this.dismissOnEscape(event))
-      }
-    }.key(this.triggerKey).flexShrink(1)
+      Row() {
+        if (this.simpleReading) {
+          if (this.readingClipped) {
+            Row() { this.Content() }.height(this.triggerHeight).flexShrink(1).focusable(true)
+              .onFocus((): void => { this.focusChanged(true); })
+              .onBlur((): void => { this.focusChanged(false); })
+              .onClick((): void => { this.togglePlainTip(); })
+              .onKeyEvent((event: KeyEvent): boolean => this.handleKey(event, true))
+          } else {
+            Row() { this.Content() }.height(this.triggerHeight).flexShrink(1)
+          }
+        } else {
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            this.Content()
+          }.height(this.triggerHeight).padding(0).borderRadius(6).flexShrink(1).focusOnTouch(false)
+            .accessibilityGroup(true).accessibilityText(this.title)
+            .backgroundColor(this.popupVisible || this.hovering ? $r('app.color.workspace_selection') : Color.Transparent)
+            .onFocus((): void => { this.focusChanged(true); })
+            .onBlur((): void => { this.focusChanged(false); })
+            .onClick((): void => { this.toggleDetails(); })
+            .onKeyEvent((event: KeyEvent): boolean => this.handleKey(event))
+        }
+      }.flexShrink(1)
+        .onHover((inside: boolean): void => { this.hoverChanged(inside); })
+        .bindPopup(this.readingTip && !this.popupVisible, { builder: this.ReadingTip(), placement: Placement.Top,
+          targetSpace: 8, enableArrow: false, focusable: this.readingPinned, mask: false, autoCancel: this.readingPinned,
+          systemMaterial: desktopMenuOptions(Placement.Top).systemMaterial,
+          onStateChange: (event): void => {
+            if (!event.isVisible && this.readingTip) { this.dismissTip(); }
+          } })
+    }.key(this.triggerKey).flexShrink(1).constraintSize({ maxWidth: this.triggerMaxWidth })
       .bindPopup(this.popupVisible, { builder: this.Panel(), placement: Placement.TopLeft, targetSpace: 8,
         enableArrow: false, focusable: true, mask: false, autoCancel: true,
         systemMaterial: desktopMenuOptions(Placement.TopLeft).systemMaterial,
@@ -232,24 +433,44 @@ export struct DesktopChatUsageDock {
     return this.compact || !(activity.llmMs > 0 || activity.toolMs > 0 || activity.ttftSteps > 0 || this.speed());
   }
 
+  private showsActivity(): boolean {
+    return this.compact ? this.speed() !== '' : this.stats.activity.steps > 0;
+  }
+
+  private showsUsage(): boolean {
+    return this.stats.usage !== undefined && this.tokenTotal() > 0 && (!this.compact || this.cacheText() !== '');
+  }
+
+  private dockMaxWidth(): number {
+    return Math.max(48, Math.min(320, this.availableWidth / 2 - 16));
+  }
+
+  private pillMaxWidth(): number {
+    const width = this.dockMaxWidth();
+    return this.showsActivity() && this.showsUsage() ? (width - 2) / 2 : width;
+  }
+
   build() {
     Row({ space: 2 }) {
-      if (this.compact ? this.speed() !== '' : this.stats.activity.steps > 0) {
-        DesktopChatUsagePill({ glyph: $r('app.media.dsh_chat_usage_gauge'), ownerKey: this.sessionId,
+      if (this.showsActivity()) {
+        DesktopChatUsagePill({ glyph: $r('app.media.dsh_chat_usage_gauge'), ownerKey: this.sessionId, enableReadingTip: true,
           simpleReading: this.isPlainActivity(), triggerKey: 'desktopChatActivity', popupKey: 'desktopChatActivityPopup',
           title: $r('app.string.desktop_chat_usage_activity_title'), titleValue: this.counts(),
           label: this.activityLabel(), secondLabel: this.detailSpeed(),
-          detailRows: this.compact ? [] : activityRows(this.stats.activity), availableWidth: this.availableWidth })
+          detailRows: this.compact ? [] : activityRows(this.stats.activity), availableWidth: this.availableWidth,
+          triggerMaxWidth: this.pillMaxWidth() })
       }
-      if (this.stats.usage !== undefined && this.tokenTotal() > 0 && (!this.compact || this.cacheText() !== '')) {
-        DesktopChatUsagePill({ ownerKey: this.sessionId, simpleReading: this.compact,
+      if (this.showsUsage()) {
+        DesktopChatUsagePill({ ownerKey: this.sessionId, simpleReading: this.compact, enableReadingTip: true,
           triggerKey: 'desktopChatUsage', popupKey: 'desktopChatUsagePopup',
           title: $r('app.string.desktop_chat_usage_session_title'), titleValue: exactTokens(this.tokenTotal()),
           label: this.compact ? this.cacheLabel() : compactTokens(this.tokenTotal()),
           secondLabel: this.compact ? '' : this.cacheLabel(),
-          detailRows: this.compact ? [] : this.usageRows(), availableWidth: this.availableWidth })
+          detailRows: this.compact ? [] : this.usageRows(), availableWidth: this.availableWidth,
+          triggerMaxWidth: this.pillMaxWidth() })
       }
     }.key('desktopChatUsageDock').flexShrink(1)
+      .constraintSize({ maxWidth: this.dockMaxWidth() })
   }
 }
 

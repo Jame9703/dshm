@@ -1,3 +1,4 @@
+import { KeyCode } from '@kit.InputKit';
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
@@ -21,6 +22,8 @@ import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
 import { DesktopFeedback, DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback';
 import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
+import { DesktopWorkspaceSearchResults } from '../desktop/DesktopWorkspaceSearch';
+import { desktopWorkspaceSearchQuery } from '../desktop/DesktopWorkspaceSearchModel';
 import { desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
 import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
@@ -522,7 +525,7 @@ struct DesktopWorkspace {
       this.expandedIds = first === undefined ? [] : [first.id];
     }
     if (this.sidebarOrdering === DesktopSessionOrdering.MANUAL) { this.reconcileSessionOrders(newPins); }
-    this.filterGroups(this.query);
+    this.filterGroups();
     if (this.pendingForkId && (this.sessionId !== this.pendingForkSource || this.panel !== 'session' ||
       this.openSessionById(this.pendingForkId, false))) {
       this.pendingForkId = '';
@@ -736,7 +739,7 @@ struct DesktopWorkspace {
     const group = sessionId ? this.groups.find((item: DesktopWorkspaceGroup): boolean =>
       item.sessions.some((row: SessionListItem): boolean => row.id === sessionId)) : undefined;
     if (group !== undefined) { this.revealWorkspace(group.id); }
-    this.filterGroups(this.query);
+    this.filterGroups();
     this.saveSidebarView();
   }
 
@@ -754,7 +757,7 @@ struct DesktopWorkspace {
     this.clearWorkspaceDrag();
     this.sidebarGrouping = grouping;
     this.sidebarWatermarks = new Map<string, number>();
-    this.filterGroups(this.query);
+    this.filterGroups();
     this.saveSidebarView();
   }
 
@@ -762,7 +765,7 @@ struct DesktopWorkspace {
     if (ordering === this.sidebarOrdering) { return; }
     this.manualOrders = ordering === DesktopSessionOrdering.MANUAL ? this.snapshotSessionOrders() : new Map<string, string[]>();
     this.sidebarOrdering = ordering;
-    this.filterGroups(this.query);
+    this.filterGroups();
     this.saveSidebarView();
   }
 
@@ -840,6 +843,15 @@ struct DesktopWorkspace {
         this.getUIContext().getFocusController().requestFocus('desktopWorkspaceSearch');
       }
     }));
+  }
+
+  private closeSearch(): void {
+    this.query = '';
+    this.searchOpen = false;
+  }
+
+  private openSearchResult(id: string): void {
+    if (this.openSessionById(id)) { this.closeSearch(); }
   }
 
   private reloadShortcutBindings(): void {
@@ -946,9 +958,7 @@ struct DesktopWorkspace {
     }
   }
 
-  private filterGroups(value: string): void {
-    this.query = value;
-    const needle = value.trim().toLowerCase();
+  private filterGroups(): void {
     const archived = new Set<string>(this.archivedIds);
     const matches: DesktopWorkspaceGroup[] = [];
     const flat = this.sidebarGrouping === DesktopSessionGrouping.FLAT;
@@ -960,10 +970,9 @@ struct DesktopWorkspace {
       const visible = this.eligibleSidebarSessions(group.sessions).filter((row: SessionListItem): boolean => {
         const isArchived = archived.has(row.id);
         return (this.archiveFilter === DesktopArchiveFilter.ALL ||
-          isArchived === (this.archiveFilter === DesktopArchiveFilter.ONLY)) &&
-          (!needle || (!row.blank && row.title.toLowerCase().includes(needle)));
+          isArchived === (this.archiveFilter === DesktopArchiveFilter.ONLY));
       });
-      if (visible.length > 0 || (!needle && this.archiveFilter !== DesktopArchiveFilter.ONLY && group.id)) {
+      if (visible.length > 0 || (this.archiveFilter !== DesktopArchiveFilter.ONLY && group.id)) {
         const sessions = this.orderedSidebarSessions(visible, account, archived, true);
         matches.push({ id: group.id, path: group.path, title: group.title, sessions: sessions });
       }
@@ -1112,7 +1121,7 @@ struct DesktopWorkspace {
     this.selectedSessionDirectory = session.cwd;
     this.selectedWorkspaceTitle = group.title;
     this.data?.conversation.open(session.id, subagent);
-    if (changing && this.ready) { this.filterGroups(this.query); }
+    if (changing && this.ready) { this.filterGroups(); }
   }
 
   private openSubagent(entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean = false): void {
@@ -1918,8 +1927,8 @@ struct DesktopWorkspace {
     this.workspaceId = group.id;
     this.selectedWorkspaceTitle = group.title;
     this.sidebarCollapsed = false;
-    this.searchOpen = false;
-    this.filterGroups('');
+    this.closeSearch();
+    this.filterGroups();
     this.revealWorkspace(group.id);
   }
 
@@ -2527,7 +2536,7 @@ struct DesktopWorkspace {
     if (this.sidebarOrdering !== DesktopSessionOrdering.MANUAL) { this.manualOrders = this.snapshotSessionOrders(); }
     this.manualOrders.set(account, next);
     this.sidebarOrdering = DesktopSessionOrdering.MANUAL;
-    this.filterGroups(this.query);
+    this.filterGroups();
     this.saveSidebarView();
   }
 
@@ -2760,35 +2769,70 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private WorkspaceTree() {
-    Row() {
-      Text(this.sidebarGrouping === DesktopSessionGrouping.FLAT ? $r('app.string.desktop_sidebar_sessions') :
-        $r('app.string.desktop_experiment_workspaces'))
-        .fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
-      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Image($r('app.media.dsh_session_sliders_two_outline')).width(16).height(16)
-          .supportSvg2(true).accessibilityLevel('no')
-      }.key('desktopWorkspaceArchiveFilter').width(32).height(32).padding(0).borderRadius(7)
-        .focusOnTouch(false).accessibilityText('视图选项').enabled(this.ready)
-        .bindMenu(this.SidebarViewMenu, desktopMenuOptions(Placement.BottomRight))
-      this.IconButton($r('sys.symbol.magnifyingglass'), $r('app.string.desktop_experiment_search'),
-        (): void => {
-          this.searchOpen = !this.searchOpen;
-          if (!this.searchOpen) {
-            this.filterGroups('');
+  private WorkspaceSearchButton() {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Image($r('app.media.dsh_workspace_search_outline')).width(this.sidebarCollapsed ? 18 : 14)
+        .height(this.sidebarCollapsed ? 18 : 14).supportSvg2(true).accessibilityLevel('no')
+    }.key('desktopWorkspaceSearchToggle').width(this.sidebarCollapsed ? 36 : 32).height(this.sidebarCollapsed ? 36 : 32)
+      .padding(0).borderRadius(7).focusOnTouch(false).enabled(this.ready)
+      .accessibilityText($r('app.string.desktop_experiment_search')).onClick((): void => { this.focusSearch(); })
+  }
+
+  @Builder
+  private WorkspaceSearchField() {
+    Row({ space: 5 }) {
+      Image($r('app.media.dsh_workspace_search_outline')).width(11).height(11)
+        .supportSvg2(true).accessibilityLevel('no')
+      TextInput({ text: this.query, placeholder: $r('app.string.desktop_workspace_search_placeholder') })
+        .key('desktopWorkspaceSearch').height(32).layoutWeight(1).fontSize(14).maxLength(500)
+        .padding(0).backgroundColor(Color.Transparent)
+        .onChange((value: string): void => { this.query = desktopWorkspaceSearchQuery(value); })
+        .onBlur((): void => { if (!this.query.trim()) { this.closeSearch(); } })
+        .onKeyEvent((event: KeyEvent): boolean => {
+          if (event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+            this.closeSearch();
+            event.stopPropagation();
+            return true;
           }
+          return false;
         })
-      this.IconButton($r('sys.symbol.plus'), $r('app.string.desktop_experiment_add_workspace'),
-        (): void => { this.addWorkspace(); })
-    }
-    .width('100%').padding({ left: 8 }).margin({ top: 14 })
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Image($r('app.media.dsh_workspace_search_clear')).width(14).height(14)
+          .supportSvg2(true).accessibilityLevel('no')
+      }.key('desktopWorkspaceSearchClear').width(26).height(26).padding(0).borderRadius(6).focusOnTouch(false)
+        .accessibilityText($r('app.string.desktop_workspace_search_clear')).onClick((): void => { this.closeSearch(); })
+    }.width('100%').height(32).margin({ top: 14 }).padding({ left: 9, right: 4 }).borderRadius(8)
+      .backgroundColor($r('app.color.workspace_selection'))
+  }
+
+  @Builder
+  private WorkspaceTree() {
     if (this.searchOpen) {
-      TextInput({ text: this.query, placeholder: $r('app.string.desktop_experiment_search') })
-        .key('desktopWorkspaceSearch')
-        .height(32).borderRadius(8).fontSize(14).backgroundColor($r('app.color.workspace_selection'))
-        .onChange((value: string): void => this.filterGroups(value))
+      this.WorkspaceSearchField()
+    } else {
+      Row() {
+        Text(this.sidebarGrouping === DesktopSessionGrouping.FLAT ? $r('app.string.desktop_sidebar_sessions') :
+          $r('app.string.desktop_experiment_workspaces'))
+          .fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.dsh_session_sliders_two_outline')).width(16).height(16)
+            .supportSvg2(true).accessibilityLevel('no')
+        }.key('desktopWorkspaceArchiveFilter').width(32).height(32).padding(0).borderRadius(7)
+          .focusOnTouch(false).accessibilityText('视图选项').enabled(this.ready)
+          .bindMenu(this.SidebarViewMenu, desktopMenuOptions(Placement.BottomRight))
+        this.WorkspaceSearchButton()
+        this.IconButton($r('sys.symbol.plus'), $r('app.string.desktop_experiment_add_workspace'),
+          (): void => { this.addWorkspace(); })
+      }
+      .width('100%').padding({ left: 8 }).margin({ top: 14 })
     }
-    if (this.ready) {
+    if (this.ready && this.query.trim().length > 0) {
+      DesktopWorkspaceSearchResults({ host: this.data?.actions, query: this.query, sessions: this.sessionSummaries,
+        groups: this.groups, archiveFilter: this.archiveFilter, archivedIds: this.archivedIds, selectedId: this.sessionId,
+        restoreEnabled: !this.workspaceBusy,
+        onOpen: (id: string): void => { this.openSearchResult(id); },
+        onRestore: (id: string): void => { this.restoreSession(id); } })
+    } else if (this.ready) {
       List({ space: 2 }) {
         ForEach(this.displaySidebarSections(), (section: DesktopSidebarDisplaySection): void => {
           if (section.header) {
@@ -2904,6 +2948,7 @@ struct DesktopWorkspace {
       if (!this.sidebarCollapsed) {
         this.WorkspaceTree()
       } else {
+        this.WorkspaceSearchButton()
         Blank()
       }
       if (this.ready && this.data !== undefined) {

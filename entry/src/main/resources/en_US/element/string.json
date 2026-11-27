@@ -970,6 +970,14 @@
     { "name": "desktop_chat_usage_hit", "value": "Cache hit %s" },
     { "name": "desktop_chat_usage_activity_title", "value": "Session statistics" },
     { "name": "desktop_chat_usage_turn_title", "value": "Turn usage" },
-    { "name": "desktop_chat_usage_turn_label", "value": "Usage %s tok" }
+    { "name": "desktop_chat_usage_turn_label", "value": "Usage %s tok" },
+    { "name": "desktop_workspace_search_placeholder", "value": "Search session names" },
+    { "name": "desktop_workspace_search_clear", "value": "Clear search" },
+    { "name": "desktop_workspace_search_pending", "value": "Searching session history…" },
+    { "name": "desktop_workspace_search_empty", "value": "No matching sessions" },
+    { "name": "desktop_workspace_search_has_more", "value": "Showing the first %d results. Narrow your search." },
+    { "name": "desktop_workspace_search_ungrouped", "value": "Ungrouped" },
+    { "name": "desktop_workspace_search_restore", "value": "Unarchive session" },
+    { "name": "desktop_workspace_search_unavailable", "value": "Session history search is unavailable." }
   ]
 }
