@@ -847,10 +847,12 @@ export async function pickDocument(context: common.Context): Promise<PickedFile>
   return readDocumentUri(selected.uris[0]);
 }
 
-export async function pickDocumentUris(context: common.Context, maxSelectNumber: number): Promise<PickedDocumentUris> {
+export async function pickDocumentUris(context: common.Context, maxSelectNumber: number,
+  suffixes?: string[]): Promise<PickedDocumentUris> {
   try {
     const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
     options.maxSelectNumber = maxSelectNumber;
+    if (suffixes !== undefined) { options.fileSuffixFilters = suffixes; }
     const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(context);
     const uris = await view.select(options);
     return { outcome: uris.length > 0 ? PickOutcome.PICKED : PickOutcome.CANCELLED, uris: uris, reason: '' };
@@ -877,12 +879,13 @@ export async function readDocumentUri(uri: string): Promise<PickedFile> {
   }
 }
 
-export async function readDocumentBytes(uri: string, imageLimit?: number): Promise<PickedDocumentBytes> {
+export async function readDocumentBytes(uri: string, imageLimit?: number, maxBytes?: number): Promise<PickedDocumentBytes> {
   const name: string = nameOfUri(uri);
   const mediaType = mediaTypeOf(name);
   const encodedImage = mediaType === 'image/png' || mediaType === 'image/jpeg' ||
     mediaType === 'image/webp' || mediaType === 'image/gif';
-  const limit = encodedImage && imageLimit !== undefined && imageLimit > 0 ? imageLimit : MAX_ATTACHMENT_BYTES;
+  const defaultLimit = encodedImage && imageLimit !== undefined && imageLimit > 0 ? imageLimit : MAX_ATTACHMENT_BYTES;
+  const limit = maxBytes !== undefined && maxBytes > 0 ? Math.min(defaultLimit, maxBytes) : defaultLimit;
   let file: fs.File | undefined = undefined;
   try {
     file = await fs.open(uri, fs.OpenMode.READ_ONLY);

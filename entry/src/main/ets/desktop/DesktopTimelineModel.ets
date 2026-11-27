@@ -24,6 +24,7 @@ export interface DesktopTimelineTask {
 
 export interface DesktopTimelineTree {
   id: string;
+  raw: Object;
   title: string;
   description: string;
   tasks: DesktopTimelineTask[];
@@ -140,7 +141,7 @@ function parseTree(raw: Object): DesktopTimelineTree | undefined {
       task.status = groupStatus(children);
     }
   }
-  return { id: id, title: title, description: getString(raw, 'description') ?? '', tasks: tasks,
+  return { id: id, raw: raw, title: title, description: getString(raw, 'description') ?? '', tasks: tasks,
     status: root.length > 0 ? groupStatus(root) : 'pending', progress: weighted(root) };
 }
 

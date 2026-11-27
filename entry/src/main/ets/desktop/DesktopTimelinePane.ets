@@ -1,8 +1,13 @@
 import type { StreamSink } from 'connection';
+import { dialogMaterial } from 'platform';
 import { getField, getNumber, getRecord, getString, randomUuid } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTimelineRuler } from './DesktopTimelineRuler';
+import { desktopTimelineCheckpoint, desktopTimelineCheckpointName, previewDesktopTimelineCheckpoint } from './DesktopTimelineCheckpoint';
+import { saveDesktopTimelineCheckpoint } from './DesktopTimelineTransferIO';
+import { DesktopTimelineTransferDialog } from './DesktopTimelineTransferDialog';
+import type { DesktopTimelineImportRequest } from './DesktopTimelineTransferDialog';
 import { desktopTimelineControlDeadline, desktopTimelinePlayback } from './DesktopTimelineControl';
 import type { DesktopTimelinePlayback } from './DesktopTimelineControl';
 import { desktopTimelineDiscussionKey, desktopTimelineDiscussionNotice, desktopTimelineDiscussionPayload,
@@ -31,6 +36,7 @@ export struct DesktopTimelinePane {
   @Prop @Watch('openingChanged') opening?: DesktopTimelineSource = undefined;
   @Prop @Watch('activeChanged') active: boolean = false;
   @Prop writable: boolean = false;
+  @Prop running: boolean = false;
   onWeb: () => void = (): void => {};
   onNotify: (sessionId: string, text: string) => Promise<string> =
     (_sessionId: string, _text: string): Promise<string> => Promise.resolve('unavailable');
@@ -47,6 +53,12 @@ export struct DesktopTimelinePane {
   @State private updating: boolean = false;
   @State private failed: boolean = false;
   @State private editBusy: boolean = false;
+  @State private transferStatus: string = '';
+  @State private exportBusy: boolean = false;
+  private transferDialog: number = -1;
+  private transferOpening: boolean = false;
+  private transferBusy: boolean = false;
+  private transferVersion: number = 0;
   @State private actionStatus: string = '';
   @State private discussionText: string = '';
   @State private discussionScope: string = '';
@@ -78,6 +90,7 @@ export struct DesktopTimelinePane {
 
   aboutToDisappear(): void {
     this.mounted = false;
+    this.closeTransfer();
     this.stop();
   }
 
@@ -86,6 +99,7 @@ export struct DesktopTimelinePane {
       this.retries = 0;
       this.connect();
     } else {
+      this.closeTransfer();
       this.stop();
     }
   }
@@ -408,7 +422,8 @@ export struct DesktopTimelinePane {
   }
 
   private canWrite(): boolean {
-    return this.mounted && this.active && this.writable && !this.editBusy && this.host !== undefined && !!this.sessionId;
+    return this.mounted && this.active && this.writable && !this.editBusy && !this.exportBusy &&
+      this.host !== undefined && !!this.sessionId;
   }
 
   private isDiscussionOpen(scope: DesktopTimelineDiscussionTarget): boolean {
@@ -703,14 +718,144 @@ export struct DesktopTimelinePane {
     }
   }
 
+  private canImport(): boolean { return this.canWrite() && !this.running; }
+
+  private treeTransferOptions(tree: DesktopTimelineTree): MenuElement[] {
+    const items: MenuElement[] = [];
+    if (tree.tasks.some((task: DesktopTimelineTask): boolean => task.children > 0)) {
+      items.push({ value: this.folded.length > 0 ? $r('app.string.desktop_timeline_expand_branches') :
+        $r('app.string.desktop_timeline_collapse_branches'), action: (): void => {
+        this.folded = this.folded.length > 0 ? [] : tree.tasks.filter((task: DesktopTimelineTask): boolean =>
+          task.children > 0).map((task: DesktopTimelineTask): string => task.id);
+      } });
+    }
+    if (this.writable) {
+      items.push({ value: $r('app.string.desktop_timeline_import_tree'), enabled: this.canImport(),
+        action: (): void => { this.openTransfer(); } });
+    }
+    items.push({ value: $r('app.string.desktop_timeline_export_tree'), enabled: !this.exportBusy,
+      action: (): void => { this.exportTree(tree.id); } });
+    return items;
+  }
+
+  private async exportTree(id: string): Promise<void> {
+    const context = this.getUIContext().getHostContext();
+    const tree = this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === id);
+    if (!this.mounted || !this.active || context === undefined || tree === undefined || this.exportBusy) { return; }
+    this.exportBusy = true;
+    this.transferStatus = '';
+    try {
+      const content = desktopTimelineCheckpoint(tree.raw, this.view.annotations, this.sessionId, Date.now());
+      if (content === undefined || previewDesktopTimelineCheckpoint(content) === undefined) {
+        this.transferStatus = this.resourceText($r('app.string.desktop_timeline_transfer_invalid'));
+        return;
+      }
+      const saved = await saveDesktopTimelineCheckpoint(context, desktopTimelineCheckpointName(tree.title), content);
+      if (this.mounted && saved) {
+        this.transferStatus = this.resourceText($r('app.string.desktop_timeline_transfer_exported'));
+      }
+    } catch (error) {
+      if (this.mounted) {
+        this.transferStatus = this.resourceText(error instanceof Error && error.message === 'limit' ?
+          $r('app.string.desktop_timeline_transfer_limit') : $r('app.string.desktop_timeline_transfer_export_failed'));
+      }
+    } finally {
+      if (this.mounted) { this.exportBusy = false; }
+    }
+  }
+
+  private async importTree(owner: string, version: number, request: DesktopTimelineImportRequest): Promise<string> {
+    const host = this.host;
+    if (!this.canImport() || owner !== this.sessionId || version !== this.transferVersion || host === undefined) {
+      return this.resourceText($r('app.string.desktop_timeline_transfer_wait_idle'));
+    }
+    this.editBusy = true;
+    this.transferStatus = '';
+    const payload: Record<string, Object> = { 'action': 'import', 'sessionId': owner, 'id': request.id,
+      'content': request.content, 'copy': request.copy, 'continue': request.proceed };
+    try {
+      const result = await host.editTimeline(payload);
+      const tree = getString(result.value, 'tree');
+      if (!this.mounted || !this.active || this.transferVersion !== version || owner !== this.sessionId) { return ''; }
+      if (!result.ok || getString(result.value, 'action') !== 'import' || !tree) {
+        return result.error?.message || this.resourceText($r('app.string.desktop_timeline_transfer_failed'));
+      }
+      this.selectTree(tree);
+      this.transferStatus = this.resourceText(request.proceed && getField(result.value, 'notified') !== true ?
+        $r('app.string.desktop_timeline_transfer_continue_unknown') : $r('app.string.desktop_timeline_transfer_imported'));
+      await this.refreshEditedTimeline();
+      return '';
+    } finally {
+      if (this.mounted) { this.editBusy = false; }
+    }
+  }
+
+  @Builder
+  private TransferContent(owner: string, version: number) {
+    DesktopTimelineTransferDialog({ running: this.running,
+      readOnly: (): boolean => !this.canImport() || owner !== this.sessionId || version !== this.transferVersion,
+      onBusy: (busy: boolean): void => { if (this.transferVersion === version) { this.transferBusy = busy; } },
+      onImport: (request: DesktopTimelineImportRequest): Promise<string> => this.importTree(owner, version, request),
+      onClose: (): void => { if (this.transferVersion === version) { this.closeTransfer(); } } })
+  }
+
+  private async openTransfer(): Promise<void> {
+    if (!this.canImport() || this.transferOpening || this.transferDialog >= 0) { return; }
+    const owner = this.sessionId;
+    const version = ++this.transferVersion;
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    this.transferOpening = true;
+    this.transferBusy = false;
+    try {
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.TransferContent(owner, version); },
+        width: 420, alignment: DialogAlignment.Center, autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        cornerRadius: 22, onWillDismiss: (action): void => { if (!this.transferBusy) { action.dismiss(); } },
+        onDidDisappear: (): void => {
+          if (version === this.transferVersion) {
+            this.transferDialog = -1;
+            this.transferBusy = false;
+            this.transferVersion++;
+          }
+        }
+      });
+      if (this.mounted && this.active && this.sessionId === owner && version === this.transferVersion) {
+        this.transferDialog = id;
+      } else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.mounted && version === this.transferVersion) {
+        this.transferStatus = this.resourceText($r('app.string.desktop_timeline_transfer_failed'));
+      }
+    } finally {
+      this.transferOpening = false;
+    }
+  }
+
+  private closeTransfer(): void {
+    if (this.transferDialog < 0 && !this.transferOpening) { return; }
+    this.transferVersion++;
+    const id = this.transferDialog;
+    this.transferDialog = -1;
+    this.transferBusy = false;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
+  }
+
   @Builder
   private Tasks(tree?: DesktopTimelineTree) {
     if (tree === undefined) {
       Text($r('app.string.desktop_timeline_no_tasks')).width('100%').fontSize(13).fontColor($r('sys.color.font_secondary'))
+      if (this.writable) {
+        Button($r('app.string.desktop_timeline_import_tree'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopTimelineTreeImport').enabled(this.canImport()).onClick((): void => { this.openTransfer(); })
+      }
     } else {
       Row({ space: 8 }) {
         Button(tree.title, { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).key('desktopTimelineTree')
           .bindMenu(this.treeOptions(), desktopMenuOptions(Placement.BottomLeft))
+        Button('···', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(30).height(30).padding(0)
+          .key('desktopTimelineTreeMenu').accessibilityText($r('app.string.desktop_timeline_tree_options'))
+          .bindMenu(this.treeTransferOptions(tree), desktopMenuOptions(Placement.BottomRight))
         Text((tree.progress * 100).toFixed(2) + '%').fontSize(12).fontColor($r('sys.color.font_secondary'))
       }.width('100%')
       Progress({ value: tree.progress * 100, total: 100, type: ProgressType.Linear }).width('100%')
@@ -830,6 +975,10 @@ export struct DesktopTimelinePane {
       }
       if (this.updating && !this.ready) { LoadingProgress().width(20).height(20) }
       if (this.view.error) { Text(this.view.error).fontSize(12).fontColor($r('app.color.workspace_status_error')) }
+      if (this.transferStatus) {
+        Text(this.transferStatus).key('desktopTimelineTransferStatus').width('100%')
+          .fontSize(12).fontColor($r('sys.color.font_secondary'))
+      }
       if (this.rulerVisited) {
         DesktopTimelineRuler({ host: this.host, active: this.active && this.rulerShown(), reports: this.view.reports,
           onOpen: (id: string): void => { this.pushDetail('', id); } })
