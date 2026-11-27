@@ -12,7 +12,7 @@ export { Connection, randomUuid, serializeCookies, deserializeCookies } from './
 export type { ConnectionOptions, CookiePersistence } from './protocol/Connection';
 
 export { FALLBACK_SURFACE } from './protocol/Surface';
-export type { ProtocolSurface } from './protocol/Surface';
+export type { CordisActionRoute, ProtocolSurface } from './protocol/Surface';
 
 export {
   API_CHANNEL,

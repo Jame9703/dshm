@@ -1,6 +1,6 @@
 import { Connection, getArray, getRecord, getString, RemoteFailure, rpcFail } from 'connection';
 import type { DuplexStream, RpcResult, StreamSink } from 'connection';
-import { argsFor, MODEL_CATALOG_ENDPOINT } from 'dshcompat';
+import { argsFor, MODEL_CATALOG_ENDPOINT, TIMELINE_EDIT_ROUTE } from 'dshcompat';
 import { desktopChangeSummary, DesktopChangeSummary } from './DesktopArtifacts';
 import { desktopModelCatalog } from './DesktopModelCatalog';
 import type { DesktopModelCatalogResult } from './DesktopModelCatalog';
@@ -64,6 +64,10 @@ export class DesktopHostActions {
     }
     return this.connection.call(endpoint, args,
       { timeoutMs: optionsTimeoutMs, responseLimit: responseLimit, sensitiveBody: sensitiveBody });
+  }
+
+  editTimeline(payload: Object): Promise<RpcResult> {
+    return this.connection.editTimeline(TIMELINE_EDIT_ROUTE, payload);
   }
 
   referencePathExists(sessionId: string, path: string): Promise<boolean> {

@@ -4011,6 +4011,9 @@ struct DesktopWorkspace {
       DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId,
         opening: this.chat?.sessionId === this.sessionId ? this.chat?.timeline : undefined,
         active: this.hasTimeline() && (index < 0 || (this.rightDock.expanded && this.rightDock.panes[index]?.active === tab.id)),
+        writable: this.hasTimeline() && (this.selectedSubagent === undefined || this.selectedSubagent.mode === 'continuable'),
+        onNotify: (id: string, text: string): Promise<string> =>
+          this.data?.conversation.sendTimelineNotice(id, text) ?? Promise.resolve('会话已切换'),
         onWeb: (): void => { this.openWeb(false); } })
     } else if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
       DesktopFilesPane({ host: this.data?.actions,

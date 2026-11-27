@@ -7,6 +7,9 @@
  */
 
 import { ProtocolSurface } from 'connection';
+import type { CordisActionRoute } from 'connection';
+
+export const TIMELINE_EDIT_ROUTE: CordisActionRoute = { channel: '/timeline', method: 'edit' };
 
 /**
  * 当前受支持的上游接口面。

@@ -14,6 +14,7 @@ export interface DesktopTimelineTask {
   details: string;
   status: string;
   priority: string;
+  ownPriority: string;
   share: number;
   progress: number;
   depth: number;
@@ -71,6 +72,7 @@ function parseTask(item: Object): DesktopTimelineTask | undefined {
   return { id: id, title: title, status: status, parent: getString(item, 'parent') ?? '',
     description: getString(item, 'description') ?? '', note: getString(item, 'note') ?? '',
     details: getString(item, 'details') ?? '', priority: getString(item, 'priority') ?? '',
+    ownPriority: getString(item, 'priority') ?? '',
     share: Math.max(Number.EPSILON, getNumber(item, 'timeShare') ?? 1),
     progress: status === 'done' ? 1 : total > 0 ? Math.max(0, Math.min(1, numeric(done[0]) / total)) : 0,
     depth: 0, children: 0, history: getArray(item, 'history') ?? [] };

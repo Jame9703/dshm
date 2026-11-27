@@ -9,6 +9,11 @@
  */
 
 /** 兼容面必须提供的最小事实集 */
+export interface CordisActionRoute {
+  channel: string;
+  method: string;
+}
+
 export interface ProtocolSurface {
   /** 一元 RPC channel（如 `/api`） */
   apiChannel: string;

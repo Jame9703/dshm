@@ -13,6 +13,7 @@ import {
   parseTarget
 } from './HostAddress';
 import { ProtocolSurface, FALLBACK_SURFACE } from './Surface';
+import type { CordisActionRoute } from './Surface';
 import { CookieJar } from './Cookies';
 import { HttpClient, HttpOutcome } from './HttpClient';
 import { AuthOutcome, AuthSession, isAuthFailureStatus } from './AuthSession';
@@ -557,6 +558,46 @@ export class Connection {
       return rpcFail(RemoteFailure.parse(`空响应体（${endpoint}）`));
     }
     return parseConnectionResponse(outcome.body, rpcId, endpoint);
+  }
+
+  /** Submit an owner Timeline edit using the same authenticated Host transport. */
+  async editTimeline(route: CordisActionRoute, payload: Object): Promise<RpcResult> {
+    const address = this.address;
+    if (address === undefined || !this.auth?.hasCookie()) {
+      return rpcFail(new RemoteFailure('auth/unauthorized', '尚未认证当前宿主', ''));
+    }
+    const channel = route.channel;
+    const method = route.method;
+    if (!checkTarget(channel, method).ok) {
+      return rpcFail(new RemoteFailure(CLIENT_FAILURE_CODE, '当前宿主协议不提供时间线编辑', ''));
+    }
+    const path = channel + '/' + method;
+    const rpcId = randomUuid();
+    const message: Record<string, Object> = {
+      'type': 'client-request', 'rpcId': rpcId, 'method': method, 'payload': payload
+    };
+    const body = stringifyJson(message);
+    if (body === undefined) { return rpcFail(RemoteFailure.parse('无法序列化时间线请求')); }
+    const url = address.baseUrl + path;
+    let outcome = await this.http.send(url, address.authority, true, body, this.options.defaultTimeoutMs,
+      false, 1024 * 1024, true);
+    // An authentication rejection is before dispatch. Ambiguous transport failures must never replay an edit.
+    if (isAuthFailureStatus(outcome.status) && this.address === address && (await this.rebind()).ok &&
+      this.address === address) {
+      outcome = await this.http.send(url, address.authority, true, body, this.options.defaultTimeoutMs,
+        false, 1024 * 1024, true);
+    }
+    if (this.address !== address) {
+      return rpcFail(RemoteFailure.carrier('时间线编辑期间宿主已切换'));
+    }
+    if (!outcome.responded) {
+      return rpcFail(RemoteFailure.carrier('宿主未确认时间线编辑'));
+    }
+    if (outcome.status !== 200) {
+      return rpcFail(new RemoteFailure(outcome.status === 401 ? 'auth/unauthorized' : 'carrier/transport',
+        '时间线请求失败（HTTP ' + outcome.status + '）', '', outcome.status));
+    }
+    return parseConnectionResponse(outcome.body, rpcId, path);
   }
 
   /** Read a JSON document on a named route at the authenticated Host. */

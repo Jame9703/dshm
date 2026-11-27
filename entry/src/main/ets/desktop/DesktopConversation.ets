@@ -550,9 +550,14 @@ export class DesktopConversation {
     }
   }
 
+  sendTimelineNotice(sessionId: string, text: string): Promise<string> {
+    const noCommand = (_id: string): Promise<string> => Promise.resolve('');
+    return this.send(sessionId, text, [], noCommand, noCommand, !this.busyEnterSteers, true);
+  }
+
   async send(sessionId: string, text: string, attachments: DesktopDraftAttachment[],
     onExport: (sessionId: string) => Promise<string>, onFeedback: (sessionId: string) => Promise<string>,
-    alternateDelivery: boolean): Promise<string> {
+    alternateDelivery: boolean, sensitiveBody: boolean = false): Promise<string> {
     if (sessionId !== this.sessionId) { return '当前会话已切换'; }
     const child = this.subagent;
     if (child !== undefined && (child.mode !== 'continuable' || !this.historyLoaded)) { return '该子智能体会话为只读'; }
@@ -612,7 +617,7 @@ export class DesktopConversation {
       try {
         const result = await this.host.call('subagents/prompt', {
           'childSessionId': child.id, 'requestId': requestId, 'delivery': mode, 'content': parts
-        });
+        }, 15000, undefined, sensitiveBody);
         if (!result.ok || !getString(result.value, 'messageId')) { return this.failure(result, '宿主未确认发送'); }
         accepted = true;
         this.pendingRequests.delete(sessionId);
@@ -631,7 +636,7 @@ export class DesktopConversation {
     let response: RpcResult | undefined;
     let accepted = false;
     try {
-      response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args);
+      response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args, { sensitiveBody: sensitiveBody });
       accepted = response?.ok === true && projectSessionPrompt(response.value).accepted;
     } finally {
       this.settleSubmission(sessionId, requestId, accepted);

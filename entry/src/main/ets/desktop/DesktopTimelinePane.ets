@@ -1,8 +1,11 @@
 import type { StreamSink } from 'connection';
-import { getNumber, getRecord, getString } from 'connection';
+import { getField, getNumber, getRecord, getString, randomUuid } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTimelineRuler } from './DesktopTimelineRuler';
+import { desktopTimelineDiscussionKey, desktopTimelineDiscussionNotice, desktopTimelineDiscussionPayload,
+  desktopTimelineOwnAnnotation, TIMELINE_DISCUSSION_LIMIT, TIMELINE_PRIORITIES } from './DesktopTimelineActions';
+import type { DesktopTimelineDiscussionTarget, DesktopTimelineNoticeLabels } from './DesktopTimelineActions';
 import { desktopTimelineValue, readDesktopTimeline } from './DesktopTimelineModel';
 import type { DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
@@ -19,7 +22,10 @@ export struct DesktopTimelinePane {
   @Prop sessionId: string = '';
   @Prop @Watch('openingChanged') opening?: DesktopTimelineSource = undefined;
   @Prop @Watch('activeChanged') active: boolean = false;
+  @Prop writable: boolean = false;
   onWeb: () => void = (): void => {};
+  onNotify: (sessionId: string, text: string) => Promise<string> =
+    (_sessionId: string, _text: string): Promise<string> => Promise.resolve('unavailable');
 
   @State private view: DesktopTimelineView = readDesktopTimeline();
   @State private viewRevision: number = 0;
@@ -32,6 +38,14 @@ export struct DesktopTimelinePane {
   @State private ready: boolean = false;
   @State private updating: boolean = false;
   @State private failed: boolean = false;
+  @State private editBusy: boolean = false;
+  @State private actionStatus: string = '';
+  @State private discussionText: string = '';
+  @State private discussionScope: string = '';
+  @State private discussionExpanded: boolean = false;
+  private publishedDiscussionText: string = '';
+  private discussionId: string = '';
+  private actionScope: string = '';
   private readonly scroll = new Scroller();
   private taskScroll: number = 0;
   private reportScroll: number = 0;
@@ -236,6 +250,194 @@ export struct DesktopTimelinePane {
     if (this.tab === 'tasks') { this.taskTrail = this.taskTrail.slice(0, -1); }
     else { this.reportTrail = this.reportTrail.slice(0, -1); }
     this.moveScroll(offset);
+  }
+
+  private writeScope(): DesktopTimelineDiscussionTarget | undefined {
+    const target = this.target();
+    if (target === undefined) { return undefined; }
+    if (this.tab === 'reports') {
+      return this.report(target.id) === undefined ? undefined : { kind: 'report', tree: '', id: target.id };
+    }
+    return this.task(target) === undefined ? undefined : { kind: 'task', tree: target.tree, id: target.id };
+  }
+
+  private actionKey(): string {
+    const scope = this.writeScope();
+    if (scope === undefined) { return ''; }
+    return desktopTimelineDiscussionKey(scope) + ':' + (scope.kind === 'task' ? this.task(this.target())?.ownPriority ?? '' : '');
+  }
+
+  private canWrite(): boolean {
+    return this.mounted && this.active && this.writable && !this.editBusy && this.host !== undefined && !!this.sessionId;
+  }
+
+  private isDiscussionOpen(scope: DesktopTimelineDiscussionTarget): boolean {
+    return this.discussionExpanded && desktopTimelineDiscussionKey(scope) === this.discussionScope;
+  }
+
+  private clearDiscussion(): void {
+    this.discussionText = '';
+    this.discussionScope = '';
+    this.discussionExpanded = false;
+    this.discussionId = '';
+    this.publishedDiscussionText = '';
+  }
+
+  private toggleDiscussion(scope: DesktopTimelineDiscussionTarget): void {
+    if (!this.canWrite()) { return; }
+    const key = desktopTimelineDiscussionKey(scope);
+    if (key === this.discussionScope) {
+      this.discussionExpanded = !this.discussionExpanded;
+      return;
+    }
+    this.clearDiscussion();
+    this.actionStatus = '';
+    this.discussionScope = key;
+    this.discussionExpanded = true;
+  }
+
+  private priorityOptions(): MenuElement[] {
+    const options: MenuElement[] = [];
+    options.push({ value: $r('app.string.desktop_timeline_priority_none'), action: (): void => { this.setPriority(null); } });
+    for (const priority of TIMELINE_PRIORITIES) {
+      options.push({ value: priority, action: (): void => { this.setPriority(priority); } });
+    }
+    return options;
+  }
+
+  private async refreshEditedTimeline(): Promise<void> {
+    const host = this.host;
+    if (host !== undefined && this.active && this.mounted) {
+      await this.readBaseline(host, { 'sessionId': this.sessionId }, this.generation);
+    }
+  }
+
+  private async setPriority(priority: string | null): Promise<void> {
+    const host = this.host;
+    const scope = this.writeScope();
+    const task = this.task(this.target());
+    if (!this.canWrite() || host === undefined || scope?.kind !== 'task' || task === undefined ||
+      task.ownPriority === (priority ?? '')) { return; }
+    this.editBusy = true;
+    this.actionStatus = '';
+    this.actionScope = desktopTimelineDiscussionKey(scope);
+    const payload: Record<string, Object | null> = {
+      'action': 'priority', 'sessionId': this.sessionId, 'tree': scope.tree, 'task': scope.id, 'priority': priority
+    };
+    const reply = await host.editTimeline(payload);
+    if (!this.mounted) { return; }
+    if (reply.ok && getString(reply.value, 'action') === 'priority') {
+      await this.refreshEditedTimeline();
+    } else {
+      this.actionStatus = reply.error?.message || this.resourceText($r('app.string.desktop_timeline_edit_failed'));
+    }
+    if (this.mounted) { this.editBusy = false; }
+  }
+
+  private resourceText(resource: Resource): string {
+    return this.getUIContext().getHostContext()?.resourceManager.getStringSync(resource.id) ?? '';
+  }
+
+  private noticeLabels(): DesktopTimelineNoticeLabels {
+    return {
+      header: this.resourceText($r('app.string.desktop_timeline_notice_title')),
+      report: this.resourceText($r('app.string.desktop_timeline_report_label')),
+      task: this.resourceText($r('app.string.desktop_timeline_task_target')),
+      tree: this.resourceText($r('app.string.desktop_timeline_task_tree')),
+      progress: this.resourceText($r('app.string.desktop_timeline_report_progress')),
+      uncertainties: this.resourceText($r('app.string.desktop_timeline_report_unknowns')),
+      actions: this.resourceText($r('app.string.desktop_timeline_report_actions')),
+      reference: this.resourceText($r('app.string.desktop_timeline_discussion_reference')),
+      instructions: this.resourceText($r('app.string.desktop_timeline_discussion_instructions')),
+      message: this.resourceText($r('app.string.desktop_timeline_discussion_message'))
+    };
+  }
+
+  private async saveDiscussion(scope: DesktopTimelineDiscussionTarget): Promise<void> {
+    const host = this.host;
+    const message = this.discussionText.trim();
+    if (!this.canWrite() || host === undefined || !this.isDiscussionOpen(scope) ||
+      !message || message.length > TIMELINE_DISCUSSION_LIMIT) { return; }
+    const session = this.sessionId;
+    if (!this.discussionId || message !== this.publishedDiscussionText) {
+      this.discussionId = randomUuid();
+      this.publishedDiscussionText = message;
+    }
+    const id = this.discussionId;
+    const payload: Record<string, Object> = {
+      'action': 'annotate', 'sessionId': session, 'id': id,
+      'target': desktopTimelineDiscussionPayload(scope), 'text': message
+    };
+    this.editBusy = true;
+    this.actionStatus = '';
+    this.actionScope = desktopTimelineDiscussionKey(scope);
+    const result = await host.editTimeline(payload);
+    if (!this.mounted || session !== this.sessionId) { return; }
+    const annotation = getRecord(result.value, 'annotation');
+    const pendingReply = getField(annotation, 'reply') === null;
+    if (!result.ok || getString(result.value, 'action') !== 'annotate' ||
+      !desktopTimelineOwnAnnotation(annotation, id, scope, message) ||
+      (!pendingReply && getRecord(annotation, 'reply') === undefined)) {
+      this.actionStatus = result.error?.message || this.resourceText($r('app.string.desktop_timeline_edit_failed'));
+      this.editBusy = false;
+      return;
+    }
+    this.clearDiscussion();
+    let notified = true;
+    if (pendingReply) {
+      const text = desktopTimelineDiscussionNotice(scope, id, message, getRecord(result.value, 'context'), this.noticeLabels());
+      try { notified = (await this.onNotify(session, text)).length === 0; }
+      catch (_) { notified = false; }
+    }
+    if (!this.mounted || session !== this.sessionId) { return; }
+    this.actionStatus = this.resourceText(notified ? $r('app.string.desktop_timeline_discussion_saved') :
+      $r('app.string.desktop_timeline_discussion_notify_unknown'));
+    await this.refreshEditedTimeline();
+    if (this.mounted) { this.editBusy = false; }
+  }
+
+  @Builder
+  private EditFooter(scope?: DesktopTimelineDiscussionTarget) {
+    if (scope !== undefined && this.writable) {
+      Column({ space: 7 }) {
+        if (this.isDiscussionOpen(scope)) {
+          TextArea({ text: this.discussionText, placeholder: $r('app.string.desktop_timeline_discussion_placeholder') })
+            .key('desktopTimelineDiscussionText').height(72).width('100%').fontSize(13)
+            .maxLength(TIMELINE_DISCUSSION_LIMIT).enabled(this.canWrite())
+            .onChange((value: string): void => {
+              if (!this.editBusy && value !== this.discussionText) { this.discussionText = value; this.actionStatus = ''; }
+            })
+          Row({ space: 6 }) {
+            Text($r('app.string.desktop_timeline_count', this.discussionText.length, TIMELINE_DISCUSSION_LIMIT))
+              .fontSize(10).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+            Button($r('app.string.desktop_timeline_discussion_cancel'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+              .key('desktopTimelineDiscussionCancel').height(30).enabled(!this.editBusy)
+              .onClick((): void => { this.clearDiscussion(); this.actionStatus = ''; })
+            Button($r('app.string.desktop_timeline_save'), { buttonStyle: ButtonStyleMode.NORMAL })
+              .key('desktopTimelineDiscussionSave').height(30)
+              .enabled(this.canWrite() && this.discussionText.trim().length > 0)
+              .onClick((): void => { this.saveDiscussion(scope); })
+          }.width('100%')
+        }
+        Row({ space: 6 }) {
+          if (scope.kind === 'task') {
+            Button($r('app.string.desktop_timeline_priority_value', this.task(this.target())?.priority ||
+              this.resourceText($r('app.string.desktop_timeline_priority_none'))), { buttonStyle: ButtonStyleMode.TEXTUAL })
+              .key('desktopTimelineTaskPriority').height(30).enabled(this.canWrite())
+              .bindMenu(this.priorityOptions(), desktopMenuOptions(Placement.TopLeft))
+          }
+          Button($r('app.string.desktop_timeline_discussion_add'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopTimelineDiscuss').height(30).enabled(this.canWrite())
+            .accessibilitySelected(this.isDiscussionOpen(scope)).onClick((): void => { this.toggleDiscussion(scope); })
+          if (this.editBusy) { LoadingProgress().width(16).height(16) }
+        }.width('100%')
+        if (this.actionStatus && this.actionScope === desktopTimelineDiscussionKey(scope)) {
+          Text(this.actionStatus).key('desktopTimelineEditStatus').width('100%')
+            .fontSize(12).fontColor($r('sys.color.font_secondary'))
+        }
+      }.width('100%').padding({ top: 6 }).alignItems(HorizontalAlign.Start)
+        .borderWidth({ top: 0.5 }).borderColor($r('sys.color.comp_divider'))
+    }
   }
 
   private status(value: string): Resource {
@@ -463,6 +665,10 @@ export struct DesktopTimelinePane {
             }, (revision: number): string => String(revision))
           }.width('100%').alignItems(HorizontalAlign.Start)
         }.layoutWeight(1).width('100%').align(Alignment.TopStart)
+      }
+      if (this.writable && this.actionKey()) {
+        ForEach([this.actionKey()], (_key: string): void => { this.EditFooter(this.writeScope()) },
+          (key: string): string => key)
       }
     }.key('desktopTimelinePane').width('100%').height('100%').padding(10).alignItems(HorizontalAlign.Start)
   }
