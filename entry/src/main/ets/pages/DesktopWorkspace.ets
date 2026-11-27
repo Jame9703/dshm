@@ -2542,7 +2542,14 @@ struct DesktopWorkspace {
           .onClick((): void => { this.restoreSession(session.id); })
       }
       if (!session.blank) {
-        this.RowMenu('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)), this.sessionActions(session))
+        // Bind in the row's render scope so selection and reading changes refresh its actions.
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          this.MenuDots()
+        }
+        .key('desktopSessionMenu-' + session.id).width(32).height(32).borderRadius(7)
+        .backgroundColor(Color.Transparent).focusOnTouch(false).enabled(!this.workspaceBusy)
+        .accessibilityText('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)))
+        .bindMenu(this.sessionActions(session), desktopMenuOptions(Placement.BottomRight))
       }
     }
     .width('100%').borderRadius(8).padding({ left: Math.min(7, depth) * 12 })
