@@ -616,6 +616,8 @@
     { "name": "desktop_question_next", "value": "下一题" },
     { "name": "desktop_question_skip", "value": "跳过" },
     { "name": "desktop_question_submit", "value": "提交回答" },
-    { "name": "desktop_question_resume", "value": "继续回答问题" }
+    { "name": "desktop_question_resume", "value": "继续回答问题" },
+    { "name": "desktop_settings_close", "value": "关闭设置" },
+    { "name": "desktop_settings_failed", "value": "无法打开设置" }
   ]
 }

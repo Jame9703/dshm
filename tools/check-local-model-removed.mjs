@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const paths = [
   'appstate/src/main/ets/model/PiAiProviders.ets',
   'appstate/src/main/ets/Index.ets',
-  'entry/src/main/ets/pages/Index.ets',
+  'entry/src/main/ets/pages/IndexContent.ets',
   'entry/src/main/ets/view/TabContentView.ets',
   'entry/src/main/ets/view/SettingsPane.ets',
   'entry/src/main/ets/view/SettingsModels.ets'

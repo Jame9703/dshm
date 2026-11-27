@@ -129,6 +129,7 @@ export struct SettingsPane {
    */
   @Prop section: string = 'settings.general';
   @Prop desktopShortcuts: boolean = false;
+  @State private panelWidth: number = 824;
   onOpenShortcuts: () => void = () => {};
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
   @Prop sections: PanelDescriptor[] = [];
@@ -138,9 +139,24 @@ export struct SettingsPane {
 
   build() {
     Column() {
-      this.tabBar()
-      Divider().color($r('sys.color.comp_divider'))
+      if (this.desktopShortcuts && this.panelWidth >= 720) {
+        Row() {
+          this.sectionRail()
+          Column() { this.options() }.layoutWeight(1).height('100%')
+        }.layoutWeight(1).width('100%')
+      } else {
+        this.tabBar()
+        if (!this.desktopShortcuts) { Divider().color($r('sys.color.comp_divider')) }
+        this.options()
+      }
+    }.width('100%').height('100%').onAreaChange((_previous: Area, current: Area): void => {
+      if (this.desktopShortcuts) { this.panelWidth = Number(current.width); }
+    })
+  }
 
+  @Builder
+  private options() {
+    Column() {
       // 写入结果回显：成功 / 冲突 / 被拒 / 本机偏好都走这里。
       // 不做乐观更新，所以这里是用户唯一能看到「Host 到底接受了没有」的地方。
       //
@@ -306,7 +322,7 @@ export struct SettingsPane {
       .scrollBar(BarState.Auto)
     }
     .width('100%')
-    .height('100%')
+    .layoutWeight(1)
   }
 
   /**
@@ -331,6 +347,35 @@ export struct SettingsPane {
   };
   onResetPluginRowsAction: () => void = () => {
   };
+
+  private sectionGlyph(id: string): Resource {
+    if (id === 'settings.models') { return $r('app.media.dsh_settings_data'); }
+    if (id === 'settings.presets') { return $r('app.media.dsh_settings_presets'); }
+    if (id === 'settings.plugins') { return $r('app.media.dsh_settings_plugins'); }
+    return $r('app.media.dsh_settings_general');
+  }
+
+  @Builder
+  private sectionRail() {
+    Scroll() {
+      Column({ space: 3 }) {
+        ForEach(this.sections, (section: PanelDescriptor): void => {
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Row({ space: 9 }) {
+              Image(this.sectionGlyph(section.id)).width(16).height(16).supportSvg2(true).draggable(false)
+                .accessibilityLevel('no')
+              Text(settingsSectionLabelRes(section.id)).fontSize(14).fontColor($r('sys.color.font_primary'))
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+            }.width('100%')
+          }.width('100%').height(38).padding({ left: 10, right: 10 }).borderRadius(8)
+          .key('desktopSettingsSection-' + section.id).accessibilitySelected(this.section === section.id)
+          .defaultFocus(this.section === section.id)
+          .backgroundColor(this.section === section.id ? $r('app.color.workspace_selection') : Color.Transparent)
+          .onClick((): void => { this.onSelectSection(section.id); })
+        }, (section: PanelDescriptor): string => section.id)
+      }.width('100%').padding({ left: 12, right: 10, top: 4, bottom: 12 })
+    }.width(212).height('100%').align(Alignment.TopStart).scrollBar(BarState.Auto)
+  }
 
   @Builder
   tabBar() {
@@ -359,6 +404,7 @@ export struct SettingsPane {
       .fontColor(this.section === key ? Color.White : $r('sys.color.font_secondary'))
       .padding({ left: Sp.M, right: Sp.M, top: Sp.S, bottom: Sp.S })
       .borderRadius(Radius.L)
+      .key(this.desktopShortcuts ? 'desktopSettingsSection-' + key : '')
       .backgroundColor(this.section === key ? $r('sys.color.brand') : $r('sys.color.background_secondary'))
       .onClick(() => {
         this.onSelectSection(key);

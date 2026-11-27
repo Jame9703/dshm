@@ -60,6 +60,7 @@ import type { DesktopConversation, DesktopConversationSnapshot } from '../deskto
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
+import lazy { IndexContent } from './IndexContent';
 import { DesktopSessionGrouping, DesktopSessionOrdering, desktopReorderSessions, desktopSessionAccount,
   desktopSessionOrder, desktopSessionOrdersEqual, desktopSessionRows, desktopSidebarSections,
   desktopWorkspaceMove, desktopWorkspaceParents } from '../desktop/DesktopSessionOrder';
@@ -182,6 +183,9 @@ struct DesktopWorkspace {
   @State private ready: boolean = false;
   @State private error: string = '';
   @State private switching: boolean = false;
+  @State private settingsOpen: boolean = false;
+  private settingsDialog: number = -1;
+  private settingsSection: string = 'settings.general';
   @State @Watch('syncReading') private panel: string = 'session';
   @State private pluginName: string = '';
   private pluginTitle: string = '';
@@ -302,6 +306,7 @@ struct DesktopWorkspace {
     try { this.readingWindow?.off('windowEvent', this.readingWindowEvent); } catch (_) {}
     this.readingWindow = undefined;
     this.closeAccount();
+    this.closeSettings();
     this.closeLogDialog();
     this.closeFeedback();
     this.closeImagePreview();
@@ -329,11 +334,13 @@ struct DesktopWorkspace {
 
   private syncReading(): void {
     const chat = this.chat?.sessionId === this.sessionId ? this.chat : undefined;
-    const visible = this.pageActive && this.pageVisible && this.panel === 'session' && this.readingFocused;
+    const visible = this.pageActive && this.pageVisible && !this.settingsOpen && this.panel === 'session' &&
+      this.readingFocused;
     this.data?.reading.show(this.sessionId, chat?.historyLoaded === true, chat?.receivedTurn ?? 0, visible);
   }
 
   onBackPress(): boolean {
+    if (this.settingsOpen) { this.closeSettings(); return true; }
     if (this.panel === 'session' && this.rightDock.focusedFloat) {
       this.closeDockTab(-1, this.rightDock.focusedFloat);
       return true;
@@ -798,7 +805,7 @@ struct DesktopWorkspace {
   }
 
   private workspaceShortcut(key: DesktopShortcut): boolean {
-    if (!this.pageActive || !this.pageVisible || this.shortcutsOpen || this.renameOpen || this.accountOpening ||
+    if (!this.pageActive || !this.pageVisible || this.settingsOpen || this.shortcutsOpen || this.renameOpen || this.accountOpening ||
       this.accountDialog >= 0 || this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0 ||
       this.archiveRequest !== undefined || this.imageDialog >= 0 || this.imageDialogOpening) { return false; }
     if (key === DesktopShortcut.REFERENCE) { this.shortcutsOpen = true; return true; }
@@ -1879,19 +1886,47 @@ struct DesktopWorkspace {
     this.panel = 'plugins';
   }
 
-  private async openSettings(section: string = 'settings.general'): Promise<void> {
-    if (this.switching) {
-      return;
-    }
-    this.switching = true;
-    const ui = this.getUIContext();
-    const params: Record<string, Object> = { 'desktopSettings': section };
+  @Builder
+  private SettingsDialog() {
+    IndexContent({ desktopSection: this.settingsSection,
+      onCloseSettings: (): void => { this.closeSettings(); },
+      onSettingsSection: (section: string): void => { this.settingsSection = section; } })
+  }
+
+  private async openSettings(section: string = ''): Promise<void> {
+    if (!this.pageActive || this.switching || this.settingsOpen) { return; }
+    if (section) { this.settingsSection = section; }
+    this.settingsOpen = true;
+    this.syncReading();
+    const prompt = this.getUIContext().getPromptAction();
     try {
-      await ui.getRouter().pushUrl({ url: 'pages/Index', params: params });
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.SettingsDialog(); }, alignment: DialogAlignment.Center,
+        width: Math.max(220, Math.min(824, this.workbenchWidth - 48)),
+        height: Math.max(180, Math.min(800, this.workbenchHeight - 48)),
+        autoCancel: true, isModal: true, cornerRadius: 24, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => { this.settingsDismissed(); }
+      });
+      if (this.pageActive && this.settingsOpen) { this.settingsDialog = id; }
+      else { prompt.closeCustomDialog(id); }
     } catch (_) {
-      ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_switch_failed') });
-    } finally {
-      this.switching = false;
+      this.settingsDismissed();
+      if (this.pageActive) { prompt.showToast({ message: $r('app.string.desktop_settings_failed') }); }
+    }
+  }
+
+  private closeSettings(): void {
+    if (this.settingsDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.settingsDialog); }
+  }
+
+  private settingsDismissed(): void {
+    this.settingsDialog = -1;
+    this.settingsOpen = false;
+    if (this.pageActive) {
+      this.reloadShortcutBindings();
+      this.syncReading();
     }
   }
 
@@ -3585,7 +3620,7 @@ struct DesktopWorkspace {
             this.SessionDropZone(this.rightDock.focus, this.sessionDropRect(this.sessionContentBounds, true), false)
           }
         }
-        if (this.pageVisible && !this.shortcutsOpen) {
+        if (this.pageVisible && !this.shortcutsOpen && !this.settingsOpen) {
           Row() {
             ForEach(this.shortcutBindings, (row: DesktopShortcutRow): void => {
               if (!row.occupiedBy && row.binding.code !== 0) {

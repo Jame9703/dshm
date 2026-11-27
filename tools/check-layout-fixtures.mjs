@@ -1554,13 +1554,13 @@ console.log('\n## P0 页面框架：面板注册表 + 导航状态（页面 ≠ 
      * 【docs/330：收起不得跨启动持久化】纯函数判不了这件事 —— 它只回答"给定 stored 返回什么"。
      * 真正让平板上侧栏"永远不常驻"的，是**启动时把 preferences 里旧存的 `false` 读回来**
      * （用户历史上点过一次收起，那条 `false` 就永久生效了）。
-     * 这里直接钉住宿主的接线：`Index.ets` 不得再调用 `loadSidebarExpanded()` /
+     * 这里直接钉住宿主的接线：`IndexContent.ets` 不得再调用 `loadSidebarExpanded()` /
      * `saveSidebarExpanded()` —— 收起只是一次运行内的动作。
      */
     {
       // 【2026-11-10 修】原来写的是未定义的 `read()`（本文件只 import 了 `readFileSync`）。
       // 该分支此前永远到不了：门禁在找 tsc 时就 exit 3，把这个 ReferenceError 一起盖住了。
-      const idx = readFileSync(join(ROOT, 'entry/src/main/ets/pages/Index.ets'), 'utf8');
+      const idx = readFileSync(join(ROOT, 'entry/src/main/ets/pages/IndexContent.ets'), 'utf8');
       t.eq('宿主启动时不再读回侧栏旧偏好（否则"点过一次收起"会永久生效）',
         !idx.includes('loadSidebarExpanded'), true);
       t.eq('宿主点收起时不再落盘（收起只对本次运行有效）',

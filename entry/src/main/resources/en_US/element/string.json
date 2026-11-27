@@ -575,6 +575,8 @@
     { "name": "desktop_question_next", "value": "Next" },
     { "name": "desktop_question_skip", "value": "Skip" },
     { "name": "desktop_question_submit", "value": "Submit answers" },
-    { "name": "desktop_question_resume", "value": "Resume answering" }
+    { "name": "desktop_question_resume", "value": "Resume answering" },
+    { "name": "desktop_settings_close", "value": "Close settings" },
+    { "name": "desktop_settings_failed", "value": "Couldn't open settings" }
   ]
 }
