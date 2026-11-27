@@ -15,6 +15,8 @@
  *  · 行渲染复用 `SettingRow`（模型域也用同一份）。
  */
 
+import { DesktopTranscriptPreferences, hasDesktopTranscriptPreferences, isDesktopTranscriptPreference }
+  from '../desktop/DesktopTranscriptPreferences';
 import { Fs, Radius, SettingGroup, SettingItem, Sp } from 'appstate';
 import { SettingRow } from './SettingRow';
 import { SettingsUsage } from './SettingsUsage';
@@ -145,25 +147,31 @@ export struct SettingsGeneral {
                 .fontSize(Fs.CAPTION)
                 .fontColor($r('sys.color.font_tertiary'))
                 .width('100%')
+              if (this.desktopShortcuts && group.title === 'ui-chat' && hasDesktopTranscriptPreferences(group.items)) {
+                DesktopTranscriptPreferences({ items: group.items, onPickChoice: this.onPickChoice })
+              }
               ForEach(group.items, (item: SettingItem) => {
-                SettingRow({
-                    item: item,
-                    onToggleSetting: (key: string, value: boolean) => {
-                      this.onToggleSetting(key, value);
-                    },
-                    onPickChoice: (key: string, current: string, selection?: string) => {
-                      this.onPickChoice(key, current, selection);
-                    },
-                    onEditText: (it: SettingItem) => {
-                      this.onEditText(it);
-                    },
-                    onEditStruct: (it: SettingItem) => {
-                      this.onEditStruct(it);
-                    },
-                    onResetSetting: (key: string) => {
-                      this.onResetSetting(key);
-                    }
-                  })
+                if (!this.desktopShortcuts || group.title !== 'ui-chat' || !hasDesktopTranscriptPreferences(group.items) ||
+                    !isDesktopTranscriptPreference(item.key)) {
+                  SettingRow({
+                      item: item,
+                      onToggleSetting: (key: string, value: boolean) => {
+                        this.onToggleSetting(key, value);
+                      },
+                      onPickChoice: (key: string, current: string, selection?: string) => {
+                        this.onPickChoice(key, current, selection);
+                      },
+                      onEditText: (it: SettingItem) => {
+                        this.onEditText(it);
+                      },
+                      onEditStruct: (it: SettingItem) => {
+                        this.onEditStruct(it);
+                      },
+                      onResetSetting: (key: string) => {
+                        this.onResetSetting(key);
+                      }
+                    })
+                }
               }, (item: SettingItem) => item.key)
             }
             .width('100%')

@@ -8,6 +8,8 @@ import type { DesktopInteraction } from './DesktopInteractions';
 export struct DesktopProcessPane {
   @Prop group: DesktopProcessGroup | undefined = undefined;
   @Prop expanded: boolean = false;
+  @Prop grouped: boolean = true;
+  @Prop liveProcessDetail: boolean = false;
   @Prop inspected: string = '';
   @Prop codeSize: number = 11;
   @Prop codeFamily: string = 'monospace';
@@ -17,9 +19,14 @@ export struct DesktopProcessPane {
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onQuestionResume: (id: string) => void = (_id: string): void => {};
 
-  private busy(): boolean {
-    return this.group?.steps.some((step: DesktopToolStep): boolean =>
-      !step.interrupted && step.item.toolState === ToolState.RUNNING) === true;
+  private runningStep(): DesktopToolStep | undefined {
+    return this.group?.steps.find((step: DesktopToolStep): boolean =>
+      !step.interrupted && step.item.toolState === ToolState.RUNNING);
+  }
+
+  private runningSummary(): string {
+    const step = this.runningStep();
+    return step === undefined ? '' : toolSummaryOf(this.kind(step), step.item.toolArgs);
   }
 
   private kind(row: DesktopToolStep): ToolKind { return presentTool(row.item, '').kind; }
@@ -95,7 +102,7 @@ export struct DesktopProcessPane {
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(9)
             .rotate({ angle: this.inspected === row.id ? 90 : 0 }).fontColor([$r('sys.color.font_tertiary')])
         }.width('100%')
-      }.padding({ left: 6, right: 6 }).width('100%').height(34).borderRadius(7)
+      }.key('desktopProcessStep-' + row.id).padding({ left: 6, right: 6 }).width('100%').height(34).borderRadius(7)
       .onClick((): void => { this.inspect(row.id); })
       if (this.inspected === row.id) {
         this.Details(row)
@@ -105,17 +112,23 @@ export struct DesktopProcessPane {
 
   build() {
     Column({ space: 2 }) {
-      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Row({ space: 6 }) {
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10)
-            .rotate({ angle: this.expanded ? 90 : 0 })
-          if (this.busy()) { LoadingProgress().width(15).height(15) }
-          Text(this.busy() ? '工具执行中' : `执行了 ${this.group?.steps.length ?? 0} 个工具`)
-            .fontSize(13).fontColor($r('sys.color.font_secondary'))
-          Blank()
-        }.width('100%')
-      }.padding({ left: 5, right: 5 }).width('100%').height(33).borderRadius(7).onClick(this.onToggle)
-      if (this.expanded) {
+      if (this.grouped) {
+        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 6 }) {
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10)
+              .rotate({ angle: this.expanded ? 90 : 0 })
+            if (this.runningStep() !== undefined) { LoadingProgress().width(15).height(15) }
+            Text(this.runningStep() !== undefined ? '工具执行中' : `执行了 ${this.group?.steps.length ?? 0} 个工具`)
+              .fontSize(13).fontColor($r('sys.color.font_secondary'))
+            if (this.liveProcessDetail && this.runningSummary()) {
+              Text(this.runningSummary()).key('desktopLiveProcessDetail').layoutWeight(1).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).fontSize(12).fontColor($r('sys.color.font_tertiary'))
+            } else { Blank() }
+          }.width('100%')
+        }.key('desktopProcessGroup-' + (this.group?.id ?? '')).padding({ left: 5, right: 5 })
+          .width('100%').height(33).borderRadius(7).onClick(this.onToggle)
+      }
+      if (this.expanded || !this.grouped) {
         ForEach(this.group?.steps ?? [], (row: DesktopToolStep): void => { this.Step(row) },
           (row: DesktopToolStep): string => row.id)
       }

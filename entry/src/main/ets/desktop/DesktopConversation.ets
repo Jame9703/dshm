@@ -27,6 +27,8 @@ import type { DesktopCordisCard } from './DesktopCordisCards';
 import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopTrajectoryLog } from './DesktopTrajectoryLog';
 import { DesktopChatUsageState } from './DesktopChatUsageModel';
+import { DEFAULT_DESKTOP_TRANSCRIPT_POLICY, DesktopTranscriptTurnTimeline } from './DesktopTranscriptPresentation';
+import type { DesktopTranscriptPolicy, DesktopTranscriptTurn } from './DesktopTranscriptPresentation';
 import type { DesktopChatTurnUsage, DesktopChatUsageSnapshot } from './DesktopChatUsageModel';
 import { readDesktopTurnOutline } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
@@ -82,6 +84,8 @@ export interface DesktopConversationSnapshot {
   turnOutline: DesktopTurnOutlineEntry[];
   chatUsage: DesktopChatUsageSnapshot;
   compactUsage: boolean;
+  transcriptPolicy: DesktopTranscriptPolicy;
+  transcriptTurns: DesktopTranscriptTurn[];
   loadTurnHistory: (sequence: number, requested: () => boolean) => Promise<boolean>;
   readTrajectory: () => DesktopTraceRow[];
   trajectoryRevision: number;
@@ -148,6 +152,8 @@ export class DesktopConversation {
   private readonly trajectory: DesktopTrajectoryLog = new DesktopTrajectoryLog();
   private readonly chatUsage = new DesktopChatUsageState();
   private compactUsage: boolean = false;
+  private transcriptPolicy: DesktopTranscriptPolicy = DEFAULT_DESKTOP_TRANSCRIPT_POLICY;
+  private readonly transcriptTimeline = new DesktopTranscriptTurnTimeline();
   private turnOutline: DesktopTurnOutlineEntry[] = [];
   private turnOutlineSequence: number = -1;
   private latestTurn: number = 0;
@@ -251,6 +257,7 @@ export class DesktopConversation {
     this.turnOutline = [];
     this.turnOutlineSequence = -1;
     this.chatUsage.clear();
+    this.transcriptTimeline.clear();
     this.latestTurn = 0;
     this.latestTurnEvent = -1;
     this.trajectory.clear();
@@ -506,10 +513,14 @@ export class DesktopConversation {
     return '';
   }
 
-  setPreferences(steers: boolean, compactUsage: boolean): void {
-    if (this.busyEnterSteers === steers && this.compactUsage === compactUsage) { return; }
+  setPreferences(steers: boolean, compactUsage: boolean, transcriptPolicy: DesktopTranscriptPolicy): void {
+    const previous = this.transcriptPolicy;
+    if (this.busyEnterSteers === steers && this.compactUsage === compactUsage &&
+      previous.displayMode === transcriptPolicy.displayMode && previous.collapseTiming === transcriptPolicy.collapseTiming &&
+      previous.foldedReplies === transcriptPolicy.foldedReplies) { return; }
     this.busyEnterSteers = steers;
     this.compactUsage = compactUsage;
+    this.transcriptPolicy = transcriptPolicy;
     this.publish();
   }
 
@@ -749,6 +760,7 @@ export class DesktopConversation {
       this.toolLog.clear();
       this.trajectory.clear();
       this.chatUsage.resetWindow();
+      this.transcriptTimeline.clear();
       this.commandRecords.clear();
       this.replyTimeline.clear();
       this.latestTurn = 0;
@@ -774,6 +786,7 @@ export class DesktopConversation {
       }
       this.trajectory.observe(record, eventType, seq);
       this.chatUsage.observe(record);
+      this.transcriptTimeline.observe(record);
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
@@ -1182,6 +1195,7 @@ export class DesktopConversation {
       sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
       turnOutline: this.turnOutline, loadTurnHistory: this.loadTurnHistory,
       chatUsage: this.chatUsage.stats(), compactUsage: this.compactUsage,
+      transcriptPolicy: this.transcriptPolicy, transcriptTurns: this.transcriptTimeline.turns(),
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
       trajectoryHasEarlier: this.hasEarlier, wasPartialHistory: this.wasPartialHistory,
       historyPaging: this.pageLoading && !this.loading, historyError: this.historyError,

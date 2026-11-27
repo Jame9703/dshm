@@ -21,10 +21,14 @@ import { DesktopSubagentsControl } from './DesktopSubagentsControl';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
+import { DesktopTranscriptDisclosureRow } from './DesktopTranscriptDisclosureRow';
+import { desktopTranscriptRows } from './DesktopTranscriptPresentation';
+import type { DesktopTranscriptDisclosure, DesktopTranscriptPolicy, DesktopTranscriptRow, DesktopTranscriptTurn }
+  from './DesktopTranscriptPresentation';
 import { DesktopTrajectoryPane } from './DesktopTrajectoryPane';
 import { DesktopChatHistoryEdge, DesktopChatReturnToTail, desktopChatHistoryState } from './DesktopChatScrollControls';
 import { DesktopTurnOutline } from './DesktopTurnOutline';
-import { desktopTurnOutlineActiveTurn, desktopTurnOutlineItems } from './DesktopTurnOutlineModel';
+import { desktopTurnOutlineActiveTurn, desktopTurnOutlineItems, desktopTurnOutlinePreview } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry, DesktopTurnOutlineItem } from './DesktopTurnOutlineModel';
 import { DesktopCordisCardView } from './DesktopCordisCardView';
 import { desktopCordisAction, desktopCordisCardIcon, desktopCordisCardTitle } from './DesktopCordisCards';
@@ -165,6 +169,14 @@ export struct DesktopConversationPane {
   private outlineProjection?: DesktopTurnOutlineEntry[];
   private outlineFirstVisible: number = 0;
   private outlineJumpGeneration: number = 0;
+  @State private transcriptRows: DesktopTranscriptRow[] = [];
+  private transcriptSource?: DesktopTranscriptItem[];
+  private transcriptTurns?: DesktopTranscriptTurn[];
+  private transcriptPolicy?: DesktopTranscriptPolicy;
+  private readonly transcriptOverrides: Map<number, boolean> = new Map();
+  private visibleTranscript: DesktopTranscriptItem[] = [];
+  private transcriptRowIndices: number[] = [];
+  private visibleItemIndices: number[] = [];
   @State private following: boolean = true;
   @State private transcriptWidth: number = 0;
   @State private historyProcessing: boolean = false;
@@ -253,7 +265,6 @@ export struct DesktopConversationPane {
   private onSnapshotChanged(): void {
     const id = this.snapshot?.sessionId ?? '';
     const sameSession = id === this.sessionId;
-    const count = this.snapshot?.transcript.length ?? 0;
     const partial = this.snapshot?.partial ?? '';
     const preparing = this.snapshot?.preparingTool ?? '';
     this.updateWorkflowViews();
@@ -270,6 +281,7 @@ export struct DesktopConversationPane {
       this.outlineItems = [];
       this.outlineTranscript = undefined;
       this.outlineProjection = undefined;
+      this.transcriptOverrides.clear();
       clearTimeout(this.historyCommitTimer);
       clearTimeout(this.historyProbeTimer);
       this.historyCommitTimer = -1;
@@ -288,8 +300,10 @@ export struct DesktopConversationPane {
       this.dismissedDraft = undefined;
       this.closePalette();
     }
+    this.refreshTranscript(!sameSession);
     this.refreshTurnOutline();
     this.updateHistoryPaging();
+    const count = this.transcriptRows.length;
     if (sameSession && count === this.messageCount && partial === this.partial && preparing === this.preparing) {
       return;
     }
@@ -354,13 +368,51 @@ export struct DesktopConversationPane {
 
   private historyRowOffset(): number { return this.snapshot?.wasPartialHistory === true ? 1 : 0; }
 
+  private refreshTranscript(force: boolean): void {
+    const snapshot = this.snapshot;
+    if (!force && this.transcriptSource === snapshot?.transcript && this.transcriptTurns === snapshot?.transcriptTurns &&
+        this.transcriptPolicy === snapshot?.transcriptPolicy) { return; }
+    this.transcriptSource = snapshot?.transcript;
+    this.transcriptTurns = snapshot?.transcriptTurns;
+    this.transcriptPolicy = snapshot?.transcriptPolicy;
+    const rows = snapshot === undefined ? [] : desktopTranscriptRows(snapshot.transcript, snapshot.transcriptTurns,
+      snapshot.transcriptPolicy, this.transcriptOverrides);
+    const visible: DesktopTranscriptItem[] = [];
+    const rowIndices: number[] = [];
+    const itemIndices: number[] = [];
+    rows.forEach((row: DesktopTranscriptRow, index: number): void => {
+      if (row.item !== undefined) {
+        visible.push(row.item);
+        rowIndices.push(index);
+      }
+      itemIndices.push(Math.max(0, visible.length - 1));
+    });
+    this.visibleTranscript = visible;
+    this.transcriptRowIndices = rowIndices;
+    this.visibleItemIndices = itemIndices;
+    this.transcriptRows = rows;
+  }
+
+  private transcriptDisclosure(turn: number): DesktopTranscriptDisclosure | undefined {
+    return this.transcriptRows.find((row: DesktopTranscriptRow): boolean => row.process?.turn === turn)?.process;
+  }
+
+  private toggleTranscriptDisclosure(turn: number): void {
+    const disclosure = this.transcriptDisclosure(turn);
+    if (disclosure?.canToggle !== true) { return; }
+    this.transcriptOverrides.set(turn, !disclosure.open);
+    this.refreshTranscript(true);
+    this.messageCount = this.transcriptRows.length;
+    this.refreshTurnOutline();
+  }
+
   private refreshTurnOutline(): void {
     const snapshot = this.snapshot;
     if (!this.outlineWide || snapshot === undefined || this.showTrajectory) { return; }
-    if (this.outlineTranscript !== snapshot.transcript || this.outlineProjection !== snapshot.turnOutline) {
-      this.outlineTranscript = snapshot.transcript;
+    if (this.outlineTranscript !== this.visibleTranscript || this.outlineProjection !== snapshot.turnOutline) {
+      this.outlineTranscript = this.visibleTranscript;
       this.outlineProjection = snapshot.turnOutline;
-      this.outlineItems = desktopTurnOutlineItems(snapshot.transcript, snapshot.turnOutline);
+      this.outlineItems = desktopTurnOutlineItems(this.visibleTranscript, snapshot.turnOutline);
     }
     this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, this.outlineFirstVisible);
   }
@@ -384,7 +436,9 @@ export struct DesktopConversationPane {
         await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
         if (!requested()) { return; }
         this.refreshTurnOutline();
-        const anchor = this.outlineItems.find((row: DesktopTurnOutlineItem): boolean => row.turn === item.turn)?.anchorIndex ?? -1;
+        const transcriptAnchor = this.outlineItems.find((row: DesktopTurnOutlineItem): boolean =>
+          row.turn === item.turn)?.anchorIndex ?? -1;
+        const anchor = this.transcriptRowIndices[transcriptAnchor] ?? -1;
         if (anchor >= 0) {
           await this.scrollToTurnAnchor(anchor + this.historyRowOffset(), requested);
           if (!requested()) { return; }
@@ -1215,8 +1269,88 @@ export struct DesktopConversationPane {
       .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
   }
 
+  private transcriptRowKey(row: DesktopTranscriptRow): string {
+    const item = row.item;
+    if (item === undefined) { return this.sessionId + ':' + row.key; }
+    const flags = item.message?.reasoning ? `:${row.showReasoning}:${row.previewReasoning}` :
+      item.process !== undefined ? `:${row.groupProcess}:${row.liveProcessDetail}` : '';
+    return this.sessionId + ':' + row.key + flags + (item.process?.version ?? '') + (item.command?.completed ?? '') +
+      (item.cordis === undefined ? '' : `:${item.cordis.resultSequence}:${item.cordis.state}:${item.cordis.superseded}`) +
+      (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels));
+  }
+
   @Builder
-  private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[], referenceLabels: string[]) {
+  private TranscriptContent(item: DesktopTranscriptItem, row: DesktopTranscriptRow) {
+    if (item.plan !== undefined) {
+      this.PlanCard(item.plan)
+    } else if (item.command !== undefined) {
+      if (item.command.name === 'team') { this.TeamCommand(item.command) }
+      else { this.CommandCard(item.command) }
+    } else if (item.workflow !== undefined) {
+      DesktopWorkflowPane({ runId: item.workflow.id,
+        view: this.workflowViews.get(item.id) ?? item.workflow.view, sessionId: this.snapshot?.sessionId ?? '',
+        summaries: this.sessionSummaries, onOpen: (child: DesktopSubagentEntry): void => {
+          const parent = this.snapshot?.subagent;
+          this.onSubagent(child, parent === undefined ? [] : [parent]);
+        } })
+    } else if (item.replyTail !== undefined) {
+      Column({ space: 10 }) {
+        DesktopReplyActions({ messageId: item.replyTail.messageId, scopeId: this.snapshot?.sessionId ?? '',
+          replyMedia: this.replyMedia, text: desktopHideActionCardFences(item.replyTail.text),
+          timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
+          turnUsage: item.turnUsage, compactUsage: this.snapshot?.compactUsage === true,
+          availableWidth: this.transcriptWidth,
+          canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
+          onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
+          choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
+          onRating: (messageId: string, rating: DesktopRating): void => {
+            this.onReplyRating(this.sessionId, messageId, rating);
+          } })
+        if (this.snapshot?.actionCards.has(item.replyTail.turn)) {
+          ForEach(this.actionCardForTurn(item.replyTail.turn), (card: DesktopActionCard): void => {
+            DesktopActionCardPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+              card: this.snapshot?.actionCards.get(item.replyTail?.turn ?? -1) ?? card,
+              onPlugin: this.onPluginDetails, onWeb: this.onWeb })
+          }, (card: DesktopActionCard): string => card.id)
+        }
+      }.width('100%').constraintSize({ maxWidth: 712 })
+    } else if (item.inheritedHistory === true) {
+      Row({ space: 8 }) {
+        Divider().layoutWeight(1).color($r('app.color.workspace_border'))
+        Image($r('app.media.dsh_session_branch_outline')).width(14).height(14)
+          .supportSvg2(true).draggable(false).accessibilityLevel('no')
+        Text('以上为继承的历史消息').key('desktopInheritedHistory')
+          .fontSize(12).fontColor($r('sys.color.font_tertiary'))
+        Divider().layoutWeight(1).color($r('app.color.workspace_border'))
+      }.width('100%').constraintSize({ maxWidth: 712 })
+    } else if (item.message !== undefined) {
+      this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [], row.showReasoning, row.previewReasoning)
+    } else if (item.artifacts !== undefined) {
+      DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+        artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
+        onReview: this.onChanges })
+    } else if (item.cordis !== undefined) {
+      DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
+        sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
+        codeFamily: this.typography.codeFamily, onInspect: (call: string): void => { this.inspectCordis(call); },
+        onWeb: this.onWeb })
+    } else if (item.process !== undefined) {
+      DesktopProcessPane({ group: item.process, grouped: row.groupProcess, liveProcessDetail: row.liveProcessDetail,
+        expanded: this.expandedProcesses.includes(item.id),
+        codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
+        inspected: this.inspectedTool, onFile: this.onArtifactFile,
+        hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
+        onToggle: (): void => {
+          this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
+            this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
+        },
+        onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
+    }
+  }
+
+  @Builder
+  private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[], referenceLabels: string[],
+    showReasoning: boolean, previewReasoning: boolean) {
     Column({ space: 7 }) {
       if (item.speaker === Speaker.USER) {
         if (attachments.length > 0) {
@@ -1250,10 +1384,22 @@ export struct DesktopConversationPane {
             .backgroundColor($r('app.color.workspace_panel'))
         }
       } else {
-        if (item.reasoning) {
-          Button(this.expandedReasoning.includes(item.id) ? '收起思考过程' : '思考过程',
-            { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .height(30).onClick((): void => {
+        if (showReasoning && item.reasoning) {
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Row({ space: 6 }) {
+              Text($r('app.string.desktop_transcript_reasoning')).fontSize(13)
+              if (previewReasoning && !this.expandedReasoning.includes(item.id)) {
+                Text(desktopTurnOutlinePreview(item.reasoning.split('\n', 1)[0].replaceAll('**', ''), false, false))
+                  .key('desktopReasoningPreview-' + item.id).fontSize(13).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              Image(this.expandedReasoning.includes(item.id) ? $r('app.media.dsh_queue_chevron_up_outline') :
+                $r('app.media.dsh_queue_chevron_down_outline')).width(14).height(14)
+                .fillColor($r('sys.color.font_secondary')).accessibilityLevel('no')
+            }
+          }
+            .height(30).borderRadius(6).key('desktopReasoning-' + item.id)
+            .accessibilitySelected(this.expandedReasoning.includes(item.id)).onClick((): void => {
               this.expandedReasoning = this.expandedReasoning.includes(item.id) ?
                 this.expandedReasoning.filter((id: string): boolean => id !== item.id) : [...this.expandedReasoning, item.id];
             })
@@ -1506,80 +1652,20 @@ export struct DesktopConversationPane {
               })
             }
           }
-          ForEach(this.snapshot?.transcript ?? [], (item: DesktopTranscriptItem): void => {
+          ForEach(this.transcriptRows, (row: DesktopTranscriptRow): void => {
             ListItem() {
               Row() {
-                if (item.plan !== undefined) {
-                  this.PlanCard(item.plan)
-                } else if (item.command !== undefined) {
-                  if (item.command.name === 'team') { this.TeamCommand(item.command) }
-                  else { this.CommandCard(item.command) }
-                } else if (item.workflow !== undefined) {
-                  DesktopWorkflowPane({ runId: item.workflow.id,
-                    view: this.workflowViews.get(item.id) ?? item.workflow.view, sessionId: this.snapshot?.sessionId ?? '',
-                    summaries: this.sessionSummaries, onOpen: (child: DesktopSubagentEntry): void => {
-                      const parent = this.snapshot?.subagent;
-                      this.onSubagent(child, parent === undefined ? [] : [parent]);
+                if (row.process !== undefined) {
+                  DesktopTranscriptDisclosureRow({ disclosure: this.transcriptDisclosure(row.process.turn),
+                    fontSize: this.typography.textSize, onToggle: (): void => {
+                      this.toggleTranscriptDisclosure(row.process?.turn ?? -1);
                     } })
-                } else if (item.replyTail !== undefined) {
-                  Column({ space: 10 }) {
-                    DesktopReplyActions({ messageId: item.replyTail.messageId, scopeId: this.snapshot?.sessionId ?? '',
-                      replyMedia: this.replyMedia, text: desktopHideActionCardFences(item.replyTail.text),
-                      timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
-                      turnUsage: item.turnUsage, compactUsage: this.snapshot?.compactUsage === true,
-                      availableWidth: this.transcriptWidth,
-                      canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
-                      onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
-                      choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
-                      onRating: (messageId: string, rating: DesktopRating): void => {
-                        this.onReplyRating(this.sessionId, messageId, rating);
-                      } })
-                    if (this.snapshot?.actionCards.has(item.replyTail.turn)) {
-                      ForEach(this.actionCardForTurn(item.replyTail.turn), (card: DesktopActionCard): void => {
-                        DesktopActionCardPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
-                          card: this.snapshot?.actionCards.get(item.replyTail?.turn ?? -1) ?? card,
-                          onPlugin: this.onPluginDetails, onWeb: this.onWeb })
-                      }, (card: DesktopActionCard): string => card.id)
-                    }
-                  }.width('100%').constraintSize({ maxWidth: 712 })
-                } else if (item.inheritedHistory === true) {
-                  Row({ space: 8 }) {
-                    Divider().layoutWeight(1).color($r('app.color.workspace_border'))
-                    Image($r('app.media.dsh_session_branch_outline')).width(14).height(14)
-                      .supportSvg2(true).draggable(false).accessibilityLevel('no')
-                    Text('以上为继承的历史消息').key('desktopInheritedHistory')
-                      .fontSize(12).fontColor($r('sys.color.font_tertiary'))
-                    Divider().layoutWeight(1).color($r('app.color.workspace_border'))
-                  }.width('100%').constraintSize({ maxWidth: 712 })
-                } else if (item.message !== undefined) {
-                  this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [])
-                } else if (item.artifacts !== undefined) {
-                  DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
-                    artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
-                    onReview: this.onChanges })
-                } else if (item.cordis !== undefined) {
-                  DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
-                    sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
-                    codeFamily: this.typography.codeFamily, onInspect: (call: string): void => { this.inspectCordis(call); },
-                    onWeb: this.onWeb })
-                } else if (item.process !== undefined) {
-                  DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
-                    codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
-                    inspected: this.inspectedTool, onFile: this.onArtifactFile,
-                    hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
-                    onToggle: (): void => {
-                      this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
-                        this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
-                    },
-                    onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
+                } else if (row.item !== undefined) {
+                  this.TranscriptContent(row.item, row)
                 }
-              }
-              .width('100%').justifyContent(FlexAlign.Center)
+              }.width('100%').justifyContent(FlexAlign.Center)
             }
-          }, (item: DesktopTranscriptItem): string => this.sessionId + ':' + item.id +
-            (item.process?.version ?? '') + (item.command?.completed ?? '') +
-            (item.cordis === undefined ? '' : `:${item.cordis.resultSequence}:${item.cordis.state}:${item.cordis.superseded}`) +
-            (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels)))
+          }, (row: DesktopTranscriptRow): string => this.transcriptRowKey(row))
           if ((this.snapshot?.partial.length ?? 0) > 0) {
             ListItem() {
               Row() {
@@ -1617,7 +1703,7 @@ export struct DesktopConversationPane {
           if (this.showTrajectory) { return; }
           const offset = this.historyRowOffset();
           if (this.outlineBusyTurn < 0 && last - offset < this.messageCount - 1) { this.outlineEndOffset = 0; }
-          this.outlineFirstVisible = Math.max(0, first - offset);
+          this.outlineFirstVisible = this.visibleItemIndices[Math.max(0, first - offset)] ?? 0;
           if (this.outlineWide) {
             this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, this.outlineFirstVisible);
           }
