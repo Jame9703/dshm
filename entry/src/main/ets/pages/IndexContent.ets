@@ -1035,6 +1035,8 @@ export struct IndexContent {
       lifecycle.back = (): boolean => this.backFromCurrentPage();
     }
     if (this.desktopSection) {
+      this.panelRegistry.register({ id: 'dshm-cloud-sync', location: PanelLocation.SETTINGS, owner: 'dshm',
+        label: '云同步', order: 50, available: (): boolean => true });
       this.desktopSettingsEntry = true;
       this.desktopSettingsVisible = true;
       this.reloadDesktopShortcutKeys();

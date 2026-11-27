@@ -38,6 +38,7 @@ import { SettingsPlugins } from './SettingsPlugins';
 import { SettingsPresets } from './SettingsPresets';
 import { SettingsSkills } from './SettingsSkills';
 import { SettingsCore } from './SettingsCore';
+import { DesktopCloudSyncSettings } from '../desktop/DesktopCloudSyncSettings';
 
 /** 设置面板（E108/E110/E114/E120） */
 @Component
@@ -292,6 +293,8 @@ export struct SettingsPane {
                 this.onResetSetting(key);
               }
             })
+          } else if (this.section === 'dshm-cloud-sync' && this.desktopShortcuts) {
+            DesktopCloudSyncSettings()
           } else if (this.section === 'settings.plugins') {
             this.pluginsTab()
           } else if (this.section === 'settings.plugin-inventory') {
@@ -348,6 +351,10 @@ export struct SettingsPane {
   onResetPluginRowsAction: () => void = () => {
   };
 
+  private sectionLabel(id: string): Resource {
+    return id === 'dshm-cloud-sync' ? $r('app.string.desktop_cloud_sync_section') : settingsSectionLabelRes(id);
+  }
+
   private sectionGlyph(id: string): Resource {
     if (id === 'settings.models') { return $r('app.media.dsh_settings_data'); }
     if (id === 'settings.presets') { return $r('app.media.dsh_settings_presets'); }
@@ -364,7 +371,7 @@ export struct SettingsPane {
             Row({ space: 9 }) {
               Image(this.sectionGlyph(section.id)).width(16).height(16).supportSvg2(true).draggable(false)
                 .accessibilityLevel('no')
-              Text(settingsSectionLabelRes(section.id)).fontSize(14).fontColor($r('sys.color.font_primary'))
+              Text(this.sectionLabel(section.id)).fontSize(14).fontColor($r('sys.color.font_primary'))
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
             }.width('100%')
           }.width('100%').height(38).padding({ left: 10, right: 10 }).borderRadius(8)
@@ -386,7 +393,7 @@ export struct SettingsPane {
          * 文案走 `settingsSectionLabelRes`（跟随系统语言），与侧栏入口同一套做法。
          */
         ForEach(this.sections, (d: PanelDescriptor) => {
-          this.tabChip(d.id, settingsSectionLabelRes(d.id))
+          this.tabChip(d.id, this.sectionLabel(d.id))
         }, (d: PanelDescriptor) => d.id)
       }
       .padding({ left: Sp.M, right: Sp.M })
