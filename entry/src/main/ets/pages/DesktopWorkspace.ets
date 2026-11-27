@@ -8,7 +8,7 @@ import { getString, parseTarget } from 'connection';
 import { WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
-import { DesktopFileNavigation, DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
 import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
 import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
@@ -34,6 +34,9 @@ import { DesktopShortcutDialog } from '../desktop/DesktopShortcutDialog';
 import { DesktopShortcut, desktopShortcutEqual, desktopShortcutFromEvent, desktopShortcutModifiers, desktopShortcutRows,
   desktopShortcutValue, readDesktopShortcuts } from '../desktop/DesktopShortcuts';
 import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
+import { desktopDockCloseTab, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSelect,
+  desktopDockSplit, desktopDockTab, DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
+import type { DesktopDockLayout, DesktopDockPane, DesktopDockTab } from '../desktop/DesktopRightDock';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
 import { desktopReferenceText } from '../desktop/DesktopReferences';
@@ -74,12 +77,8 @@ struct DesktopWorkspace {
   @State private sidebarCollapsed: boolean = false;
   @State private sidebarWidth: number = 280;
   @State private rightPaneWidth: number = 340;
-  @State private terminalSession: string = '';
-  @State private filesSession: string = '';
-  @State private requestedFile: DesktopFileNavigation | undefined = undefined;
-  @State private changesTarget: DesktopChangeTarget | undefined = undefined;
-  @State private planSession: string = '';
-  @State private planPreview: DesktopPlanDocument | undefined = undefined;
+  @State private rightDock: DesktopDockLayout = emptyDesktopDock();
+  private readonly docks = new Map<string, DesktopDockLayout>();
   private readonly shownPlanReviews: Set<string> = new Set<string>();
   @State private searchOpen: boolean = false;
   @State private query: string = '';
@@ -218,20 +217,9 @@ struct DesktopWorkspace {
   }
 
   onBackPress(): boolean {
-    if (this.planSession.length > 0 && this.planSession === this.sessionId && this.panel === 'session') {
-      this.closePlan();
-      return true;
-    }
-    if (this.filesSession.length > 0 && this.filesSession === this.sessionId && this.panel === 'session') {
-      this.closeFiles();
-      return true;
-    }
-    if (this.changesTarget?.sessionId === this.sessionId && this.panel === 'session') {
-      this.changesTarget = undefined;
-      return true;
-    }
-    if (this.terminalSession.length > 0 && this.terminalSession === this.sessionId && this.panel === 'session') {
-      this.terminalSession = '';
+    if (this.rightDock.expanded && this.sessionId && this.panel === 'session') {
+      if (this.rightDock.fullscreen) { this.toggleDockFullscreen(); }
+      else { this.toggleRightDock(); }
       return true;
     }
     if (this.panel !== 'session') {
@@ -265,9 +253,9 @@ struct DesktopWorkspace {
     this.readingReady = false;
     this.archivedIds = [];
     this.shownPlanReviews.clear();
-    this.closePlan();
-    this.closeFiles();
-    this.changesTarget = undefined;
+    this.docks.clear();
+    this.rightDock = emptyDesktopDock();
+    this.terminalCreateSession = '';
     this.chatError = '';
     this.creating = false;
     this.workspaceBusy = false;
@@ -672,6 +660,14 @@ struct DesktopWorkspace {
     if (key === DesktopShortcut.ADD_WORKSPACE) { this.addWorkspace(); return true; }
     if (key === DesktopShortcut.SETTINGS) { this.openSettings(); return true; }
     if (this.panel !== 'session' || !this.sessionId) { return false; }
+    if (key === DesktopShortcut.RIGHT_SIDEBAR) { this.toggleRightDock(); return true; }
+    if (key === DesktopShortcut.SPLIT_DOCK && this.rightDock.expanded && this.canSplitDock()) {
+      this.splitDock(); return true;
+    }
+    if (key === DesktopShortcut.CLOSE_DOCK_TAB && this.rightDock.expanded) {
+      const tab = desktopDockTab(this.rightDock);
+      if (tab !== undefined) { this.closeDockTab(this.rightDock.focus, tab.id); return true; }
+    }
     if (key === DesktopShortcut.FILES) { this.showWorkspaceFiles(); return true; }
     if (key === DesktopShortcut.NEW_TERMINAL) { this.showTerminal(true); return true; }
     const session = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
@@ -682,8 +678,7 @@ struct DesktopWorkspace {
       return true;
     }
     if (session.blank) { return false; }
-    const detailOpen = this.planSession === session.id || this.filesSession === session.id ||
-      this.changesTarget?.sessionId === session.id || this.terminalSession === session.id;
+    const detailOpen = this.rightDock.expanded;
     if (key === DesktopShortcut.FORK) {
       this.forkFrom(session.id);
     } else if (key === DesktopShortcut.RENAME && !detailOpen) {
@@ -703,7 +698,8 @@ struct DesktopWorkspace {
     const row = this.shortcutBindings.find((item: DesktopShortcutRow): boolean => !item.occupiedBy &&
       desktopShortcutEqual(item.binding, key));
     return row !== undefined && [DesktopShortcut.REFERENCE, DesktopShortcut.SETTINGS, DesktopShortcut.FILES,
-      DesktopShortcut.NEW_TERMINAL].includes(row.id) && this.workspaceShortcut(row.id);
+      DesktopShortcut.NEW_TERMINAL, DesktopShortcut.RIGHT_SIDEBAR, DesktopShortcut.SPLIT_DOCK,
+      DesktopShortcut.CLOSE_DOCK_TAB].includes(row.id) && this.workspaceShortcut(row.id);
   }
 
   private filterGroups(value: string): void {
@@ -740,6 +736,7 @@ struct DesktopWorkspace {
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
     if (this.sessionId !== session.id) {
       this.terminalCreateSession = '';
+      this.rightDock = this.docks.get(session.id) ?? emptyDesktopDock();
       this.referenceOffer = undefined;
       this.closeFeedback();
       this.closeImagePreview();
@@ -771,6 +768,7 @@ struct DesktopWorkspace {
     this.closeImagePreview();
     this.sessionId = '';
     this.terminalCreateSession = '';
+    this.rightDock = emptyDesktopDock();
     this.referenceOffer = undefined;
     this.selectedTitle = '';
     this.draft = EMPTY_DESKTOP_DRAFT;
@@ -1222,58 +1220,98 @@ struct DesktopWorkspace {
     if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
   }
 
+  private setDock(layout: DesktopDockLayout): void {
+    if (!this.sessionId) { return; }
+    this.rightDock = layout;
+    this.docks.set(this.sessionId, layout);
+  }
+
+  private dockShows(kind: DesktopDockKind): boolean {
+    return this.rightDock.expanded && this.rightDock.panes.some((pane: DesktopDockPane): boolean =>
+      pane.tabs.some((tab: DesktopDockTab): boolean => tab.id === pane.active && tab.kind === kind));
+  }
+
+  private focusDockPane(index: number): void {
+    if (this.rightDock.focus === index || index >= this.rightDock.panes.length) { return; }
+    const next: DesktopDockLayout = { panes: this.rightDock.panes, focus: index,
+      expanded: this.rightDock.expanded, fullscreen: this.rightDock.fullscreen };
+    this.setDock(next);
+  }
+
+  private toggleRightDock(): void {
+    const next: DesktopDockLayout = { panes: this.rightDock.panes, focus: this.rightDock.focus,
+      expanded: !this.rightDock.expanded, fullscreen: false };
+    this.setDock(next);
+  }
+
+  private toggleDockFullscreen(): void {
+    const next: DesktopDockLayout = { panes: this.rightDock.panes, focus: this.rightDock.focus,
+      expanded: true, fullscreen: !this.rightDock.fullscreen };
+    this.setDock(next);
+  }
+
+  private splitDock(): void {
+    if (!this.canSplitDock()) { return; }
+    this.setDock(desktopDockSplit(this.rightDock));
+  }
+
+  private canSplitDock(): boolean {
+    return this.rightDock.panes.length === 1 && this.workbenchWidth >= 540;
+  }
+
+  private dockAvailableWidth(): number {
+    return this.workbenchWidth - (this.sidebarCollapsed ? 52 : this.sidebarWidth) - 275;
+  }
+
+  private dockWidth(): number {
+    const ideal = this.rightDock.panes.length === 1 ? this.rightPaneWidth : Math.max(540, this.rightPaneWidth);
+    return Math.min(ideal, Math.max(220, this.dockAvailableWidth()));
+  }
+
+  private dockFullscreen(): boolean {
+    return this.rightDock.expanded && (this.rightDock.fullscreen || this.dockAutoFullscreen());
+  }
+
+  private dockAutoFullscreen(): boolean {
+    return (this.rightDock.panes.length > 1 && this.dockAvailableWidth() < 540) || this.dockAvailableWidth() < 220;
+  }
+
+  private closeDockTab(index: number, id: string): void {
+    if (id === DesktopDockKind.TERMINAL) { this.terminalCreateSession = ''; }
+    this.setDock(desktopDockCloseTab(this.rightDock, index, id));
+  }
+
   private showPlan(document: DesktopPlanDocument): void {
-    this.planSession = this.sessionId;
-    this.planPreview = document;
-    this.terminalSession = '';
-    this.closeFiles();
-    this.changesTarget = undefined;
-  }
-
-  private closePlan(): void {
-    this.planSession = '';
-    this.planPreview = undefined;
-  }
-
-  private closeFiles(): void {
-    this.filesSession = '';
-    this.requestedFile = undefined;
+    const tab: DesktopDockTab = { id: 'plan:' + document.callId, kind: DesktopDockKind.PLAN,
+      title: document.title || '计划预览', plan: document };
+    this.setDock(desktopDockOpen(this.rightDock, tab));
   }
 
   private showWorkspaceFiles(toggle: boolean = false): void {
-    this.closePlan();
-    this.changesTarget = undefined;
-    if (toggle && this.filesSession === this.sessionId) { this.closeFiles(); }
-    else if (this.filesSession !== this.sessionId) {
-      this.requestedFile = undefined;
-      this.filesSession = this.sessionId;
-    }
-    this.terminalSession = '';
-    this.terminalCreateSession = '';
+    if (toggle && this.dockShows(DesktopDockKind.FILES)) { this.toggleRightDock(); return; }
+    const tab: DesktopDockTab = { id: DesktopDockKind.FILES, kind: DesktopDockKind.FILES, title: '工作区文件' };
+    this.setDock(desktopDockOpen(this.rightDock, tab, false));
   }
 
-  private showTerminal(create: boolean = false): void {
-    this.closePlan();
-    this.changesTarget = undefined;
-    this.closeFiles();
-    this.terminalSession = !create && this.terminalSession === this.sessionId ? '' : this.sessionId;
-    this.terminalCreateSession = create ? this.sessionId : '';
+  private showTerminal(create: boolean = false, toggle: boolean = false): void {
+    if (toggle && this.dockShows(DesktopDockKind.TERMINAL)) { this.toggleRightDock(); return; }
+    const tab: DesktopDockTab = { id: DesktopDockKind.TERMINAL, kind: DesktopDockKind.TERMINAL, title: '终端' };
+    this.setDock(desktopDockOpen(this.rightDock, tab, false));
+    if (create) { this.terminalCreateSession = this.sessionId; }
   }
 
   private showArtifact(path: string, name: string): void {
-    this.closePlan();
-    this.terminalSession = '';
-    this.requestedFile = { path: path, name: name };
-    this.filesSession = this.sessionId;
+    if (!path) { return; }
+    const tab: DesktopDockTab = { id: 'file:' + path, kind: DesktopDockKind.PREVIEW, title: name || path,
+      file: { path: path, name: name } };
+    this.setDock(desktopDockOpen(this.rightDock, tab, false));
   }
 
   private showChanges(target: DesktopChangeTarget): void {
-    if (target.sessionId === this.sessionId) {
-      this.closePlan();
-      this.closeFiles();
-      this.terminalSession = '';
-      this.changesTarget = target;
-    }
+    if (target.sessionId !== this.sessionId) { return; }
+    const tab: DesktopDockTab = { id: 'changes:' + target.sequence, kind: DesktopDockKind.CHANGES,
+      title: '改动审阅', changes: target };
+    this.setDock(desktopDockOpen(this.rightDock, tab));
   }
 
   private async referenceFileAction(action: DesktopReferenceAction, path: string, name: string): Promise<void> {
@@ -1996,10 +2034,12 @@ struct DesktopWorkspace {
           onExportLog: (): void => {
             this.chatAction((id: string): Promise<string> => this.exportLog(id));
           },
-          filesOpen: this.filesSession === this.sessionId,
+          filesOpen: this.dockShows(DesktopDockKind.FILES),
+          rightDockOpen: this.rightDock.expanded,
+          onRightDock: (): void => this.toggleRightDock(),
           onFiles: (): void => this.showWorkspaceFiles(true),
-          terminalOpen: this.terminalSession === this.sessionId,
-          onTerminal: (): void => this.showTerminal(),
+          terminalOpen: this.dockShows(DesktopDockKind.TERMINAL),
+          onTerminal: (): void => this.showTerminal(false, true),
           onModel: (selection: ModelSelection): void => this.chooseModel(selection),
           onPermission: (preset: string): void => {
             const conversation = this.data?.conversation;
@@ -2008,59 +2048,184 @@ struct DesktopWorkspace {
             }
           }
         })
-        .layoutWeight(1)
-        if (this.planSession === this.sessionId && this.planPreview !== undefined) {
-          Column() {
-            DesktopPlanPreviewPane({
-              markdown: this.planPreview.markdown,
-              onClosePreview: (): void => { this.closePlan(); }
-            })
-          }
-          .width(this.rightPaneWidth).height('100%')
-        } else if (this.filesSession === this.sessionId && this.data !== undefined) {
-          Column() {
-            DesktopFilesPane({
-              host: this.data.actions,
-              ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
-              sessionId: this.sessionId,
-              requested: this.requestedFile,
-              onHide: (): void => { this.closeFiles(); },
-              onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); },
-              onReferenceWorkspaceFile: (path: string, name: string): void => {
-                this.referenceFileAction(DesktopReferenceAction.ADD_TO_CHAT, path, name);
-              }
-            })
-          }
-          .width(this.rightPaneWidth).height('100%')
-        } else if (this.changesTarget?.sessionId === this.sessionId && this.data !== undefined) {
-          Column() {
-            DesktopChangesPane({ host: this.data.actions, target: this.changesTarget,
-              onClose: (): void => { this.changesTarget = undefined; },
-              onFile: (path: string, name: string, target: DesktopChangeTarget): void => {
-                this.showArtifact(path, name);
-                this.changesTarget = target;
-              } })
-          }
-          .width(this.rightPaneWidth).height('100%')
-        } else if (this.terminalSession === this.sessionId && this.data !== undefined) {
-          Column() {
-            DesktopTerminalPane({
-              host: this.data.actions,
-              sessionId: this.sessionId,
-              appearance: this.appearance,
-              createSession: this.terminalCreateSession,
-              onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
-              onShortcut: (event: KeyEvent): boolean => this.terminalShortcut(event),
-              onHidePanel: (): void => { this.terminalSession = ''; }
-            })
-          }
-          .width(this.rightPaneWidth).height('100%')
+        .layoutWeight(1).visibility(this.dockFullscreen() ? Visibility.None : Visibility.Visible)
+        if (this.data !== undefined && (this.rightDock.expanded || this.rightDock.panes[0].tabs.length > 0 ||
+          this.rightDock.panes.length > 1)) {
+          Column() { this.RightDock() }
+            .width(this.dockFullscreen() ? '100%' : this.dockWidth()).height('100%')
+            .visibility(this.rightDock.expanded ? Visibility.Visible : Visibility.None)
         }
       } else {
         this.SessionPane()
       }
     }
     .height('100%').layoutWeight(1)
+  }
+
+  private dockMenu(index: number): MenuElement[] {
+    const items: MenuElement[] = [
+      { value: '工作区文件', action: (): void => this.openDockTool(index, DesktopDockKind.FILES) },
+      { value: '新建终端', action: (): void => this.openDockTool(index, DesktopDockKind.TERMINAL) }
+    ];
+    if (this.canSplitDock()) {
+      items.push({ value: '向右分屏', action: (): void => { this.splitDock(); } });
+    } else if (this.rightDock.panes.length === 2) {
+      items.push({ value: '合并分屏', action: (): void => { this.setDock(desktopDockMerge(this.rightDock, index)); } });
+    }
+    return items;
+  }
+
+  private openDockTool(index: number, kind: DesktopDockKind): void {
+    if (!this.rightDock.panes[index]) { return; }
+    const owner = this.rightDock.panes.findIndex((pane: DesktopDockPane): boolean =>
+      pane.tabs.some((tab: DesktopDockTab): boolean => tab.kind === kind));
+    if (owner >= 0 && owner !== index) {
+      this.setDock(desktopDockMoveTab(this.rightDock, owner, kind));
+    }
+    this.focusDockPane(index);
+    if (kind === DesktopDockKind.FILES) { this.showWorkspaceFiles(); }
+    else if (kind === DesktopDockKind.TERMINAL) { this.showTerminal(true); }
+  }
+
+  private dockTabMenu(index: number, tab: DesktopDockTab): MenuElement[] {
+    const items: MenuElement[] = [];
+    if (this.rightDock.panes.length === 2) {
+      items.push({ value: '移到另一侧', action: (): void => {
+        this.setDock(desktopDockMoveTab(this.rightDock, index, tab.id));
+      } });
+    } else if (this.canSplitDock()) {
+      items.push({ value: '向右分屏', action: (): void => {
+        const next = desktopDockMoveTab(desktopDockSplit(this.rightDock), index, tab.id);
+        this.setDock(next);
+      } });
+    }
+    items.push({ value: '关闭标签', action: (): void => this.closeDockTab(index, tab.id) });
+    return items;
+  }
+
+  private dockStoredTab(index: number, id: string): DesktopDockTab | undefined {
+    return this.rightDock.panes[index]?.tabs.find((tab: DesktopDockTab): boolean => tab.id === id);
+  }
+
+  @Builder
+  private DockBody(index: number, tab: DesktopDockTab) {
+    if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
+      DesktopFilesPane({ host: this.data?.actions,
+        ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
+        sessionId: this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
+        onHide: (): void => this.closeDockTab(index, tab.id),
+        onOpenFile: (path: string, name: string): void => { this.focusDockPane(index); this.showArtifact(path, name); },
+        onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); },
+        onReferenceWorkspaceFile: (path: string, name: string): void => {
+          this.referenceFileAction(DesktopReferenceAction.ADD_TO_CHAT, path, name);
+        } })
+    } else if (tab.kind === DesktopDockKind.TERMINAL) {
+      DesktopTerminalPane({ host: this.data?.actions, sessionId: this.sessionId, appearance: this.appearance,
+        createSession: this.terminalCreateSession, onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
+        onShortcut: (event: KeyEvent): boolean => {
+          if (event.type === KeyType.Down) { this.focusDockPane(index); }
+          return this.terminalShortcut(event);
+        }, onHidePanel: (): void => this.toggleRightDock() })
+    } else if (tab.kind === DesktopDockKind.PLAN) {
+      DesktopPlanPreviewPane({ markdown: this.dockStoredTab(index, tab.id)?.plan?.markdown ?? '',
+        onClosePreview: (): void => this.closeDockTab(index, tab.id) })
+    } else {
+      DesktopChangesPane({ host: this.data?.actions, target: this.dockStoredTab(index, tab.id)?.changes,
+        onClose: (): void => this.closeDockTab(index, tab.id),
+        onFile: (path: string, name: string, target: DesktopChangeTarget): void => {
+          this.showChanges(target);
+          this.focusDockPane(index);
+          this.showArtifact(path, name);
+        } })
+    }
+  }
+
+  @Builder
+  private DockTab(index: number, tab: DesktopDockTab) {
+    Row({ space: 2 }) {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontColor($r('sys.color.font_primary'))
+      }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
+        .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
+        .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Image($r('app.media.dsh_dock_close')).width(11).height(11).accessibilityLevel('no')
+      }.key('desktopDockClose-' + index + '-' + tab.id).width(21).height(24).padding(0)
+        .accessibilityText('关闭标签 ' + tab.title).onClick((): void => this.closeDockTab(index, tab.id))
+      if (this.rightDock.panes[index]?.active === tab.id) {
+        Button('···', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(22).height(24).padding(0)
+          .key('desktopDockTabMenu-' + index + '-' + tab.id).accessibilityText('标签操作 ' + tab.title)
+          .bindMenu(this.dockTabMenu(index, tab), desktopMenuOptions(Placement.BottomLeft))
+      }
+    }.height(30).borderRadius(7)
+      .backgroundColor(this.rightDock.panes[index]?.active === tab.id ? $r('app.color.workspace_selection') : Color.Transparent)
+  }
+
+  @Builder
+  private DockGuide(index: number) {
+    Column({ space: 8 }) {
+      Button('工作区文件', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideFiles-' + index)
+        .onClick((): void => this.openDockTool(index, DesktopDockKind.FILES))
+      Button('新建终端', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideTerminal-' + index)
+        .onClick((): void => this.openDockTool(index, DesktopDockKind.TERMINAL))
+    }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  private DockPane(index: number) {
+    Column() {
+      Row({ space: 4 }) {
+        Scroll() {
+          Row({ space: 4 }) {
+            ForEach(this.rightDock.panes[index]?.tabs ?? [], (tab: DesktopDockTab): void => {
+              this.DockTab(index, tab)
+            }, (tab: DesktopDockTab): string => tab.id + ':' + tab.title)
+          }
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+        Button('＋', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockAdd-' + index)
+          .height(30).width(28).padding(0).accessibilityText('新建标签页')
+          .bindMenu(this.dockMenu(index), desktopMenuOptions(Placement.BottomRight))
+        if (index === this.rightDock.panes.length - 1) {
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image(this.dockFullscreen() ? $r('app.media.dsh_right_restore') : $r('app.media.dsh_right_fullscreen'))
+              .width(16).height(16).fillColor($r('sys.color.font_primary')).accessibilityLevel('no')
+          }.key('desktopDockFullscreen').width(28).height(30).padding(0)
+            .accessibilityText(this.dockFullscreen() ? '退出全屏' : '全屏').enabled(!this.dockAutoFullscreen())
+            .onClick((): void => this.toggleDockFullscreen())
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.sidebar_toggle')).width(16).height(16).rotate({ angle: 180 })
+              .fillColor($r('sys.color.font_primary')).accessibilityLevel('no')
+          }.key('desktopDockCollapse').width(28).height(30).padding(0).accessibilityText('收起右侧栏')
+            .onClick((): void => this.toggleRightDock())
+        }
+      }.width('100%').height(39).padding({ left: 5, right: 5 })
+        .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
+      Stack() {
+        if (!this.rightDock.panes[index]?.tabs.length) {
+          this.DockGuide(index)
+        } else {
+          ForEach(this.rightDock.panes[index]?.tabs ?? [], (tab: DesktopDockTab): void => {
+            Column() { this.DockBody(index, tab) }
+              .width('100%').height('100%')
+              .visibility(this.rightDock.panes[index]?.active === tab.id ? Visibility.Visible : Visibility.None)
+          }, (tab: DesktopDockTab): string => this.sessionId + ':' + tab.id)
+        }
+      }.width('100%').layoutWeight(1)
+    }.key('desktopDockPane-' + index).layoutWeight(1).height('100%')
+      .onTouch((event: TouchEvent): void => { if (event.type === TouchType.Down) { this.focusDockPane(index); } })
+  }
+
+  @Builder
+  private RightDock() {
+    Row() {
+      this.DockPane(0)
+      if (this.rightDock.panes.length === 2) {
+        Divider().vertical(true).color($r('app.color.workspace_border')).height('100%')
+        this.DockPane(1)
+      }
+    }.key('desktopRightDock').width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
+      .border({ width: { left: 1 }, color: $r('app.color.workspace_border') })
   }
 
   @Builder
@@ -2121,7 +2286,7 @@ struct DesktopWorkspace {
         Column() {
           this.TopBar()
           Row() {
-            this.Sidebar()
+            if (this.panel !== 'session' || !this.dockFullscreen()) { this.Sidebar() }
             if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
               DesktopPluginsPane({
                 host: this.data.actions,

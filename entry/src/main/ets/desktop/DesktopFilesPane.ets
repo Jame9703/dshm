@@ -56,7 +56,9 @@ export struct DesktopFilesPane {
   ability?: common.UIAbilityContext;
   @Prop @Watch('reset') sessionId: string = '';
   @Prop @Watch('openRequested') requested: DesktopFileNavigation | undefined = undefined;
+  @Prop previewOnly: boolean = false;
   onHide: () => void = (): void => {};
+  onOpenFile?: (path: string, name: string) => void;
   onReferenceWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onAttachWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
 
@@ -108,7 +110,7 @@ export struct DesktopFilesPane {
     this.notice = '';
     this.closePreview();
     if (this.active && this.sessionId.length > 0) {
-      this.expand(ROOT);
+      if (!this.previewOnly) { this.expand(ROOT); }
       this.openRequested();
     }
   }
@@ -436,7 +438,10 @@ export struct DesktopFilesPane {
     }
     .width('100%').constraintSize({ minHeight: 34 }).padding({ left: 10 + Math.min(row.depth, 12) * 12, right: 8 })
     .borderRadius(8).backgroundColor(Color.Transparent)
-    .onClick((): void => { this.select(row); })
+    .onClick((): void => {
+      if (row.directory || this.onOpenFile === undefined) { this.select(row); }
+      else { this.onOpenFile(row.path, row.name); }
+    })
   }
 
   @Builder

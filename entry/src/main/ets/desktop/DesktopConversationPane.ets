@@ -54,6 +54,7 @@ export struct DesktopConversationPane {
   @Prop busy: boolean = false;
   @Prop terminalOpen: boolean = false;
   @Prop filesOpen: boolean = false;
+  @Prop rightDockOpen: boolean = false;
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
   @Prop copyingTranscript: boolean = false;
@@ -89,6 +90,7 @@ export struct DesktopConversationPane {
     (_sessionId: string, _messageId: string, _rating: DesktopRating): void => {};
   onTerminal: () => void = () => {};
   onFiles: () => void = () => {};
+  onRightDock: () => void = () => {};
   onModel: (selection: ModelSelection) => void = () => {};
   onPermission: (preset: string) => void = () => {};
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
@@ -1002,6 +1004,12 @@ export struct DesktopConversationPane {
           .height(34).focusOnTouch(false)
           .accessibilitySelected(this.terminalOpen)
           .onClick(this.onTerminal)
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.sidebar_toggle')).width(16).height(16).rotate({ angle: 180 })
+            .fillColor($r('sys.color.font_primary')).accessibilityLevel('no')
+        }.key('desktopToggleRightDock').width(34).height(34).padding(0).focusOnTouch(false)
+          .accessibilityText(this.rightDockOpen ? '收起右侧栏' : '展开右侧栏')
+          .accessibilitySelected(this.rightDockOpen).onClick(this.onRightDock)
         Button($r('app.string.desktop_experiment_open_web'),
           { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(34).focusOnTouch(false).onClick(this.onWeb)
