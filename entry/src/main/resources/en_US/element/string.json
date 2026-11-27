@@ -1018,6 +1018,8 @@
     { "name": "desktop_terminal_chrome_shell_empty", "value": "No shells available" },
     { "name": "desktop_terminal_chrome_failed", "value": "Terminal error: %s" },
     { "name": "desktop_terminal_chrome_retry", "value": "Retry" },
+    { "name": "desktop_terminal_view_readonly", "value": "This view is read-only." },
+    { "name": "desktop_terminal_take_input", "value": "Take control" },
     { "name": "desktop_terminal_chrome_agent", "value": "Agent" },
     { "name": "desktop_terminal_chrome_agent_hint", "value": "Opened by the agent. Typing here takes over; the agent can then only read it." },
     { "name": "desktop_terminal_chrome_sandbox", "value": "Sandbox" },

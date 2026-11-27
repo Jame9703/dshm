@@ -7,6 +7,7 @@ export struct DesktopTerminalTitle {
   @Prop agentControlled: boolean = false;
   @Prop sandboxMode: string = '';
   @Prop keyPrefix: string = 'desktopTerminal';
+  @Prop compact: boolean = false;
 
   private sandboxed(): boolean {
     return this.sandboxMode === 'read-only' || this.sandboxMode === 'workspace-write';
@@ -25,12 +26,14 @@ export struct DesktopTerminalTitle {
       if (this.agentControlled || this.sandboxed()) {
         Text(this.agentControlled ? $r('app.string.desktop_terminal_chrome_agent') :
           $r('app.string.desktop_terminal_chrome_sandbox')).key(this.keyPrefix + 'TitleBadge')
-          .fontSize(10).fontColor(this.agentControlled ? $r('sys.color.brand') : $r('sys.color.font_secondary'))
-          .padding({ left: 5, right: 5, top: 2, bottom: 2 }).borderRadius(4)
-          .backgroundColor($r('app.color.workspace_selection')).accessibilityDescription(this.badgeHint())
+          .fontSize(11).lineHeight(17)
+          .fontColor(this.agentControlled ? $r('app.color.desktop_chat_running_label') : $r('sys.color.font_secondary'))
+          .padding({ left: 8, right: 8, top: 1, bottom: 1 }).borderRadius(10)
+          .backgroundColor(this.agentControlled ? $r('app.color.desktop_terminal_agent_fill') : $r('app.color.workspace_selection'))
+          .accessibilityDescription(this.badgeHint())
       }
       Text(this.title.length > 0 ? this.title : $r('app.string.desktop_terminal_chrome_title'))
-        .key(this.keyPrefix + 'TitleLabel').fontSize(13).fontColor($r('sys.color.font_primary'))
+        .key(this.keyPrefix + 'TitleLabel').fontSize(this.compact ? 12 : 13).fontColor($r('sys.color.font_primary'))
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
     }.key(this.keyPrefix + 'Title').width('100%')
   }

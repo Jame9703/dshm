@@ -3,6 +3,7 @@ import type { DuplexStream } from 'connection';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './DesktopHostActions';
 import { loadTerminalEmulator } from './terminal/TerminalEmulator';
 import type { TerminalEmulator, TerminalEmulatorFactory, TerminalPaintFrame } from './terminal/TerminalEmulator';
+import type { DesktopTerminalRosterSink } from './DesktopTerminalRosters';
 
 export interface DesktopShell {
   path: string;
@@ -26,6 +27,7 @@ export interface DesktopTerminalState {
   shells: DesktopShell[];
   selected: string;
   writable: boolean;
+  canTakeInput: boolean;
   loading: boolean;
   busy: boolean;
   error: string;
@@ -50,6 +52,7 @@ interface TerminalInput {
 }
 
 export type DesktopTerminalRetentionObserver = (id: string, listener: (problem: string) => void) => () => void;
+export type DesktopTerminalRosterObserver = (sink: DesktopTerminalRosterSink) => () => void;
 
 const MAX_INPUT_QUEUE: number = 32768;
 const ACK_TIMEOUT_MS: number = 10000;
@@ -77,6 +80,7 @@ export class DesktopTerminalClient {
   private readonly onDraw: (frame: TerminalPaintFrame | undefined) => void;
   private readonly observeRetention?: DesktopTerminalRetentionObserver;
   private readonly openInNewTab?: (row: DesktopTerminalRow) => boolean;
+  private readonly observeRoster?: DesktopTerminalRosterObserver;
   private live: boolean = true;
   private shown: boolean = true;
   private terminals: DesktopTerminalRow[] = [];
@@ -120,13 +124,15 @@ export class DesktopTerminalClient {
 
   constructor(host: DesktopHostActions, sessionId: string,
     onState: (view: DesktopTerminalState) => void, onDraw: (frame: TerminalPaintFrame | undefined) => void,
-    observeRetention?: DesktopTerminalRetentionObserver, openInNewTab?: (row: DesktopTerminalRow) => boolean) {
+    observeRetention?: DesktopTerminalRetentionObserver, openInNewTab?: (row: DesktopTerminalRow) => boolean,
+    observeRoster?: DesktopTerminalRosterObserver) {
     this.host = host;
     this.sessionId = sessionId;
     this.onState = onState;
     this.onDraw = onDraw;
     this.observeRetention = observeRetention;
     this.openInNewTab = openInNewTab;
+    this.observeRoster = observeRoster;
   }
 
   async start(preferredId: string): Promise<void> {
@@ -172,8 +178,8 @@ export class DesktopTerminalClient {
     this.shellProblem = desktopHostProblem(replies[2]);
     this.setTerminals(desktopHostItems(replies[0]));
     const preferred = this.terminals.find((row: DesktopTerminalRow): boolean => row.id === preferredId);
-    if (preferred !== undefined) {
-      this.select(preferred.id);
+    if (preferred !== undefined || (preferredId && this.openInNewTab !== undefined)) {
+      this.select(preferredId);
     } else if (this.terminals.length > 0 && (!preferredId || this.openInNewTab === undefined)) {
       this.select(this.terminals[0].id);
     }
@@ -183,6 +189,17 @@ export class DesktopTerminalClient {
 
   private openWatch(): void {
     if (!this.live || !this.shown || !this.discovered || this.stopWatch !== undefined) { return; }
+    if (this.observeRoster !== undefined) {
+      let receiving = true;
+      this.stopWatch = (): void => { receiving = false; };
+      const stop = this.observeRoster({
+        items: (items: Object[]): void => { if (receiving) { this.setTerminals(items); } },
+        problem: (message: string): void => { if (receiving) { this.error = message; this.publish(); } }
+      });
+      if (!receiving) { stop(); }
+      else { this.stopWatch = stop; }
+      return;
+    }
     this.stopWatch = this.host.watch('terminal/watch', { 'sessionId': this.sessionId }, {
       onItem: (value: Object): void => {
         const wrapped: Record<string, Object> = { 'items': value };
@@ -323,17 +340,18 @@ export class DesktopTerminalClient {
     if (result.ok) {
       if (this.unseenCreation?.id === id) { this.unseenCreation = undefined; }
       this.terminals = this.terminals.filter((row: DesktopTerminalRow): boolean => row.id !== id);
+      if (this.selected === id && this.openInNewTab !== undefined) { this.forgetSelection(); }
       this.chooseRemaining();
     }
     this.publish();
   }
 
-  select(id: string): void {
-    if (!this.live || !id || (id === this.selected && this.stream !== undefined)) {
+  select(id: string, force: boolean = false): void {
+    if (!this.live || !id || (!force && id === this.selected && this.stream !== undefined)) {
       return;
     }
     this.stopObservingRetention();
-    this.detach();
+    this.detach(force && id === this.selected);
     this.selected = id;
     this.error = '';
     this.issue = 'none';
@@ -346,6 +364,8 @@ export class DesktopTerminalClient {
       else if (this.stream === undefined) { this.attachSelected(id); }
     });
   }
+
+  reconnect(): void { this.select(this.selected, true); }
 
   private attachSelected(id: string): void {
     this.openWatch();
@@ -487,22 +507,38 @@ export class DesktopTerminalClient {
 
   private chooseRemaining(): void {
     if (this.selected.length > 0 && !this.terminals.some((row: DesktopTerminalRow): boolean => row.id === this.selected)) {
-      this.stopObservingRetention();
-      this.selected = '';
-      this.detach();
-      if (this.terminals.length > 0 && this.openInNewTab === undefined) {
+      if (this.openInNewTab !== undefined) { return; }
+      this.forgetSelection();
+      if (this.terminals.length > 0) {
         this.select(this.terminals[0].id);
       }
     }
   }
 
+  private forgetSelection(): void {
+    this.stopObservingRetention();
+    this.selected = '';
+    this.detach();
+  }
+
+  private updateTerminalInfo(value: Object | undefined): void {
+    this.updateSize(value);
+    if (value === undefined) { return; }
+    const update = this.project(value);
+    if (!update.id || update.id !== this.selected) { return; }
+    this.terminals = this.terminals.some((row: DesktopTerminalRow): boolean => row.id === update.id) ?
+      this.terminals.map((row: DesktopTerminalRow): DesktopTerminalRow => row.id === update.id ? update : row) :
+      [...this.terminals, update];
+  }
+
   private receive(value: Object): void {
     const kind = getString(value, 'type');
     if (kind === 'snapshot') {
-      this.updateSize(getRecord(value, 'info'));
+      this.updateTerminalInfo(getRecord(value, 'info'));
       this.writable = getBoolean(value, 'writable') === true;
       this.maxFrameBytes = getNumber(getRecord(value, 'inputWindow'), 'maxFrameBytes') ?? this.maxFrameBytes;
       this.lastOutput = getNumber(value, 'sequence') ?? 0;
+      this.emulator?.dispose();
       this.emulator = this.createEmulator?.(this.cols, this.rows, this.scrollback, (reply: string): void => {
         this.write(reply, false);
       });
@@ -518,7 +554,7 @@ export class DesktopTerminalClient {
       this.paintText(getString(value, 'data') ?? '');
     } else if (kind === 'state') {
       this.writable = getBoolean(value, 'writable') === true;
-      this.updateSize(getRecord(value, 'info'));
+      this.updateTerminalInfo(getRecord(value, 'info'));
       this.requestResize();
       this.publish();
       this.draw();
@@ -658,7 +694,9 @@ export class DesktopTerminalClient {
     if (this.live) {
       this.onState({
         terminals: this.terminals, shells: this.shells, selected: this.selected,
-        writable: this.writable, loading: this.loading, busy: this.busy, error: this.error,
+        writable: this.writable, canTakeInput: !this.writable && this.lastOutput >= 0 && this.terminals.some(
+          (row: DesktopTerminalRow): boolean => row.id === this.selected && row.state === 'running'),
+        loading: this.loading, busy: this.busy, error: this.error,
         issue: this.issue, canCreate: this.discovered && !this.loading && !this.busy,
         shellProblem: this.shellProblem, shellsLoading: this.shellsLoading
       });

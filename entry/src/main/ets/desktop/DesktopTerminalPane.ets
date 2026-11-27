@@ -6,7 +6,8 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
-import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRow, DesktopTerminalState } from './DesktopTerminalClient';
+import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
+  DesktopTerminalState } from './DesktopTerminalClient';
 import type { TerminalCellPaint, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
 const INSET: number = 10;
@@ -27,6 +28,7 @@ export struct DesktopTerminalPane {
   @Prop @Watch('createFromShortcut') createSession: string = '';
   preferredTerminal: string = '';
   observeRetention?: DesktopTerminalRetentionObserver;
+  observeRoster?: DesktopTerminalRosterObserver;
   openInNewTab?: (row: DesktopTerminalRow) => boolean;
   onHidePanel: () => void = (): void => {};
   onCreateShortcut: () => void = () => {};
@@ -40,6 +42,7 @@ export struct DesktopTerminalPane {
   @State private visibleScreen: string = '';
   @State private renameOpen: boolean = false;
   @State private renameTitle: string = '';
+  private renameTerminalId: string = '';
   private canvas: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private client?: DesktopTerminalClient;
   private frame?: TerminalPaintFrame;
@@ -101,7 +104,7 @@ export struct DesktopTerminalPane {
       this.frame = frame;
       this.visibleScreen = this.client?.visibleText() ?? '';
       this.draw();
-    }, this.observeRetention, this.openInNewTab);
+    }, this.observeRetention, this.openInNewTab, this.observeRoster);
     this.fit();
     this.client.start(this.preferredTerminal);
   }
@@ -184,10 +187,12 @@ export struct DesktopTerminalPane {
   private actions(): MenuElement[] {
     return [
       { value: '重命名', action: (): void => {
+        this.renameTerminalId = this.state?.selected ?? '';
+        if (!this.renameTerminalId) { return; }
         this.renameTitle = this.selected()?.title ?? '';
         this.renameOpen = true;
       } },
-      { value: '重连终端', action: (): void => { this.client?.select(this.state?.selected ?? ''); } },
+      { value: '重连终端', action: (): void => { this.client?.reconnect(); } },
       { value: '复制当前屏幕', action: (): void => {
         this.copyScreen().catch((): void => {});
       } },
@@ -205,7 +210,7 @@ export struct DesktopTerminalPane {
     switch (this.state?.issue) {
       case 'discovery': client.start(this.preferredTerminal); break;
       case 'create': client.retryCreate(); break;
-      case 'attach': client.select(this.state.selected); break;
+      case 'attach': client.reconnect(); break;
       default: break;
     }
   }
@@ -530,7 +535,7 @@ export struct DesktopTerminalPane {
           TextInput({ text: this.renameTitle, placeholder: '终端名称' }).layoutWeight(1).maxLength(120)
             .onChange((value: string): void => { this.renameTitle = value; })
           Button('保存').enabled(this.renameTitle.trim().length > 0).onClick((): void => {
-            this.client?.rename(this.state?.selected ?? '', this.renameTitle.trim());
+            this.client?.rename(this.renameTerminalId, this.renameTitle.trim());
             this.renameOpen = false;
           })
           Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.renameOpen = false; })
@@ -538,6 +543,14 @@ export struct DesktopTerminalPane {
         .padding(8).width('100%')
       }
       if (this.state?.selected) {
+        if (this.state.canTakeInput) {
+          Row({ space: 8 }) {
+            Text($r('app.string.desktop_terminal_view_readonly')).fontSize(13)
+              .fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+            Button($r('app.string.desktop_terminal_take_input'), { buttonStyle: ButtonStyleMode.NORMAL })
+              .key('desktopTerminalTakeInput').height(28).onClick((): void => { this.client?.reconnect(); })
+          }.width('100%').padding(10)
+        }
         if (this.state.error) {
           Row({ space: 8 }) {
             Text(this.state.error).fontSize(13).fontColor($r('sys.color.warning')).layoutWeight(1)

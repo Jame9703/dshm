@@ -1059,6 +1059,8 @@
     { "name": "desktop_terminal_chrome_shell_empty", "value": "没有可用的 Shell" },
     { "name": "desktop_terminal_chrome_failed", "value": "终端错误：%s" },
     { "name": "desktop_terminal_chrome_retry", "value": "重试" },
+    { "name": "desktop_terminal_view_readonly", "value": "此页面当前只读。" },
+    { "name": "desktop_terminal_take_input", "value": "接管输入" },
     { "name": "desktop_terminal_chrome_agent", "value": "Agent" },
     { "name": "desktop_terminal_chrome_agent_hint", "value": "由 Agent 打开。你一输入就由你接管，Agent 之后只能读取。" },
     { "name": "desktop_terminal_chrome_sandbox", "value": "沙箱" },

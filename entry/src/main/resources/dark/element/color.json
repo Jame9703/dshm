@@ -1,6 +1,7 @@
 {
   "color": [
     {"value":"#7397F7","name":"desktop_chat_running_label"},
+    {"value":"#1A7397F7","name":"desktop_terminal_agent_fill"},
     {
       "name": "start_window_background",
       "value": "#151517"

@@ -9,7 +9,10 @@ import { getString, parseTarget } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
+import { DesktopTerminalTitle } from '../desktop/DesktopTerminalChrome';
 import type { DesktopTerminalRow } from '../desktop/DesktopTerminalClient';
+import { DesktopAgentTerminalInventory } from '../desktop/DesktopTerminalRosters';
+import type { DesktopTerminalRosterSink } from '../desktop/DesktopTerminalRosters';
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
 import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
@@ -61,7 +64,7 @@ import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDo
   desktopDockFocusFloat, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSeatFloat, desktopDockSelect,
   desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
   desktopDockBindTerminal, desktopDockBrowserAddress, desktopDockChatTab, desktopDockResourceId, desktopDockTerminalIds,
-  desktopDockTerminalTab,
+  desktopDockTerminalTab, desktopDockProjectTerminals,
   DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
 import { readDesktopDock, readDesktopDockTerminalIds, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
@@ -224,7 +227,7 @@ struct DesktopWorkspace {
   private settingsDialog: number = -1;
   private settingsSection: string = 'settings.general';
   private settingsOpeningPlugins: boolean = false;
-  @State @Watch('syncReading') private panel: string = 'session';
+  @State @Watch('onPanelChanged') private panel: string = 'session';
   @State private pluginName: string = '';
   private pluginTitle: string = '';
   private pluginDescription: string = '';
@@ -287,6 +290,9 @@ struct DesktopWorkspace {
   private fileSearchBook?: DesktopFileSearchPreferenceBook;
   private readonly documentViews = new Map<string, DesktopDocumentViewState>();
   private readonly closingDockTerminals = new Set<string>();
+  private readonly agentTerminals = new DesktopAgentTerminalInventory();
+  private agentTerminalSession: string = '';
+  private stopAgentTerminals?: () => void;
   private readonly replyMedia = new DesktopReplyMedia();
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
@@ -376,6 +382,7 @@ struct DesktopWorkspace {
     this.closeRename();
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
+    this.clearAgentTerminalWatch();
     this.data?.stop();
     this.data = undefined;
   }
@@ -404,6 +411,39 @@ struct DesktopWorkspace {
       this.panel === 'session' &&
       this.readingFocused;
     this.data?.reading.show(this.sessionId, chat?.historyLoaded === true, chat?.receivedTurn ?? 0, visible);
+  }
+
+  private onPanelChanged(): void {
+    this.syncReading();
+    this.syncAgentTerminalWatch();
+  }
+
+  private clearAgentTerminalWatch(): void {
+    this.agentTerminalSession = '';
+    this.stopAgentTerminals?.();
+    this.stopAgentTerminals = undefined;
+  }
+
+  private syncAgentTerminalWatch(): void {
+    const data = this.data;
+    const session = this.pageActive && this.panel === 'session' && this.dockSessionId === this.sessionId ? this.sessionId : '';
+    if (session === this.agentTerminalSession) { return; }
+    this.clearAgentTerminalWatch();
+    if (!session || data === undefined) { return; }
+    this.agentTerminalSession = session;
+    this.stopAgentTerminals = data.terminalRosters.watch(session, {
+      items: (items: Object[]): void => {
+        if (this.data !== data || this.agentTerminalSession !== session || this.sessionId !== session) { return; }
+        const changes = this.agentTerminals.apply(session, items, desktopDockTerminalIds(this.rightDock));
+        let layout = desktopDockProjectTerminals(this.rightDock, changes.metadata, changes.ended);
+        for (const opened of changes.opened) {
+          layout = desktopDockOpen(layout, desktopDockTerminalTab(opened.id, opened.title || '终端',
+            opened.agentControlled, opened.sandboxMode), false);
+        }
+        this.setDock(layout);
+      },
+      problem: (_message: string): void => {}
+    });
   }
 
   onBackPress(): boolean {
@@ -436,6 +476,8 @@ struct DesktopWorkspace {
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
     this.resetQuota();
+    this.clearAgentTerminalWatch();
+    this.agentTerminals.clear();
     this.data?.stop();
     this.data = undefined;
     this.attachmentsBySession.clear();
@@ -1186,6 +1228,7 @@ struct DesktopWorkspace {
     this.selectedSessionDirectory = session.cwd;
     this.selectedWorkspaceTitle = group.title;
     this.data?.conversation.open(session.id, subagent);
+    this.syncAgentTerminalWatch();
     if (changing && this.ready) { this.filterGroups(); }
   }
 
@@ -1256,6 +1299,7 @@ struct DesktopWorkspace {
     this.attachments = [];
     this.chatError = '';
     this.data?.conversation.open('');
+    this.syncAgentTerminalWatch();
   }
 
   private async newSession(targetWorkspaceId?: string, creatorPrompt: string = ''): Promise<void> {
@@ -3816,6 +3860,9 @@ struct DesktopWorkspace {
         observeRetention: (id: string, listener: (problem: string) => void): (() => void) => {
           return this.data?.terminalRetentions.observe(this.sessionId, id, listener) ?? (() => {});
         },
+        observeRoster: (sink: DesktopTerminalRosterSink): (() => void) => {
+          return this.data?.terminalRosters.watch(this.sessionId, sink) ?? (() => {});
+        },
         createSession: (this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id :
           index === this.rightDock.focus && this.dockTabShown(index, tab.id)) ? this.terminalCreateSession : '',
         onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
@@ -3871,16 +3918,21 @@ struct DesktopWorkspace {
   private DockTab(index: number, tab: DesktopDockTab) {
     Row({ space: 2 }) {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Row({ space: 4 }) {
-          if (tab.kind === DesktopDockKind.BROWSER) {
-            Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
-          } else if (tab.kind === DesktopDockKind.COMPACTION) {
-            Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
-          } else if (tab.kind === DesktopDockKind.TERMINAL) {
-            Image($r('app.media.dsh_compaction_api_outline')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+        if (tab.kind === DesktopDockKind.TERMINAL) {
+          DesktopTerminalTitle({ title: this.dockStoredTab(index, tab.id)?.title ?? tab.title,
+            agentControlled: this.dockStoredTab(index, tab.id)?.agentControlled === true,
+            sandboxMode: this.dockStoredTab(index, tab.id)?.terminalSandbox ?? '',
+            keyPrefix: 'desktopDockTerminal-' + index + '-' + tab.id, compact: true })
+        } else {
+          Row({ space: 4 }) {
+            if (tab.kind === DesktopDockKind.BROWSER) {
+              Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
+            } else if (tab.kind === DesktopDockKind.COMPACTION) {
+              Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+            }
+            Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              .fontColor($r('sys.color.font_primary'))
           }
-          Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            .fontColor($r('sys.color.font_primary'))
         }
       }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
         .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
@@ -4003,13 +4055,18 @@ struct DesktopWorkspace {
     Stack({ alignContent: Alignment.BottomEnd }) {
       Column() {
         Row({ space: 3 }) {
-          if (panel.tab.kind === DesktopDockKind.TERMINAL) {
-            Image($r('app.media.dsh_compaction_api_outline')).width(16).height(16).supportSvg2(true)
-              .margin({ left: 9 }).accessibilityLevel('no')
+          Row() {
+            if (panel.tab.kind === DesktopDockKind.TERMINAL) {
+              DesktopTerminalTitle({ title: this.floatingPanel(panel.tab.id)?.tab.title ?? panel.tab.title,
+                agentControlled: this.floatingPanel(panel.tab.id)?.tab.agentControlled === true,
+                sandboxMode: this.floatingPanel(panel.tab.id)?.tab.terminalSandbox ?? '',
+                keyPrefix: 'desktopFloatTerminal-' + panel.tab.id })
+            } else {
+              Text(panel.tab.title).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
+            }
           }
-          Text(panel.tab.title).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
-            .layoutWeight(1).height(36).padding({ left: 11 }).align(Alignment.Start)
+            .layoutWeight(1).height(36).padding({ left: 11 }).justifyContent(FlexAlign.Start)
             .key('desktopDockFloatTitle-' + panel.tab.id)
             .gesture(PanGesture({ direction: PanDirection.All, distance: 3 })
               .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, -1, panel.tab, true); })

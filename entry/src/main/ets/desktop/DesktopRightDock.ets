@@ -2,6 +2,7 @@ import type { DesktopChangeLocation, DesktopChangeTarget } from './DesktopArtifa
 import type { DesktopFileNavigation } from './DesktopFilesPane';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
+import type { DesktopAgentTerminalBinding } from './DesktopTerminalRosters';
 
 export enum DesktopDockKind {
   FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes', CHAT = 'chat',
@@ -27,6 +28,8 @@ export interface DesktopDockTab {
   restoreBrowser?: boolean;
   compactionMarkdown?: string;
   terminalId?: string;
+  agentControlled?: boolean;
+  terminalSandbox?: string;
 }
 
 export function desktopDockChatTab(target: DesktopDockChatTarget, title: string): DesktopDockTab {
@@ -37,9 +40,10 @@ export function desktopDockResourceId(kind: string, resource: string, sourceSess
   return kind + ':' + (sourceSessionId ? JSON.stringify([sourceSessionId, resource]) : resource);
 }
 
-export function desktopDockTerminalTab(terminalId: string, title: string): DesktopDockTab {
+export function desktopDockTerminalTab(terminalId: string, title: string,
+  agentControlled: boolean = false, sandbox: string = ''): DesktopDockTab {
   return { id: desktopDockResourceId(DesktopDockKind.TERMINAL, terminalId), kind: DesktopDockKind.TERMINAL,
-    title: title, terminalId: terminalId };
+    title: title, terminalId: terminalId, agentControlled: agentControlled, terminalSandbox: sandbox };
 }
 
 export interface DesktopDockPane {
@@ -122,13 +126,56 @@ export function desktopDockBindTerminal(layout: DesktopDockLayout, tabId: string
   if ((current.terminalId ?? '') === terminalId && current.title === nextTitle) { return layout; }
   const next = copyDock(layout);
   const updated: DesktopDockTab = { id: current.id, kind: current.kind, title: nextTitle,
-    terminalId: terminalId || undefined };
+    terminalId: terminalId || undefined, agentControlled: current.terminalId === terminalId && current.agentControlled,
+    terminalSandbox: current.terminalId === terminalId ? current.terminalSandbox : undefined };
   next.panes.forEach((pane: DesktopDockPane): void => {
     const index = pane.tabs.findIndex(match);
     if (index >= 0) { pane.tabs[index] = updated; }
   });
   const index = next.floats.findIndex((panel: DesktopDockFloat): boolean => match(panel.tab));
   if (index >= 0) { next.floats[index] = { tab: updated, rect: next.floats[index].rect }; }
+  return next;
+}
+
+export function desktopDockProjectTerminals(layout: DesktopDockLayout, metadata: Map<string, DesktopAgentTerminalBinding>,
+  ended: Set<string>): DesktopDockLayout {
+  const tabProjection = (tab: DesktopDockTab): DesktopDockTab => {
+    const info = tab.kind === DesktopDockKind.TERMINAL && tab.terminalId ? metadata.get(tab.terminalId) : undefined;
+    const title = info?.title || tab.title;
+    if (info === undefined || (title === tab.title && info.agentControlled === (tab.agentControlled ?? false) &&
+      info.sandboxMode === (tab.terminalSandbox ?? ''))) { return tab; }
+    return { id: tab.id, kind: tab.kind, terminalId: tab.terminalId, title: title,
+      agentControlled: info.agentControlled, terminalSandbox: info.sandboxMode };
+  };
+  let projected = layout;
+  for (let index = layout.panes.length - 1; index >= 0; index--) {
+    for (const tab of layout.panes[index].tabs) {
+      if (tab.kind === DesktopDockKind.TERMINAL && tab.terminalId && ended.has(tab.terminalId)) {
+        projected = desktopDockCloseTab(projected, index, tab.id);
+      }
+    }
+  }
+  for (const panel of layout.floats) {
+    if (panel.tab.kind === DesktopDockKind.TERMINAL && panel.tab.terminalId && ended.has(panel.tab.terminalId)) {
+      projected = desktopDockCloseFloat(projected, panel.tab.id);
+    }
+  }
+  const updates = new Map<string, DesktopDockTab>();
+  const collect = (tab: DesktopDockTab): void => {
+    const updated = tabProjection(tab);
+    if (updated !== tab) { updates.set(tab.id, updated); }
+  };
+  projected.panes.forEach((pane: DesktopDockPane): void => pane.tabs.forEach(collect));
+  projected.floats.forEach((panel: DesktopDockFloat): void => collect(panel.tab));
+  if (updates.size === 0) { return projected; }
+  const next = copyDock(projected);
+  next.panes.forEach((pane: DesktopDockPane): void => {
+    pane.tabs = pane.tabs.map((tab: DesktopDockTab): DesktopDockTab => updates.get(tab.id) ?? tab);
+  });
+  next.floats = next.floats.map((panel: DesktopDockFloat): DesktopDockFloat => {
+    const tab = updates.get(panel.tab.id);
+    return tab === undefined ? panel : { tab: tab, rect: panel.rect };
+  });
   return next;
 }
 
