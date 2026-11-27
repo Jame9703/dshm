@@ -22,6 +22,7 @@ import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopTrajectoryPane } from './DesktopTrajectoryPane';
+import { DesktopChatHistoryEdge, DesktopChatReturnToTail, desktopChatHistoryState } from './DesktopChatScrollControls';
 import { DesktopTurnOutline } from './DesktopTurnOutline';
 import { desktopTurnOutlineActiveTurn, desktopTurnOutlineItems } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry, DesktopTurnOutlineItem } from './DesktopTurnOutlineModel';
@@ -44,6 +45,7 @@ import { desktopSecretRanges } from './DesktopSecretMask';
 import { DesktopReferenceAction } from './DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
 import { DesktopReplyActions } from './DesktopReplyActions';
+import { DesktopChatUsageDock } from './DesktopChatUsage';
 import type { DesktopReplyMedia } from './DesktopReplyMedia';
 import { DesktopVoiceInput } from './DesktopVoiceInput';
 import type { DesktopVoiceInsertion } from './DesktopVoiceInput';
@@ -163,7 +165,12 @@ export struct DesktopConversationPane {
   private outlineProjection?: DesktopTurnOutlineEntry[];
   private outlineFirstVisible: number = 0;
   private outlineJumpGeneration: number = 0;
-  private following: boolean = true;
+  @State private following: boolean = true;
+  @State private transcriptWidth: number = 0;
+  @State private historyProcessing: boolean = false;
+  private historyPaging: boolean = false;
+  private historyCommitTimer: number = -1;
+  private historyProbeTimer: number = -1;
   private sessionId: string = '';
   private preparing: string = '';
   @State private showTrajectory: boolean = false;
@@ -229,6 +236,8 @@ export struct DesktopConversationPane {
 
   aboutToDisappear(): void {
     this.outlineJumpGeneration++;
+    clearTimeout(this.historyCommitTimer);
+    clearTimeout(this.historyProbeTimer);
     this.composerReady = false;
     this.teamActionVersion++;
     this.closeTeamDialog();
@@ -261,6 +270,12 @@ export struct DesktopConversationPane {
       this.outlineItems = [];
       this.outlineTranscript = undefined;
       this.outlineProjection = undefined;
+      clearTimeout(this.historyCommitTimer);
+      clearTimeout(this.historyProbeTimer);
+      this.historyCommitTimer = -1;
+      this.historyProbeTimer = -1;
+      this.historyPaging = false;
+      this.historyProcessing = false;
       this.inspectTrajectoryCall = '';
       this.showTrajectory = this.trajectorySessions.has(id);
       this.composerSelectionEnd = -1;
@@ -274,6 +289,7 @@ export struct DesktopConversationPane {
       this.closePalette();
     }
     this.refreshTurnOutline();
+    this.updateHistoryPaging();
     if (sameSession && count === this.messageCount && partial === this.partial && preparing === this.preparing) {
       return;
     }
@@ -289,6 +305,54 @@ export struct DesktopConversationPane {
       }, 30);
     }
   }
+
+  private updateHistoryPaging(): void {
+    const next = this.snapshot?.historyPaging === true;
+    if (this.historyPaging && !next && !this.snapshot?.historyError && this.snapshot?.loading === false) {
+      this.historyProcessing = true;
+      clearTimeout(this.historyCommitTimer);
+      this.historyCommitTimer = setTimeout((): void => {
+        this.historyCommitTimer = -1;
+        this.historyProcessing = false;
+      }, 32);
+    }
+    this.historyPaging = next;
+  }
+
+  private loadOlderMessages(): void {
+    if (this.showTrajectory || this.snapshot?.hasEarlier !== true || this.outlineBusyTurn >= 0) { return; }
+    this.following = false;
+    if (this.scrollTimer >= 0) { clearTimeout(this.scrollTimer); this.scrollTimer = -1; }
+    this.onEarlier();
+  }
+
+  private trackChatScroll(): void {
+    if (this.showTrajectory || this.outlineBusyTurn >= 0 || this.scrollTimer >= 0) { return; }
+    this.following = this.scroller.isAtEnd();
+    if (this.following || this.historyProbeTimer >= 0 || this.snapshot?.hasEarlier !== true ||
+      this.historyProcessing || this.snapshot.historyError) { return; }
+    this.historyProbeTimer = setTimeout((): void => {
+      this.historyProbeTimer = -1;
+      if (!this.following && !this.historyProcessing && !this.snapshot?.historyError &&
+        this.scroller.currentOffset().yOffset <= this.outlineHeight * 2) {
+        this.loadOlderMessages();
+      }
+    }, 0);
+  }
+
+  private returnToTail(): void {
+    this.outlineJumpGeneration++;
+    this.outlineBusyTurn = -1;
+    this.outlineEndOffset = 0;
+    this.following = true;
+    clearTimeout(this.scrollTimer);
+    this.scrollTimer = setTimeout((): void => {
+      this.scrollTimer = -1;
+      if (this.following && !this.showTrajectory) { this.scroller.scrollEdge(Edge.Bottom); }
+    }, 0);
+  }
+
+  private historyRowOffset(): number { return this.snapshot?.wasPartialHistory === true ? 1 : 0; }
 
   private refreshTurnOutline(): void {
     const snapshot = this.snapshot;
@@ -322,7 +386,7 @@ export struct DesktopConversationPane {
         this.refreshTurnOutline();
         const anchor = this.outlineItems.find((row: DesktopTurnOutlineItem): boolean => row.turn === item.turn)?.anchorIndex ?? -1;
         if (anchor >= 0) {
-          await this.scrollToTurnAnchor(anchor, requested);
+          await this.scrollToTurnAnchor(anchor + this.historyRowOffset(), requested);
           if (!requested()) { return; }
           this.outlineActiveTurn = item.turn;
           return;
@@ -1295,6 +1359,10 @@ export struct DesktopConversationPane {
           } })
       Row({ space: 4 }) {
         this.ComposerControls()
+        if (this.snapshot?.chatUsage !== undefined) {
+          DesktopChatUsageDock({ stats: this.snapshot.chatUsage, compact: this.snapshot.compactUsage,
+            sessionId: this.snapshot.sessionId, availableWidth: this.transcriptWidth })
+        }
         DesktopVoiceInput({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
           locked: this.busy || this.snapshot?.loading !== false,
           onAnchor: (): DesktopVoiceInsertion | undefined => this.voiceInsertion(),
@@ -1426,15 +1494,18 @@ export struct DesktopConversationPane {
       if (this.snapshot?.loading) {
         LoadingProgress().width(22).height(22).color($r('sys.color.brand'))
       }
-      if (this.snapshot?.hasEarlier && !this.showTrajectory) {
-        Button($r('app.string.desktop_chat_earlier'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .onClick((): void => {
-            this.following = false;
-            this.onEarlier();
-          })
-      }
       Stack({ alignContent: Alignment.Start }) {
         List({ space: 16, scroller: this.scroller }) {
+          if (this.snapshot?.wasPartialHistory) {
+            ListItem() {
+              DesktopChatHistoryEdge({
+                status: desktopChatHistoryState(this.snapshot?.trajectoryHasEarlier === true,
+                  this.snapshot?.wasPartialHistory === true, this.snapshot?.historyPaging === true,
+                  this.historyProcessing, (this.snapshot?.historyError ?? '').length > 0),
+                onLoad: (): void => { this.loadOlderMessages(); }
+              })
+            }
+          }
           ForEach(this.snapshot?.transcript ?? [], (item: DesktopTranscriptItem): void => {
             ListItem() {
               Row() {
@@ -1455,6 +1526,8 @@ export struct DesktopConversationPane {
                     DesktopReplyActions({ messageId: item.replyTail.messageId, scopeId: this.snapshot?.sessionId ?? '',
                       replyMedia: this.replyMedia, text: desktopHideActionCardFences(item.replyTail.text),
                       timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
+                      turnUsage: item.turnUsage, compactUsage: this.snapshot?.compactUsage === true,
+                      availableWidth: this.transcriptWidth,
                       canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
                       onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
                       choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
@@ -1537,25 +1610,32 @@ export struct DesktopConversationPane {
         }
         .height('100%').width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
         .contentEndOffset(this.outlineEndOffset)
+        .maintainVisibleContentPosition(true)
         .scrollBar(BarState.Auto)
+        .onDidScroll((_offset: number, _state: ScrollState): void => { this.trackChatScroll(); })
         .onScrollIndex((first: number, last: number): void => {
           if (this.showTrajectory) { return; }
-          if (this.outlineBusyTurn < 0) {
-            if (last < this.messageCount - 1) { this.outlineEndOffset = 0; }
-            this.following = last >= this.messageCount - 1;
+          const offset = this.historyRowOffset();
+          if (this.outlineBusyTurn < 0 && last - offset < this.messageCount - 1) { this.outlineEndOffset = 0; }
+          this.outlineFirstVisible = Math.max(0, first - offset);
+          if (this.outlineWide) {
+            this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, this.outlineFirstVisible);
           }
-          this.outlineFirstVisible = first;
-          if (this.outlineWide) { this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, first); }
         })
         if (!this.showTrajectory && this.outlineWide && this.snapshot?.loading === false && this.outlineItems.length >= 2) {
           DesktopTurnOutline({ items: this.outlineItems, activeTurn: this.outlineActiveTurn,
             busyTurn: this.outlineBusyTurn, transcriptHeight: this.outlineHeight,
             onNavigate: (item: DesktopTurnOutlineItem): void => { this.navigateTurn(item); } }).margin({ left: 12 })
         }
+        if (!this.showTrajectory && this.snapshot?.historyLoaded && !this.following && this.messageCount > 0) {
+          DesktopChatReturnToTail({ onReturn: (): void => { this.returnToTail(); } })
+            .position({ right: Math.max(this.embedded ? 24 : 32, (this.transcriptWidth - 712) / 2), bottom: 16 })
+        }
       }.width('100%').layoutWeight(1)
         .visibility(this.showTrajectory ? Visibility.None : Visibility.Visible)
         .onAreaChange((_old: Area, area: Area): void => {
-          this.outlineWide = Number(area.width) > 900;
+          this.transcriptWidth = Number(area.width);
+          this.outlineWide = this.transcriptWidth > 900;
           this.outlineHeight = Number(area.height);
           this.refreshTurnOutline();
         })

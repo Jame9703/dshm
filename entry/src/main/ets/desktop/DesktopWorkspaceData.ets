@@ -102,6 +102,7 @@ export class DesktopWorkspaceData {
   private stopWorkspace?: () => void;
   private dockConversations?: Set<DesktopDockConversation>;
   private busyEnterSteers: boolean = false;
+  private compactUsage: boolean = false;
   private browserInDock: boolean = true;
 
   opensLinksInDock(): boolean { return this.browserInDock; }
@@ -140,7 +141,7 @@ export class DesktopWorkspaceData {
         interactions.closeView();
       } };
     conversations.add(binding);
-    conversation.setBusyEnter(this.busyEnterSteers);
+    conversation.setPreferences(this.busyEnterSteers, this.compactUsage);
     return binding;
   }
 
@@ -229,7 +230,9 @@ export class DesktopWorkspaceData {
     const settings = namespaces?.find((row: Object): boolean =>
       getString(row, 'ns') === 'ui-conversation');
     const chat = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'ui-chat');
-    this.browserInDock = getString(getRecord(chat, 'value'), 'linkOpening') !== 'new-tab';
+    const chatValue = getRecord(chat, 'value');
+    this.browserInDock = getString(chatValue, 'linkOpening') !== 'new-tab';
+    this.compactUsage = getString(chatValue, 'performanceUsage') === 'compact';
     const locale = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'locale');
     const theme = namespaces?.find((row: Object): boolean => getString(row, 'ns') === DESKTOP_THEME_NS);
     const appearance = getRecord(theme, 'value');
@@ -238,9 +241,9 @@ export class DesktopWorkspaceData {
     this.accountNotices.setLocale(language);
     this.connectorAccounts.setLocale(language);
     this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';
-    this.conversation.setBusyEnter(this.busyEnterSteers);
+    this.conversation.setPreferences(this.busyEnterSteers, this.compactUsage);
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
-      binding.conversation.setBusyEnter(this.busyEnterSteers);
+      binding.conversation.setPreferences(this.busyEnterSteers, this.compactUsage);
     });
   }
 

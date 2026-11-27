@@ -45,6 +45,7 @@ function choiceLabel(item: SettingItem): string {
  * 覆盖不到的键**保持 Host 原文**：宁可显示英文，也不自创一个官方没有的说法。
  */
 function officialSettingLabel(ns: string, key: string): string {
+  if (ns === 'ui-chat' && key === 'performanceUsage') { return '性能与用量'; }
   if (ns === 'ui-theme' && key === 'preference') {
     return '外观';
   }
@@ -96,6 +97,10 @@ function officialSettingLabel(ns: string, key: string): string {
 
 /** 官方对**选项值**的中文措辞（取不到就返回空串，由调用方回落原值） */
 function officialSettingValue(ns: string, key: string, value: string): string {
+  if (ns === 'ui-chat' && key === 'performanceUsage') {
+    if (value === 'compact') { return '简洁'; }
+    if (value === 'detailed') { return '详细'; }
+  }
   if (ns === 'ui-chat' && key === 'linkOpening') {
     if (value === 'sidebar') { return '应用内侧边栏'; }
     if (value === 'new-tab') { return '默认浏览器'; }
@@ -124,6 +129,7 @@ function officialSettingValue(ns: string, key: string, value: string): string {
 
 /** 官方对**说明文字**的中文措辞（同上，取不到返回空串） */
 function officialSettingHint(ns: string, key: string): string {
+  if (ns === 'ui-chat' && key === 'performanceUsage') { return '选择性能与用量信息展示的详细程度'; }
   if (ns === 'ui-chat' && key === 'linkOpening') {
     return '对话中网页链接的打开位置';
   }
@@ -152,9 +158,10 @@ export struct SettingRow {
   onResetSetting: (key: string) => void = () => {
   };
 
-  private linkChoices(): MenuElement[] {
+  private inlineChoices(): MenuElement[] {
+    const parts = splitSettingKey(this.item.key);
     return this.item.choices.map((choice: SettingChoice): MenuElement => {
-      const label = officialSettingValue('ui-chat', 'linkOpening', choice.value) || choice.label;
+      const label = (parts === undefined ? '' : officialSettingValue(parts.ns, parts.fieldPath, choice.value)) || choice.label;
       return { value: (choice.value === this.item.textValue ? '✓  ' : '') + label,
         action: (): void => { this.onPickChoice(this.item.key, this.item.textValue, choice.value); } };
     });
@@ -241,9 +248,11 @@ export struct SettingRow {
             this.onToggleSetting(this.item.key, on);
           })
       } else if (this.item.kind === SettingKind.CHOICE) {
-        if (this.item.key === 'ui-chat.linkOpening' && !this.item.readOnly && this.item.choices.length > 0) {
-          Button(this.valueLabelOf(this.item), { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopLinkOpening')
-            .fontSize(Fs.SECONDARY).bindMenu(this.linkChoices(), desktopMenuOptions(Placement.BottomRight))
+        if ((this.item.key === 'ui-chat.linkOpening' || this.item.key === 'ui-chat.performanceUsage') &&
+          !this.item.readOnly && this.item.choices.length > 0) {
+          Button(this.valueLabelOf(this.item), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key(this.item.key === 'ui-chat.linkOpening' ? 'desktopLinkOpening' : 'desktopPerformanceUsage')
+            .fontSize(Fs.SECONDARY).bindMenu(this.inlineChoices(), desktopMenuOptions(Placement.BottomRight))
         } else {
           Text(this.valueLabelOf(this.item))
           .fontSize(Fs.SECONDARY)

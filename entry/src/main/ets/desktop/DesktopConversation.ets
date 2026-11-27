@@ -26,6 +26,8 @@ import type { DesktopToolStep } from './DesktopToolLog';
 import type { DesktopCordisCard } from './DesktopCordisCards';
 import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopTrajectoryLog } from './DesktopTrajectoryLog';
+import { DesktopChatUsageState } from './DesktopChatUsageModel';
+import type { DesktopChatTurnUsage, DesktopChatUsageSnapshot } from './DesktopChatUsageModel';
 import { readDesktopTurnOutline } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
@@ -69,6 +71,7 @@ export interface DesktopTranscriptItem {
   cordis?: DesktopCordisCard;
   command?: DesktopCommandRecord;
   replyTail?: DesktopReplyTail;
+  turnUsage?: DesktopChatTurnUsage;
   workflow?: DesktopWorkflowRun;
   inheritedHistory?: boolean;
 }
@@ -77,10 +80,15 @@ export interface DesktopConversationSnapshot {
   sessionId: string;
   transcript: DesktopTranscriptItem[];
   turnOutline: DesktopTurnOutlineEntry[];
+  chatUsage: DesktopChatUsageSnapshot;
+  compactUsage: boolean;
   loadTurnHistory: (sequence: number, requested: () => boolean) => Promise<boolean>;
   readTrajectory: () => DesktopTraceRow[];
   trajectoryRevision: number;
   trajectoryHasEarlier: boolean;
+  wasPartialHistory: boolean;
+  historyPaging: boolean;
+  historyError: string;
   partial: string;
   preparingTool: string;
   loading: boolean;
@@ -138,6 +146,8 @@ export class DesktopConversation {
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private readonly toolLog: DesktopToolLog = new DesktopToolLog();
   private readonly trajectory: DesktopTrajectoryLog = new DesktopTrajectoryLog();
+  private readonly chatUsage = new DesktopChatUsageState();
+  private compactUsage: boolean = false;
   private turnOutline: DesktopTurnOutlineEntry[] = [];
   private turnOutlineSequence: number = -1;
   private latestTurn: number = 0;
@@ -175,6 +185,8 @@ export class DesktopConversation {
   private loading: boolean = false;
   private pageLoading: boolean = false;
   private hasEarlier: boolean = false;
+  private wasPartialHistory: boolean = false;
+  private historyError: string = '';
   private cursor: number = -1;
   private earliest: number = -1;
   private running: boolean = false;
@@ -238,6 +250,7 @@ export class DesktopConversation {
     this.transcript = [];
     this.turnOutline = [];
     this.turnOutlineSequence = -1;
+    this.chatUsage.clear();
     this.latestTurn = 0;
     this.latestTurnEvent = -1;
     this.trajectory.clear();
@@ -264,6 +277,8 @@ export class DesktopConversation {
     this.cursor = -1;
     this.earliest = -1;
     this.hasEarlier = false;
+    this.wasPartialHistory = false;
+    this.historyError = '';
     this.loading = sessionId.length > 0;
     this.pageLoading = false;
     this.error = '';
@@ -491,9 +506,10 @@ export class DesktopConversation {
     return '';
   }
 
-  setBusyEnter(steers: boolean): void {
-    if (this.busyEnterSteers === steers) { return; }
+  setPreferences(steers: boolean, compactUsage: boolean): void {
+    if (this.busyEnterSteers === steers && this.compactUsage === compactUsage) { return; }
     this.busyEnterSteers = steers;
+    this.compactUsage = compactUsage;
     this.publish();
   }
 
@@ -684,6 +700,10 @@ export class DesktopConversation {
 
   private async loadPage(generation: number, earlier: boolean): Promise<void> {
     this.pageLoading = true;
+    if (earlier) {
+      this.historyError = '';
+      this.publish();
+    }
     const request: Record<string, Object> = {
       'address': this.address(), 'maxMessages': PAGE_MESSAGES
     };
@@ -707,6 +727,7 @@ export class DesktopConversation {
       this.error = '';
     } else if (this.loading || earlier) {
       this.error = this.failure(result, '无法读取会话记录');
+      if (earlier) { this.historyError = this.error; }
     }
     this.loading = false;
     this.publish();
@@ -727,6 +748,7 @@ export class DesktopConversation {
       this.turnArtifacts.clear();
       this.toolLog.clear();
       this.trajectory.clear();
+      this.chatUsage.resetWindow();
       this.commandRecords.clear();
       this.replyTimeline.clear();
       this.latestTurn = 0;
@@ -751,6 +773,7 @@ export class DesktopConversation {
         this.latestTurn = loadedTurn;
       }
       this.trajectory.observe(record, eventType, seq);
+      this.chatUsage.observe(record);
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
@@ -823,7 +846,8 @@ export class DesktopConversation {
     });
     for (const replyTail of this.replyTimeline.completed()) {
       const id = `reply:${this.sessionId}:${replyTail.turn}:${replyTail.messageId}`;
-      result.set(id, { id: id, sequence: replyTail.endSeq, replyTail: replyTail });
+      result.set(id, { id: id, sequence: replyTail.endSeq, replyTail: replyTail,
+        turnUsage: this.chatUsage.turnUsage(replyTail.turn) });
     }
     for (const workflow of this.workflows.runs()) {
       const id = 'workflow:' + workflow.id;
@@ -849,6 +873,7 @@ export class DesktopConversation {
     }
     this.transcript = transcript;
     this.hasEarlier = hasEarlier;
+    this.wasPartialHistory = this.wasPartialHistory || hasEarlier;
     return cordisResult;
   }
 
@@ -883,8 +908,9 @@ export class DesktopConversation {
         const teamChanged = this.team.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
         const modelChanged = this.observeModel(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
         const outlineChanged = this.readTurnOutline(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
+        const usageChanged = this.chatUsage.readProjection(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged ||
-          modelChanged || outlineChanged) {
+          modelChanged || outlineChanged || usageChanged) {
           this.publish();
         }
       }
@@ -999,6 +1025,7 @@ export class DesktopConversation {
     const values = getRecord(projection, 'values');
     this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
+    this.chatUsage.readProjection(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readPlan(projection);
     this.readGoal(projection);
     this.readQueue(projection);
@@ -1083,8 +1110,9 @@ export class DesktopConversation {
       const teamChanged = this.team.observe(changes, getNumber(frame, 'seq') ?? 0);
       const modelChanged = this.observeModel(changes, getNumber(frame, 'seq') ?? 0);
       const outlineChanged = this.readTurnOutline(changes, getNumber(frame, 'seq') ?? -1);
+      const usageChanged = this.chatUsage.readProjection(changes, getNumber(frame, 'seq') ?? -1);
       if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged &&
-        !outlineChanged) { return; }
+        !outlineChanged && !usageChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
@@ -1153,8 +1181,10 @@ export class DesktopConversation {
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
       turnOutline: this.turnOutline, loadTurnHistory: this.loadTurnHistory,
+      chatUsage: this.chatUsage.stats(), compactUsage: this.compactUsage,
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
-      trajectoryHasEarlier: this.hasEarlier,
+      trajectoryHasEarlier: this.hasEarlier, wasPartialHistory: this.wasPartialHistory,
+      historyPaging: this.pageLoading && !this.loading, historyError: this.historyError,
       preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,

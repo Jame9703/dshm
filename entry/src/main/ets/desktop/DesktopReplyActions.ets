@@ -3,6 +3,8 @@ import { FeedbackRow } from 'appstate';
 import { copyText, shareText } from 'platform';
 import { DesktopRating } from './DesktopFeedback';
 import { DesktopReplyMedia, desktopReplyMediaText } from './DesktopReplyMedia';
+import { DesktopChatUsageTurn } from './DesktopChatUsage';
+import type { DesktopChatTurnUsage } from './DesktopChatUsageModel';
 
 @Component
 export struct DesktopReplyActions {
@@ -11,6 +13,9 @@ export struct DesktopReplyActions {
   @Prop @Watch('updateMediaText') text: string = '';
   replyMedia?: DesktopReplyMedia;
   @Prop timestamp: number = 0;
+  @Prop turnUsage?: DesktopChatTurnUsage = undefined;
+  @Prop compactUsage: boolean = false;
+  @Prop availableWidth: number = 420;
   @Prop feedbackRows: FeedbackRow[] = [];
   @Prop choosing: boolean = false;
   @Prop canFork: boolean = false;
@@ -170,6 +175,11 @@ export struct DesktopReplyActions {
         .key('desktopReplyShare-' + this.messageId)
         .accessibilityText($r('app.string.desktop_reply_share'))
         .onClick((): void => { this.shareReply(); })
+      if (!this.compactUsage && this.turnUsage !== undefined) {
+        DesktopChatUsageTurn({ usage: this.turnUsage, compact: this.compactUsage,
+          ownerKey: this.scopeId + ':' + this.messageId, availableWidth: this.availableWidth,
+          narrow: this.availableWidth <= 480 })
+      }
       if (this.timestamp > 0) {
         Text(this.clock()).fontSize(12).fontColor($r('sys.color.font_tertiary')).margin({ left: 4 })
       }
