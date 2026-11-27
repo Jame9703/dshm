@@ -128,6 +128,8 @@ export struct SettingsPane {
    * 等于让导航状态与显示内容两处各说一套。
    */
   @Prop section: string = 'settings.general';
+  @Prop desktopShortcuts: boolean = false;
+  onOpenShortcuts: () => void = () => {};
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
   @Prop sections: PanelDescriptor[] = [];
   /** 选一个分区（宿主经注册表校验后写进 `settingsSection`） */
@@ -215,6 +217,8 @@ export struct SettingsPane {
             // 通用段归 SettingsGeneral（P4-4 拆出的域组件）
             SettingsGeneral({
               groups: this.groups,
+              desktopShortcuts: this.desktopShortcuts,
+              onOpenShortcuts: this.onOpenShortcuts,
               permissionCurrent: this.permissionCurrent,
               permissionOptions: this.permissionOptions,
               onOpenDiagnostics: () => {

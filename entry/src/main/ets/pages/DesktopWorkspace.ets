@@ -30,6 +30,10 @@ import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate'
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import { EMPTY_DESKTOP_DRAFT } from '../desktop/DesktopDraftReferences';
 import type { DesktopComposerDraft } from '../desktop/DesktopDraftReferences';
+import { DesktopShortcutDialog } from '../desktop/DesktopShortcutDialog';
+import { DesktopShortcut, desktopShortcutEqual, desktopShortcutFromEvent, desktopShortcutModifiers, desktopShortcutRows,
+  desktopShortcutValue, readDesktopShortcuts } from '../desktop/DesktopShortcuts';
+import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
 import { desktopReferenceText } from '../desktop/DesktopReferences';
@@ -81,6 +85,9 @@ struct DesktopWorkspace {
   @State private query: string = '';
   @State private selectedWorkspaceTitle: ResourceStr = '';
   @State private appearance: string = 'system';
+  @State private shortcutsOpen: boolean = false;
+  @State private shortcutBindings: DesktopShortcutRow[] = desktopShortcutRows([]);
+  @State private terminalCreateSession: string = '';
   @State private selectedTitle: ResourceStr = '';
   @State private selectedSessionDirectory: string = '';
   @State private referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
@@ -139,7 +146,7 @@ struct DesktopWorkspace {
   private accountOpening: boolean = false;
   private accountDialog: number = -1;
   private pageActive: boolean = false;
-  private pageVisible: boolean = false;
+  @State private pageVisible: boolean = false;
   private readingWindow?: window.Window;
   private readingFocused: boolean = false;
   private readonly readingWindowEvent = (event: window.WindowEventType): void => {
@@ -193,12 +200,14 @@ struct DesktopWorkspace {
 
   onPageShow(): void {
     this.pageVisible = true;
+    this.reloadShortcutBindings();
     this.attachReadingWindow();
     this.syncReading();
   }
 
   onPageHide(): void {
     this.pageVisible = false;
+    this.shortcutsOpen = false;
     this.syncReading();
   }
 
@@ -647,32 +656,54 @@ struct DesktopWorkspace {
     }));
   }
 
-  private workspaceShortcut(key: string): void {
-    if (!this.pageActive || this.renameOpen || this.accountOpening || this.accountDialog >= 0 ||
-      this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0 || this.archiveRequest !== undefined) {
-      return;
-    }
-    if (key === 'N') { this.newSession(); return; }
-    if (key === 'K') { this.focusSearch(); return; }
-    if (key === 'O') { this.addWorkspace(); return; }
-    if (this.panel !== 'session' || !this.sessionId) { return; }
+  private reloadShortcutBindings(): void {
+    const prefs = readDesktopShortcuts(this.getUIContext().getHostContext());
+    this.shortcutBindings = desktopShortcutRows(prefs.overrides);
+  }
+
+  private workspaceShortcut(key: DesktopShortcut): boolean {
+    if (!this.pageActive || !this.pageVisible || this.shortcutsOpen || this.renameOpen || this.accountOpening ||
+      this.accountDialog >= 0 || this.openingFeedback || this.feedbackDialog >= 0 || this.logDialog >= 0 ||
+      this.archiveRequest !== undefined || this.imageDialog >= 0 || this.imageDialogOpening) { return false; }
+    if (key === DesktopShortcut.REFERENCE) { this.shortcutsOpen = true; return true; }
+    if (key === DesktopShortcut.NEW_SESSION) { this.newSession(); return true; }
+    if (key === DesktopShortcut.LEFT_SIDEBAR) { this.sidebarCollapsed = !this.sidebarCollapsed; return true; }
+    if (key === DesktopShortcut.SEARCH) { this.focusSearch(); return true; }
+    if (key === DesktopShortcut.ADD_WORKSPACE) { this.addWorkspace(); return true; }
+    if (key === DesktopShortcut.SETTINGS) { this.openSettings(); return true; }
+    if (this.panel !== 'session' || !this.sessionId) { return false; }
+    if (key === DesktopShortcut.FILES) { this.showWorkspaceFiles(); return true; }
+    if (key === DesktopShortcut.NEW_TERMINAL) { this.showTerminal(true); return true; }
     const session = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
       group.id === this.workspaceId)?.sessions.find((row: SessionListItem): boolean => row.id === this.sessionId);
-    if (session === undefined || this.archivedIds.includes(session.id)) { return; }
-    if (key === 'A') {
+    if (session === undefined || this.archivedIds.includes(session.id)) { return false; }
+    if (key === DesktopShortcut.ARCHIVE) {
       this.archiveSession(session.id, this.accessibilityLabel(this.sessionLabel(session)));
-      return;
+      return true;
     }
-    if (session.blank) { return; }
+    if (session.blank) { return false; }
     const detailOpen = this.planSession === session.id || this.filesSession === session.id ||
       this.changesTarget?.sessionId === session.id || this.terminalSession === session.id;
-    if (key === 'F') {
+    if (key === DesktopShortcut.FORK) {
       this.forkFrom(session.id);
-    } else if (key === 'G' && !detailOpen) {
+    } else if (key === DesktopShortcut.RENAME && !detailOpen) {
       this.showRename(session.id, false, this.sessionLabel(session));
-    } else if (key === 'U' && !detailOpen && this.readingReady) {
+    } else if (key === DesktopShortcut.TOGGLE_READ && !detailOpen && this.readingReady) {
       this.markReading(session.id);
+    } else {
+      return false;
     }
+    return true;
+  }
+
+  private terminalShortcut(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down) { return false; }
+    const key = desktopShortcutFromEvent(event);
+    if (!key.ctrl && !key.alt) { return false; }
+    const row = this.shortcutBindings.find((item: DesktopShortcutRow): boolean => !item.occupiedBy &&
+      desktopShortcutEqual(item.binding, key));
+    return row !== undefined && [DesktopShortcut.REFERENCE, DesktopShortcut.SETTINGS, DesktopShortcut.FILES,
+      DesktopShortcut.NEW_TERMINAL].includes(row.id) && this.workspaceShortcut(row.id);
   }
 
   private filterGroups(value: string): void {
@@ -708,6 +739,7 @@ struct DesktopWorkspace {
 
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
     if (this.sessionId !== session.id) {
+      this.terminalCreateSession = '';
       this.referenceOffer = undefined;
       this.closeFeedback();
       this.closeImagePreview();
@@ -738,6 +770,7 @@ struct DesktopWorkspace {
     this.closeFeedback();
     this.closeImagePreview();
     this.sessionId = '';
+    this.terminalCreateSession = '';
     this.referenceOffer = undefined;
     this.selectedTitle = '';
     this.draft = EMPTY_DESKTOP_DRAFT;
@@ -1207,6 +1240,26 @@ struct DesktopWorkspace {
     this.requestedFile = undefined;
   }
 
+  private showWorkspaceFiles(toggle: boolean = false): void {
+    this.closePlan();
+    this.changesTarget = undefined;
+    if (toggle && this.filesSession === this.sessionId) { this.closeFiles(); }
+    else if (this.filesSession !== this.sessionId) {
+      this.requestedFile = undefined;
+      this.filesSession = this.sessionId;
+    }
+    this.terminalSession = '';
+    this.terminalCreateSession = '';
+  }
+
+  private showTerminal(create: boolean = false): void {
+    this.closePlan();
+    this.changesTarget = undefined;
+    this.closeFiles();
+    this.terminalSession = !create && this.terminalSession === this.sessionId ? '' : this.sessionId;
+    this.terminalCreateSession = create ? this.sessionId : '';
+  }
+
   private showArtifact(path: string, name: string): void {
     this.closePlan();
     this.terminalSession = '';
@@ -1610,11 +1663,9 @@ struct DesktopWorkspace {
       .width(28).height(24).borderRadius(5).backgroundColor(Color.Transparent).focusOnTouch(false)
       .accessibilityText($r('app.string.desktop_experiment_title'))
       .bindMenu(this.sidebarActions(true), desktopMenuOptions(Placement.BottomLeft))
-      .keyboardShortcut('O', [ModifierKey.CTRL], (): void => this.workspaceShortcut('O'))
       Blank()
     }
     .width('100%').height(38).padding({ left: 10, right: 132 })
-    .keyboardShortcut('F', [ModifierKey.CTRL, ModifierKey.ALT], (): void => this.workspaceShortcut('F'))
   }
 
   @Builder
@@ -1810,11 +1861,9 @@ struct DesktopWorkspace {
         .accessibilityText(this.sidebarCollapsed ? $r('app.string.desktop_experiment_expand_sidebar') :
           $r('app.string.desktop_experiment_collapse_sidebar'))
         .onClick((): void => { this.sidebarCollapsed = !this.sidebarCollapsed; })
-        .keyboardShortcut('A', [ModifierKey.CTRL, ModifierKey.SHIFT], (): void => this.workspaceShortcut('A'))
       }
       .width('100%').height(64).padding({ left: this.sidebarCollapsed ? 0 : 6 })
       .justifyContent(this.sidebarCollapsed ? FlexAlign.Center : FlexAlign.Start)
-      .keyboardShortcut('G', [ModifierKey.CTRL, ModifierKey.ALT], (): void => this.workspaceShortcut('G'))
       this.SidebarShortcut($r('sys.symbol.plus_circle'), $r('app.string.action_new_session'),
         (): void => { this.newSession(); }, true)
       Blank().height(12)
@@ -1837,7 +1886,6 @@ struct DesktopWorkspace {
     .padding({ left: this.sidebarCollapsed ? 8 : 10, right: this.sidebarCollapsed ? 8 : 10, bottom: 8 })
     .backgroundColor($r('app.color.workspace_sidebar'))
     .border({ width: { right: 1 }, color: $r('app.color.workspace_border') })
-    .keyboardShortcut('K', [ModifierKey.CTRL], (): void => this.workspaceShortcut('K'))
   }
 
   @Builder
@@ -1949,24 +1997,9 @@ struct DesktopWorkspace {
             this.chatAction((id: string): Promise<string> => this.exportLog(id));
           },
           filesOpen: this.filesSession === this.sessionId,
-          onFiles: (): void => {
-            this.closePlan();
-            this.changesTarget = undefined;
-            if (this.filesSession === this.sessionId) {
-              this.closeFiles();
-            } else {
-              this.requestedFile = undefined;
-              this.filesSession = this.sessionId;
-            }
-            this.terminalSession = '';
-          },
+          onFiles: (): void => this.showWorkspaceFiles(true),
           terminalOpen: this.terminalSession === this.sessionId,
-          onTerminal: (): void => {
-            this.closePlan();
-            this.changesTarget = undefined;
-            this.terminalSession = this.terminalSession === this.sessionId ? '' : this.sessionId;
-            this.closeFiles();
-          },
+          onTerminal: (): void => this.showTerminal(),
           onModel: (selection: ModelSelection): void => this.chooseModel(selection),
           onPermission: (preset: string): void => {
             const conversation = this.data?.conversation;
@@ -2015,6 +2048,9 @@ struct DesktopWorkspace {
               host: this.data.actions,
               sessionId: this.sessionId,
               appearance: this.appearance,
+              createSession: this.terminalCreateSession,
+              onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
+              onShortcut: (event: KeyEvent): boolean => this.terminalShortcut(event),
               onHidePanel: (): void => { this.terminalSession = ''; }
             })
           }
@@ -2110,10 +2146,21 @@ struct DesktopWorkspace {
             }
           }
           .width('100%').layoutWeight(1)
-          .keyboardShortcut('U', [ModifierKey.CTRL, ModifierKey.SHIFT], (): void => this.workspaceShortcut('U'))
         }
         .width('100%').height('100%').backgroundColor($r('app.color.workspace_canvas'))
-        .keyboardShortcut('N', [ModifierKey.CTRL], (): void => this.workspaceShortcut('N'))
+        if (this.pageVisible && !this.shortcutsOpen) {
+          Row() {
+            ForEach(this.shortcutBindings, (row: DesktopShortcutRow): void => {
+              if (!row.occupiedBy && row.binding.code !== 0) {
+                Button().width(0).height(0).focusable(false).accessibilityLevel('no')
+                  .keyboardShortcut(desktopShortcutValue(row.binding), desktopShortcutModifiers(row.binding),
+                    (): void => { this.workspaceShortcut(row.id); })
+              }
+            }, (row: DesktopShortcutRow): string => row.id + row.occupiedBy + JSON.stringify(row.binding))
+          }.width(0).height(0).visibility(Visibility.Hidden).accessibilityLevel('no')
+        }
+        DesktopShortcutDialog({ show: this.shortcutsOpen, panelWidth: Math.max(250, Math.min(480, this.workbenchWidth - 32)),
+          onClose: (): void => { this.shortcutsOpen = false; }, onChanged: (): void => this.reloadShortcutBindings() })
         if (this.archiveNotice !== undefined) {
           this.ArchiveNoticeContent(this.archiveNotice)
         }

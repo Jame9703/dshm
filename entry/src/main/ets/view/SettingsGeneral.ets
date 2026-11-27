@@ -18,6 +18,7 @@
 import { Fs, Radius, SettingGroup, SettingItem, Sp } from 'appstate';
 import { SettingRow } from './SettingRow';
 import { SettingsUsage } from './SettingsUsage';
+import { DesktopShortcutSettingsRow } from '../desktop/DesktopShortcutDialog';
 
 
 /**
@@ -50,6 +51,8 @@ export struct SettingsGeneral {
   @Prop permissionCurrent: string = '';
   /** 宿主给出的可选集合（只读展示） */
   @Prop permissionOptions: string[] = [];
+  @Prop desktopShortcuts: boolean = false;
+  onOpenShortcuts: () => void = () => {};
 
   /** 打开本地调试（连接诊断 + 协议往返验证） */
   onOpenDiagnostics: () => void = () => {
@@ -71,6 +74,9 @@ export struct SettingsGeneral {
     Column({ space: Sp.L }) {
           /* 用量统计（docs/178）：桌面卡片同源数据，应用内也能看四档 token 用量 */
           SettingsUsage()
+          if (this.desktopShortcuts) {
+            DesktopShortcutSettingsRow({ onOpen: this.onOpenShortcuts })
+          }
           /*
            * 【权限模式：只读说明，不给假档位（E116）】
            *

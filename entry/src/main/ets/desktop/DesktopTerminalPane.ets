@@ -20,7 +20,10 @@ export struct DesktopTerminalPane {
   host?: DesktopHostActions;
   @Prop @Watch('reloadSession') sessionId: string = '';
   @Prop @Watch('draw') appearance: string = 'system';
+  @Prop @Watch('createFromShortcut') createSession: string = '';
   onHidePanel: () => void = (): void => {};
+  onCreateShortcut: () => void = () => {};
+  onShortcut: (event: KeyEvent) => boolean = (_event: KeyEvent): boolean => false;
 
   @State private state?: DesktopTerminalState = undefined;
   @State private input: string = '';
@@ -38,6 +41,7 @@ export struct DesktopTerminalPane {
   private charWidth: number = 8;
   private scrollY: number = 0;
   private ctrl: boolean = false;
+  private createIssued: boolean = false;
   private preferredTerminal: Map<string, string> = new Map<string, string>();
 
   aboutToAppear(): void {
@@ -71,6 +75,7 @@ export struct DesktopTerminalPane {
       if (state.selected) {
         this.preferredTerminal.set(id, state.selected);
       }
+      this.createFromShortcut();
     }, (frame: TerminalPaintFrame | undefined): void => {
       if (!this.active || this.sessionId !== id) {
         return;
@@ -81,6 +86,15 @@ export struct DesktopTerminalPane {
     });
     this.fit();
     this.client.start(this.preferredTerminal.get(id) ?? '');
+  }
+
+  private createFromShortcut(): void {
+    if (this.createSession.length === 0) { this.createIssued = false; return; }
+    if (!this.active || this.createIssued || this.createSession !== this.sessionId || this.client === undefined ||
+      this.state === undefined || this.state.loading || this.state.busy) { return; }
+    this.createIssued = true;
+    this.onCreateShortcut();
+    this.client.create();
   }
 
   private selected(): DesktopTerminalRow | undefined {
@@ -171,6 +185,7 @@ export struct DesktopTerminalPane {
       this.ctrl = down;
       return false;
     }
+    if (this.onShortcut(event)) { return true; }
     if (!down || !this.state?.writable) {
       return false;
     }

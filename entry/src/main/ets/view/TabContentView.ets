@@ -45,6 +45,8 @@ export interface TabContentFacade {
   browserInSidebar: boolean;
   /** 设置域当前分区（`NavigationState.settingsSection`） */
   settingsSection: string;
+  desktopShortcuts: boolean;
+  onOpenDesktopShortcuts: () => void;
   /** 设置域的可用分区清单（注册表给；顺序即呈现顺序） */
   settingsSections: PanelDescriptor[];
   /** 切设置分区（宿主经注册表校验后写进 `settingsSection`） */
@@ -216,6 +218,8 @@ export struct TabContentView {
       SettingsPane({
         // P4-1：分区与清单由注册表给（唯一真值在 NavigationState.settingsSection）
         section: this.f.settingsSection,
+        desktopShortcuts: this.f.desktopShortcuts,
+        onOpenShortcuts: this.f.onOpenDesktopShortcuts,
         sections: this.f.settingsSections,
         onSelectSection: (sectionId: string) => {
           this.f.onSelectSettingsSection(sectionId);

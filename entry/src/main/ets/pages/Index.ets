@@ -196,6 +196,11 @@ import type { MainShellFacade } from '../view/shell/MainShell';
 import type { RightbarFacade } from '../view/shell/RightbarShell';
 import { TabContentView } from '../view/TabContentView';
 import type { TabContentFacade } from '../view/TabContentView';
+import { DesktopShortcutDialog } from '../desktop/DesktopShortcutDialog';
+import { DesktopShortcut, desktopShortcutEqual, desktopShortcutFromEvent, desktopShortcutModifiers, desktopShortcutRows,
+  desktopShortcutValue, EMPTY_DESKTOP_SHORTCUT, readDesktopShortcuts } from '../desktop/DesktopShortcuts';
+import type { DesktopShortcutKey, DesktopShortcutRow } from '../desktop/DesktopShortcuts';
+import { StartupFrameCallback } from '../common/DesktopStartup';
 import type { WorkspaceBrowserFacade } from '../view/WorkspaceBrowser';
 import type { FileTreeFacade } from '../view/FileTreePane';
 import { RightbarShell } from '../view/shell/RightbarShell';
@@ -356,6 +361,10 @@ struct Index {
    */
   @StorageProp('dshHostLaunchUrl') @Watch('connectDesktopSettings') private desktopHostUrl: string = '';
   @State private desktopSettingsEntry: boolean = false;
+  @State private desktopSettingsVisible: boolean = false;
+  @State private desktopShortcutOpen: boolean = false;
+  @State private desktopShortcutReferenceKey: DesktopShortcutKey = EMPTY_DESKTOP_SHORTCUT;
+  @State private desktopShortcutSettingsKey: DesktopShortcutKey = EMPTY_DESKTOP_SHORTCUT;
   private desktopSettingsUrl: string = '';
   @State nav: NavigationState = initialNavigationState();
   @State stackPage: StackPage = StackPage.MAIN;
@@ -1012,6 +1021,8 @@ struct Index {
     const section = getString(this.getUIContext().getRouter().getParams(), 'desktopSettings');
     if (section !== undefined) {
       this.desktopSettingsEntry = true;
+      this.desktopSettingsVisible = true;
+      this.reloadDesktopShortcutKeys();
       this.selectSettingsSection(section);
     }
     // 目录选择器**换了路径**（用户选了 A、实际用 B）时给用户一句说明：事件由 `WebApp`（Web 侧）
@@ -1179,7 +1190,46 @@ struct Index {
   onPageShow(): void {
     if (!this.desktopSettingsEntry) {
       this.applyLaunchRoute();
+    } else {
+      this.reloadDesktopShortcutKeys();
+      this.desktopSettingsVisible = true;
     }
+  }
+
+  onPageHide(): void {
+    this.desktopSettingsVisible = false;
+    this.desktopShortcutOpen = false;
+  }
+
+  private closeDesktopSettings(): void {
+    if (!this.desktopSettingsVisible) { return; }
+    this.desktopSettingsVisible = false;
+    const ui = this.getUIContext();
+    // Release this route's accelerators before the workbench registers the same bindings again.
+    ui.postFrameCallback(new StartupFrameCallback((): void => { ui.getRouter().back(); }));
+  }
+
+  private reloadDesktopShortcutKeys(): void {
+    const prefs = readDesktopShortcuts(this.getUIContext().getHostContext());
+    const rows = desktopShortcutRows(prefs.overrides);
+    this.desktopShortcutReferenceKey = rows.find((row: DesktopShortcutRow): boolean =>
+      row.id === DesktopShortcut.REFERENCE && !row.occupiedBy)?.binding ?? EMPTY_DESKTOP_SHORTCUT;
+    this.desktopShortcutSettingsKey = rows.find((row: DesktopShortcutRow): boolean =>
+      row.id === DesktopShortcut.SETTINGS && !row.occupiedBy)?.binding ?? EMPTY_DESKTOP_SHORTCUT;
+  }
+
+  private desktopSettingsHotkey(event: KeyEvent): boolean {
+    if (!this.desktopSettingsVisible || this.desktopShortcutOpen || event.type !== KeyType.Down) { return false; }
+    const key = desktopShortcutFromEvent(event);
+    if (desktopShortcutEqual(this.desktopShortcutReferenceKey, key)) {
+      this.desktopShortcutOpen = true;
+      return true;
+    }
+    if (desktopShortcutEqual(this.desktopShortcutSettingsKey, key)) {
+      this.closeDesktopSettings();
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -1253,12 +1303,14 @@ struct Index {
         return true;
       case BackAction.TAB_TO_SESSIONS:
         if (this.desktopSettingsEntry) {
-          return false;
+          this.closeDesktopSettings();
+          return true;
         }
         this.selectTab(NavTab.SESSIONS);
         hilog.info(DOMAIN, TAG, 'DSHM-BACK 回首页签（会话）');
         return true;
       default:
+        if (this.desktopSettingsEntry) { this.closeDesktopSettings(); return true; }
         // EXIT：**不消费**，交给系统（最小化）。写成 false 是刻意的——
         // "按返回没反应"的假入口都是在这里 return true 造成的。
         hilog.info(DOMAIN, TAG, 'DSHM-BACK 已在根层，交给系统');
@@ -2460,9 +2512,21 @@ struct Index {
             })
               .borderRadius(8)
               .focusOnTouch(false)
-              .onClick((): void => { this.getUIContext().getRouter().back(); })
+              .onClick((): void => this.closeDesktopSettings())
+            if (this.desktopSettingsVisible && !this.desktopShortcutOpen) {
+              Row() {
+                Button().width(0).height(0).focusable(false).accessibilityLevel('no')
+                  .keyboardShortcut(desktopShortcutValue(this.desktopShortcutReferenceKey),
+                    desktopShortcutModifiers(this.desktopShortcutReferenceKey), (): void => { this.desktopShortcutOpen = true; })
+                Button().width(0).height(0).focusable(false).accessibilityLevel('no')
+                  .keyboardShortcut(desktopShortcutValue(this.desktopShortcutSettingsKey),
+                    desktopShortcutModifiers(this.desktopShortcutSettingsKey), (): void => this.closeDesktopSettings())
+              }.width(0).height(0).visibility(Visibility.Hidden).accessibilityLevel('no')
+            }
           }
           .width('100%').height(42).padding({ left: 12 })
+          DesktopShortcutDialog({ show: this.desktopShortcutOpen, onClose: (): void => { this.desktopShortcutOpen = false; },
+            onChanged: (): void => this.reloadDesktopShortcutKeys() })
         }
         Column() {
           AppShell({ f: this.buildShellFacade() })
@@ -2505,31 +2569,35 @@ struct Index {
      * 真正需要按形态过滤的是"把它展示给用户看"（帮助浮层/设置页），
      * 那部分用 `shortcutsForDesktop()`——目前尚无该浮层，故不在此假装。
      */
-    .keyboardShortcut('n', [ModifierKey.CTRL], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'n', [ModifierKey.CTRL], () => {
       this.runShortcut('new-session');
     })
-    .keyboardShortcut('k', [ModifierKey.CTRL], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'k', [ModifierKey.CTRL], () => {
       this.runShortcut('command-palette');
     })
-    .keyboardShortcut('f', [ModifierKey.CTRL], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'f', [ModifierKey.CTRL], () => {
       this.runShortcut('search-in-session');
     })
-    .keyboardShortcut('b', [ModifierKey.CTRL], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'b', [ModifierKey.CTRL], () => {
       this.runShortcut('toggle-nav');
     })
-    .keyboardShortcut('j', [ModifierKey.CTRL], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'j', [ModifierKey.CTRL], () => {
       this.runShortcut('toggle-detail');
     })
-    .keyboardShortcut('p', [ModifierKey.CTRL, ModifierKey.SHIFT], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'p', [ModifierKey.CTRL, ModifierKey.SHIFT], () => {
       this.runShortcut('pending-inbox');
     })
-    .keyboardShortcut('c', [ModifierKey.CTRL, ModifierKey.SHIFT], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : 'c', [ModifierKey.CTRL, ModifierKey.SHIFT], () => {
       this.runShortcut('copy-code-block');
     })
-    .keyboardShortcut(',', [ModifierKey.CTRL], () => {
+    .keyboardShortcut(this.desktopSettingsEntry ? '' : ',', [ModifierKey.CTRL], () => {
       this.runShortcut('open-settings');
     })
     .onKeyEvent((event: KeyEvent) => {
+      if (this.desktopSettingsEntry) {
+        if (this.desktopSettingsHotkey(event)) { event.stopPropagation(); }
+        return;
+      }
       // 只取「按下」那一次：抬起时再分发会执行两遍（`sendDraft` 会被调用两次）
       if (event.type !== KeyType.Down) {
         return;
@@ -4401,6 +4469,8 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
     browserInSidebar: sidebarPresentationOf(this.mode, sidebarExpandedForMode(this.mode, this.sidebarStored))
       === TrackPresentation.PANEL,
     settingsSection: this.nav.settingsSection,
+    desktopShortcuts: this.desktopSettingsEntry,
+    onOpenDesktopShortcuts: (): void => { this.desktopShortcutOpen = true; },
     settingsSections: this.panelRegistry.descriptors(PanelLocation.SETTINGS),
     onSelectSettingsSection: (sectionId: string) => this.selectSettingsSection(sectionId),
     browser: this.buildBrowserFacade(),
