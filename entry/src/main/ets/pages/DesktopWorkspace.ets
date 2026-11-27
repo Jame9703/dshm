@@ -6,7 +6,7 @@ import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture 
 import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getString, parseTarget } from 'connection';
-import { WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
+import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
@@ -16,6 +16,8 @@ import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
 import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
 import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
+import { DesktopCompactionPreviewPane } from '../desktop/DesktopCompactionPreviewPane';
+import { readDesktopCompactionSummary } from '../desktop/DesktopCompactionModel';
 import { exportDesktopLog } from '../desktop/DesktopLogExport';
 import { DesktopLogStage, DesktopSessionLogDialog } from '../desktop/DesktopSessionLogDialog';
 import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
@@ -35,6 +37,7 @@ import { desktopMenuOptions, desktopPluginEntryItems } from '../desktop/DesktopM
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
 import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { followSessionAddress, followSubagentAddress, projectSessionPage } from 'appstate';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
@@ -1806,6 +1809,26 @@ struct DesktopWorkspace {
     this.setDock(desktopDockOpen(this.rightDock, tab));
   }
 
+  private async openCompaction(target: DesktopDockChatTarget, sequence: number,
+    isCurrent: () => boolean): Promise<ResourceStr | undefined> {
+    const owner = this.sessionId;
+    const host = this.data?.actions;
+    if (!target.id || !owner || host === undefined || !isCurrent()) { return undefined; }
+    const child = target.subagent;
+    const address = child === undefined ? followSessionAddress(target.id) :
+      followSubagentAddress(child.parentId, child.id, child.mode);
+    const result = await host.call(SESSION_PAGE_ENDPOINT, { 'address': address, 'throughSeq': sequence, 'maxMessages': 1 });
+    if (!this.pageActive || this.sessionId !== owner || this.data?.actions !== host || !isCurrent()) { return undefined; }
+    if (!result.ok) { return $r('app.string.desktop_compaction_read_failed'); }
+    const markdown = readDesktopCompactionSummary(projectSessionPage(result.value).records, sequence);
+    if (markdown === undefined) { return $r('app.string.desktop_compaction_not_found'); }
+    const id = desktopDockResourceId('compaction', JSON.stringify([target.id, child?.parentId, child?.mode, sequence]));
+    const title = this.accessibilityLabel($r('app.string.desktop_compaction_preview_title'));
+    const tab: DesktopDockTab = { id: id, kind: DesktopDockKind.COMPACTION, title: title, compactionMarkdown: markdown };
+    this.setDock(desktopDockOpen(this.rightDock, tab));
+    return undefined;
+  }
+
   private showWorkspaceFiles(toggle: boolean = false): void {
     if (toggle && this.dockShows(DesktopDockKind.FILES)) { this.hideDockTool(DesktopDockKind.FILES); return; }
     const tab: DesktopDockTab = { id: DesktopDockKind.FILES, kind: DesktopDockKind.FILES, title: '工作区文件' };
@@ -3025,6 +3048,8 @@ struct DesktopWorkspace {
               (id: string): Promise<string> => conversation.mutateGoal(id, action, ref, objective));
           },
           onPlanPreview: (plan: DesktopPlanDocument): void => { this.showPlan(plan); },
+          onOpenCompaction: (sequence: number, isCurrent: () => boolean): Promise<ResourceStr | undefined> =>
+            this.openCompaction({ id: this.sessionId, subagent: this.chat?.subagent }, sequence, isCurrent),
           onBrowsePlugins: (): void => { this.openPlugins(); },
           onCreatePlugin: (): void => { this.createPluginDraft($r('app.string.desktop_plugin_prompt_conversation')); },
           onPlanResume: (id: string): void => { this.data?.interactions.reopenPlanReview(id); },
@@ -3416,6 +3441,8 @@ struct DesktopWorkspace {
         this.referenceFileAction(action, path, name, id);
       },
       openPlan: (id: string, plan: DesktopPlanDocument): void => this.showPlan(plan, id),
+      openCompaction: (target: DesktopDockChatTarget, sequence: number, isCurrent: () => boolean):
+        Promise<ResourceStr | undefined> => this.openCompaction(target, sequence, isCurrent),
       openLink: (href: string): void => this.openConversationLink(href),
       openChanges: (target: DesktopChangeTarget): void => this.showChanges(target, target.sessionId),
       openModels: (): void => { this.openSettings('settings.models'); },
@@ -3472,6 +3499,9 @@ struct DesktopWorkspace {
       DesktopPlanPreviewPane({ host: this.data?.actions, sessionId: tab.sourceSessionId ?? this.sessionId,
         document: this.dockStoredTab(index, tab.id)?.plan, shown: this.dockTabShown(index, tab.id),
         onClosePreview: (): void => this.closeDockTab(index, tab.id) })
+    } else if (tab.kind === DesktopDockKind.COMPACTION) {
+      DesktopCompactionPreviewPane({ markdown: this.dockStoredTab(index, tab.id)?.compactionMarkdown,
+        typography: this.typography, onLink: (href: string): void => this.openConversationLink(href) })
     } else if (tab.kind === DesktopDockKind.CHAT) {
       DesktopDockChatPane({ data: this.data, actions: this.dockChatActions(this.data), replyMedia: this.replyMedia,
         target: tab.chat,
@@ -3503,6 +3533,8 @@ struct DesktopWorkspace {
         Row({ space: 4 }) {
           if (tab.kind === DesktopDockKind.BROWSER) {
             Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
+          } else if (tab.kind === DesktopDockKind.COMPACTION) {
+            Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
           }
           Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontColor($r('sys.color.font_primary'))

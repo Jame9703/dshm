@@ -40,6 +40,7 @@ export interface DesktopDockChatActions {
   systemFile: (id: string, path: string, name: string, reveal: boolean) => void;
   referenceFile: (id: string, action: DesktopReferenceAction, path: string, name: string) => void;
   openPlan: (id: string, plan: DesktopPlanDocument) => void;
+  openCompaction: (target: DesktopDockChatTarget, sequence: number, isCurrent: () => boolean) => Promise<ResourceStr | undefined>;
   openChanges: (target: DesktopChangeTarget) => void;
   openModels: () => void;
   openPlugin: (name: string, title: string, description: string) => void;
@@ -208,6 +209,11 @@ export struct DesktopDockChatPane {
             this.reference(action, path, name);
           },
           onPlanPreview: (plan: DesktopPlanDocument): void => { this.actions?.openPlan(this.target?.id ?? '', plan); },
+          onOpenCompaction: (sequence: number, isCurrent: () => boolean): Promise<ResourceStr | undefined> => {
+            const target = this.target;
+            return target === undefined ? Promise.resolve(undefined) :
+              this.actions?.openCompaction(target, sequence, isCurrent) ?? Promise.resolve(undefined);
+          },
           onChanges: (target: DesktopChangeTarget): void => { this.actions?.openChanges(target); },
           onDecision: (request: string, allow: boolean): void => {
             this.run((binding): Promise<string> => binding.interactions.approve(request, allow));

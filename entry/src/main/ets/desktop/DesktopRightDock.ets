@@ -5,7 +5,7 @@ import type { DesktopSubagentEntry } from './DesktopSubagents';
 
 export enum DesktopDockKind {
   FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes', CHAT = 'chat',
-  BROWSER = 'browser'
+  BROWSER = 'browser', COMPACTION = 'compaction'
 }
 
 export interface DesktopDockChatTarget {
@@ -25,6 +25,7 @@ export interface DesktopDockTab {
   sourceSessionId?: string;
   browserAddress?: string;
   restoreBrowser?: boolean;
+  compactionMarkdown?: string;
 }
 
 export function desktopDockChatTab(target: DesktopDockChatTarget, title: string): DesktopDockTab {

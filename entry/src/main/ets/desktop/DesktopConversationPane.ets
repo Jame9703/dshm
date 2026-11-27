@@ -23,7 +23,8 @@ import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopTranscriptDisclosureRow } from './DesktopTranscriptDisclosureRow';
 import { DesktopTranscriptNoticeRow } from './DesktopTranscriptNotices';
-import type { DesktopTranscriptNotice } from './DesktopTranscriptNoticesModel';
+import { DesktopCompactionRow } from './DesktopCompactionRow';
+import type { DesktopCompactionRow as DesktopCompactionInfo } from './DesktopCompactionModel';
 import { DesktopUserMessageActions } from './DesktopUserMessageActions';
 import { desktopTranscriptRows } from './DesktopTranscriptPresentation';
 import type { DesktopTranscriptDisclosure, DesktopTranscriptPolicy, DesktopTranscriptRow, DesktopTranscriptTurn }
@@ -153,6 +154,8 @@ export struct DesktopConversationPane {
   onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string) => Promise<string> =
     (_action: DesktopGoalAction, _ref: DesktopGoalRef, _objective: string): Promise<string> => Promise.resolve('');
   onPlanPreview: (plan: DesktopPlanDocument) => void = (_plan: DesktopPlanDocument): void => {};
+  onOpenCompaction: (sequence: number, isCurrent: () => boolean) => Promise<ResourceStr | undefined> =
+    (_sequence: number, _isCurrent: () => boolean): Promise<ResourceStr | undefined> => Promise.resolve(undefined);
   onPlanDecision: (id: string, approve: boolean) => void = (_id: string, _approve: boolean): void => {};
   onPlanResume: (id: string) => void = (_id: string): void => {};
   onReferenceFileAction: (action: DesktopReferenceAction, path: string, name: string) => void =
@@ -174,7 +177,7 @@ export struct DesktopConversationPane {
   private outlineFirstVisible: number = 0;
   private outlineJumpGeneration: number = 0;
   @State private transcriptRows: DesktopTranscriptRow[] = [];
-  @State private transcriptNotices: Map<string, DesktopTranscriptNotice> = new Map();
+  @State private transcriptStatusRows: Map<string, DesktopTranscriptItem> = new Map();
   @State private messageActionsHover: boolean = false;
   @State private hoveredMessage: string = '';
   private transcriptSource?: DesktopTranscriptItem[];
@@ -401,19 +404,19 @@ export struct DesktopConversationPane {
     const visible: DesktopTranscriptItem[] = [];
     const rowIndices: number[] = [];
     const itemIndices: number[] = [];
-    const notices: Map<string, DesktopTranscriptNotice> = new Map();
+    const statuses: Map<string, DesktopTranscriptItem> = new Map();
     rows.forEach((row: DesktopTranscriptRow, index: number): void => {
       if (row.item !== undefined) {
         visible.push(row.item);
         rowIndices.push(index);
-        if (row.item.notice !== undefined) { notices.set(row.item.id, row.item.notice); }
+        if (row.item.notice !== undefined || row.item.compaction !== undefined) { statuses.set(row.item.id, row.item); }
       }
       itemIndices.push(Math.max(0, visible.length - 1));
     });
     this.visibleTranscript = visible;
     this.transcriptRowIndices = rowIndices;
     this.visibleItemIndices = itemIndices;
-    this.transcriptNotices = notices;
+    this.transcriptStatusRows = statuses;
     this.transcriptRows = rows;
   }
 
@@ -1306,12 +1309,20 @@ export struct DesktopConversationPane {
   @Builder
   private TranscriptContent(item: DesktopTranscriptItem, row: DesktopTranscriptRow) {
     if (item.notice !== undefined) {
-      DesktopTranscriptNoticeRow({ notice: this.transcriptNotices.get(item.id) ?? item.notice,
+      DesktopTranscriptNoticeRow({ notice: this.transcriptStatusRows.get(item.id)?.notice ?? item.notice,
         fontSize: this.typography.textSize })
+    } else if (item.compaction !== undefined) {
+      DesktopCompactionRow({ row: this.transcriptStatusRows.get(item.id)?.compaction ?? item.compaction,
+        previewAvailable: true, bodySize: this.typography.textSize, fontFamily: this.typography.textFamily,
+        onOpenSummary: this.onOpenCompaction })
     } else if (item.plan !== undefined) {
       this.PlanCard(item.plan)
     } else if (item.command !== undefined) {
       if (item.command.name === 'team') { this.TeamCommand(item.command) }
+      else if (item.command.name === 'compact') {
+        DesktopCompactionRow({ row: this.compactionCommand(item.command), bodySize: this.typography.textSize,
+          fontFamily: this.typography.textFamily })
+      }
       else { this.CommandCard(item.command) }
     } else if (item.workflow !== undefined) {
       DesktopWorkflowPane({ runId: item.workflow.id,
@@ -1374,6 +1385,14 @@ export struct DesktopConversationPane {
         },
         onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
     }
+  }
+
+  private compactionCommand(command: DesktopCommandRecord): DesktopCompactionInfo {
+    const running = command.completed < 0;
+    const failed = !running && command.outcome !== 'success';
+    return { id: 'manual:' + command.id, commandId: command.id, sequence: command.sequence,
+      status: running ? 'running' : 'ended', error: failed ? command.text : undefined,
+      fallbackSummary: !running && !failed ? command.text : undefined };
   }
 
   @Builder

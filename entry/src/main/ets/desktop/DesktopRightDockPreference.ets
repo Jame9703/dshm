@@ -20,6 +20,7 @@ interface SavedDockTab {
   sourceSessionId?: string;
   browserId?: string;
   browserAddress?: string;
+  compactionId?: string;
 }
 
 interface SavedDockPane {
@@ -47,7 +48,7 @@ interface SavedDock {
 function restorable(tab: DesktopDockTab): boolean {
   return tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.TERMINAL || tab.file !== undefined ||
     (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined || tab.chat !== undefined ||
-    tab.kind === DesktopDockKind.BROWSER;
+    tab.kind === DesktopDockKind.BROWSER || tab.kind === DesktopDockKind.COMPACTION;
 }
 
 function saveTab(tab: DesktopDockTab): SavedDockTab {
@@ -55,7 +56,8 @@ function saveTab(tab: DesktopDockTab): SavedDockTab {
     sequence: tab.plan?.sequence ?? tab.changeLocation?.sequence, callId: tab.plan?.callId,
     index: tab.changeLocation?.index, split: tab.changeLocation?.split, wrap: tab.changeLocation?.wrap, chat: tab.chat,
     sourceSessionId: tab.sourceSessionId,
-    browserId: tab.kind === DesktopDockKind.BROWSER ? tab.id : undefined, browserAddress: tab.browserAddress };
+    browserId: tab.kind === DesktopDockKind.BROWSER ? tab.id : undefined, browserAddress: tab.browserAddress,
+    compactionId: tab.kind === DesktopDockKind.COMPACTION ? tab.id : undefined };
 }
 
 export function encodeDesktopDock(layout: DesktopDockLayout): string {
@@ -81,6 +83,10 @@ function restoreTab(row: Object | undefined): DesktopDockTab | undefined {
   const kind = getString(row, 'kind');
   if (kind === DesktopDockKind.FILES) { return { id: kind, kind: kind, title: '工作区文件' }; }
   if (kind === DesktopDockKind.TERMINAL) { return { id: kind, kind: kind, title: '终端' }; }
+  if (kind === DesktopDockKind.COMPACTION) {
+    const id = getString(row, 'compactionId') ?? '';
+    return id.startsWith('compaction:') ? { id: id, kind: kind, title: getString(row, 'title') ?? '' } : undefined;
+  }
   if (kind === DesktopDockKind.BROWSER) {
     const id = getString(row, 'browserId') ?? '';
     if (!new RegExp('^browser:[0-9]+:[0-9]+$').test(id)) { return undefined; }
