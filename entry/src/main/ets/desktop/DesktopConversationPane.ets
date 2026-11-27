@@ -22,6 +22,9 @@ import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopTrajectoryPane } from './DesktopTrajectoryPane';
+import { DesktopTurnOutline } from './DesktopTurnOutline';
+import { desktopTurnOutlineActiveTurn, desktopTurnOutlineItems } from './DesktopTurnOutlineModel';
+import type { DesktopTurnOutlineEntry, DesktopTurnOutlineItem } from './DesktopTurnOutlineModel';
 import { DesktopCordisCardView } from './DesktopCordisCardView';
 import { desktopCordisAction, desktopCordisCardIcon, desktopCordisCardTitle } from './DesktopCordisCards';
 import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
@@ -150,6 +153,16 @@ export struct DesktopConversationPane {
   onChanges: (target: DesktopChangeTarget) => void = (_target: DesktopChangeTarget): void => {};
 
   private readonly scroller: Scroller = new Scroller();
+  @State private outlineWide: boolean = false;
+  @State private outlineHeight: number = 0;
+  @State private outlineEndOffset: number = 0;
+  @State private outlineItems: DesktopTurnOutlineItem[] = [];
+  @State private outlineActiveTurn: number = -1;
+  @State private outlineBusyTurn: number = -1;
+  private outlineTranscript?: DesktopTranscriptItem[];
+  private outlineProjection?: DesktopTurnOutlineEntry[];
+  private outlineFirstVisible: number = 0;
+  private outlineJumpGeneration: number = 0;
   private following: boolean = true;
   private sessionId: string = '';
   private preparing: string = '';
@@ -215,6 +228,7 @@ export struct DesktopConversationPane {
   }
 
   aboutToDisappear(): void {
+    this.outlineJumpGeneration++;
     this.composerReady = false;
     this.teamActionVersion++;
     this.closeTeamDialog();
@@ -229,6 +243,7 @@ export struct DesktopConversationPane {
 
   private onSnapshotChanged(): void {
     const id = this.snapshot?.sessionId ?? '';
+    const sameSession = id === this.sessionId;
     const count = this.snapshot?.transcript.length ?? 0;
     const partial = this.snapshot?.partial ?? '';
     const preparing = this.snapshot?.preparingTool ?? '';
@@ -239,6 +254,13 @@ export struct DesktopConversationPane {
       this.teamSaving = false;
       this.teamProblem = '';
       this.sessionId = id;
+      this.outlineJumpGeneration++;
+      this.outlineBusyTurn = -1;
+      this.outlineFirstVisible = 0;
+      this.outlineEndOffset = 0;
+      this.outlineItems = [];
+      this.outlineTranscript = undefined;
+      this.outlineProjection = undefined;
       this.inspectTrajectoryCall = '';
       this.showTrajectory = this.trajectorySessions.has(id);
       this.composerSelectionEnd = -1;
@@ -250,13 +272,15 @@ export struct DesktopConversationPane {
       this.inspectedTool = '';
       this.dismissedDraft = undefined;
       this.closePalette();
-    } else if (count === this.messageCount && partial === this.partial && preparing === this.preparing) {
+    }
+    this.refreshTurnOutline();
+    if (sameSession && count === this.messageCount && partial === this.partial && preparing === this.preparing) {
       return;
     }
     this.messageCount = count;
     this.partial = partial;
     this.preparing = preparing;
-    if (this.following && this.scrollTimer === -1) {
+    if (this.following && this.outlineBusyTurn < 0 && this.scrollTimer === -1) {
       this.scrollTimer = setTimeout((): void => {
         this.scrollTimer = -1;
         if (this.following && this.snapshot?.sessionId === this.sessionId) {
@@ -264,6 +288,63 @@ export struct DesktopConversationPane {
         }
       }, 30);
     }
+  }
+
+  private refreshTurnOutline(): void {
+    const snapshot = this.snapshot;
+    if (!this.outlineWide || snapshot === undefined || this.showTrajectory) { return; }
+    if (this.outlineTranscript !== snapshot.transcript || this.outlineProjection !== snapshot.turnOutline) {
+      this.outlineTranscript = snapshot.transcript;
+      this.outlineProjection = snapshot.turnOutline;
+      this.outlineItems = desktopTurnOutlineItems(snapshot.transcript, snapshot.turnOutline);
+    }
+    this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, this.outlineFirstVisible);
+  }
+
+  private async navigateTurn(item: DesktopTurnOutlineItem): Promise<void> {
+    const snapshot = this.snapshot;
+    if (snapshot === undefined || this.outlineBusyTurn >= 0 || this.showTrajectory) { return; }
+    const generation = ++this.outlineJumpGeneration;
+    const requested = (): boolean => this.outlineJumpGeneration === generation &&
+      this.sessionId === snapshot.sessionId && !this.showTrajectory && this.outlineWide;
+    this.following = false;
+    if (this.scrollTimer >= 0) {
+      clearTimeout(this.scrollTimer);
+      this.scrollTimer = -1;
+    }
+    this.outlineBusyTurn = item.turn;
+    try {
+      const loaded = item.anchorIndex >= 0 || await snapshot.loadTurnHistory(item.seq, requested);
+      if (!requested()) { return; }
+      if (loaded) {
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 0); });
+        if (!requested()) { return; }
+        this.refreshTurnOutline();
+        const anchor = this.outlineItems.find((row: DesktopTurnOutlineItem): boolean => row.turn === item.turn)?.anchorIndex ?? -1;
+        if (anchor >= 0) {
+          await this.scrollToTurnAnchor(anchor, requested);
+          if (!requested()) { return; }
+          this.outlineActiveTurn = item.turn;
+          return;
+        }
+      }
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_turn_outline_failed') });
+    } finally {
+      if (this.outlineJumpGeneration === generation) { this.outlineBusyTurn = -1; }
+    }
+  }
+
+  private async scrollToTurnAnchor(index: number, requested: () => boolean): Promise<void> {
+    this.scroller.scrollToIndex(index, false, ScrollAlign.START);
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
+    if (!requested()) { return; }
+    const position = this.scroller.getItemRect(index);
+    const gap = position.y - 12;
+    if (position.height <= 0 || gap <= 6) { return; }
+    // Extend the end only when the list clipped start alignment for a short trailing turn.
+    this.outlineEndOffset = Math.ceil(Math.max(0, Math.min(this.outlineHeight - 24, this.outlineEndOffset + gap)));
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
+    if (requested()) { this.scroller.scrollToIndex(index, false, ScrollAlign.START); }
   }
 
   private actionCardForTurn(turn: number): DesktopActionCard[] {
@@ -1352,113 +1433,132 @@ export struct DesktopConversationPane {
             this.onEarlier();
           })
       }
-      List({ space: 16, scroller: this.scroller }) {
-        ForEach(this.snapshot?.transcript ?? [], (item: DesktopTranscriptItem): void => {
-          ListItem() {
-            Row() {
-              if (item.plan !== undefined) {
-                this.PlanCard(item.plan)
-              } else if (item.command !== undefined) {
-                if (item.command.name === 'team') { this.TeamCommand(item.command) }
-                else { this.CommandCard(item.command) }
-              } else if (item.workflow !== undefined) {
-                DesktopWorkflowPane({ runId: item.workflow.id,
-                  view: this.workflowViews.get(item.id) ?? item.workflow.view, sessionId: this.snapshot?.sessionId ?? '',
-                  summaries: this.sessionSummaries, onOpen: (child: DesktopSubagentEntry): void => {
-                    const parent = this.snapshot?.subagent;
-                    this.onSubagent(child, parent === undefined ? [] : [parent]);
-                  } })
-              } else if (item.replyTail !== undefined) {
-                Column({ space: 10 }) {
-                  DesktopReplyActions({ messageId: item.replyTail.messageId, scopeId: this.snapshot?.sessionId ?? '',
-                    replyMedia: this.replyMedia, text: desktopHideActionCardFences(item.replyTail.text),
-                    timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
-                    canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
-                    onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
-                    choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
-                    onRating: (messageId: string, rating: DesktopRating): void => {
-                      this.onReplyRating(this.sessionId, messageId, rating);
+      Stack({ alignContent: Alignment.Start }) {
+        List({ space: 16, scroller: this.scroller }) {
+          ForEach(this.snapshot?.transcript ?? [], (item: DesktopTranscriptItem): void => {
+            ListItem() {
+              Row() {
+                if (item.plan !== undefined) {
+                  this.PlanCard(item.plan)
+                } else if (item.command !== undefined) {
+                  if (item.command.name === 'team') { this.TeamCommand(item.command) }
+                  else { this.CommandCard(item.command) }
+                } else if (item.workflow !== undefined) {
+                  DesktopWorkflowPane({ runId: item.workflow.id,
+                    view: this.workflowViews.get(item.id) ?? item.workflow.view, sessionId: this.snapshot?.sessionId ?? '',
+                    summaries: this.sessionSummaries, onOpen: (child: DesktopSubagentEntry): void => {
+                      const parent = this.snapshot?.subagent;
+                      this.onSubagent(child, parent === undefined ? [] : [parent]);
                     } })
-                  if (this.snapshot?.actionCards.has(item.replyTail.turn)) {
-                    ForEach(this.actionCardForTurn(item.replyTail.turn), (card: DesktopActionCard): void => {
-                      DesktopActionCardPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
-                        card: this.snapshot?.actionCards.get(item.replyTail?.turn ?? -1) ?? card,
-                        onPlugin: this.onPluginDetails, onWeb: this.onWeb })
-                    }, (card: DesktopActionCard): string => card.id)
-                  }
-                }.width('100%').constraintSize({ maxWidth: 712 })
-              } else if (item.inheritedHistory === true) {
-                Row({ space: 8 }) {
-                  Divider().layoutWeight(1).color($r('app.color.workspace_border'))
-                  Image($r('app.media.dsh_session_branch_outline')).width(14).height(14)
-                    .supportSvg2(true).draggable(false).accessibilityLevel('no')
-                  Text('以上为继承的历史消息').key('desktopInheritedHistory')
-                    .fontSize(12).fontColor($r('sys.color.font_tertiary'))
-                  Divider().layoutWeight(1).color($r('app.color.workspace_border'))
-                }.width('100%').constraintSize({ maxWidth: 712 })
-              } else if (item.message !== undefined) {
-                this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [])
-              } else if (item.artifacts !== undefined) {
-                DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
-                  artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
-                  onReview: this.onChanges })
-              } else if (item.cordis !== undefined) {
-                DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
-                  sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
-                  codeFamily: this.typography.codeFamily, onInspect: (call: string): void => { this.inspectCordis(call); },
-                  onWeb: this.onWeb })
-              } else if (item.process !== undefined) {
-                DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
-                  codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
-                  inspected: this.inspectedTool, onFile: this.onArtifactFile,
-                  hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
-                  onToggle: (): void => {
-                    this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
-                      this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
-                  },
-                  onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
+                } else if (item.replyTail !== undefined) {
+                  Column({ space: 10 }) {
+                    DesktopReplyActions({ messageId: item.replyTail.messageId, scopeId: this.snapshot?.sessionId ?? '',
+                      replyMedia: this.replyMedia, text: desktopHideActionCardFences(item.replyTail.text),
+                      timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
+                      canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
+                      onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
+                      choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
+                      onRating: (messageId: string, rating: DesktopRating): void => {
+                        this.onReplyRating(this.sessionId, messageId, rating);
+                      } })
+                    if (this.snapshot?.actionCards.has(item.replyTail.turn)) {
+                      ForEach(this.actionCardForTurn(item.replyTail.turn), (card: DesktopActionCard): void => {
+                        DesktopActionCardPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+                          card: this.snapshot?.actionCards.get(item.replyTail?.turn ?? -1) ?? card,
+                          onPlugin: this.onPluginDetails, onWeb: this.onWeb })
+                      }, (card: DesktopActionCard): string => card.id)
+                    }
+                  }.width('100%').constraintSize({ maxWidth: 712 })
+                } else if (item.inheritedHistory === true) {
+                  Row({ space: 8 }) {
+                    Divider().layoutWeight(1).color($r('app.color.workspace_border'))
+                    Image($r('app.media.dsh_session_branch_outline')).width(14).height(14)
+                      .supportSvg2(true).draggable(false).accessibilityLevel('no')
+                    Text('以上为继承的历史消息').key('desktopInheritedHistory')
+                      .fontSize(12).fontColor($r('sys.color.font_tertiary'))
+                    Divider().layoutWeight(1).color($r('app.color.workspace_border'))
+                  }.width('100%').constraintSize({ maxWidth: 712 })
+                } else if (item.message !== undefined) {
+                  this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [])
+                } else if (item.artifacts !== undefined) {
+                  DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+                    artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
+                    onReview: this.onChanges })
+                } else if (item.cordis !== undefined) {
+                  DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
+                    sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
+                    codeFamily: this.typography.codeFamily, onInspect: (call: string): void => { this.inspectCordis(call); },
+                    onWeb: this.onWeb })
+                } else if (item.process !== undefined) {
+                  DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
+                    codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
+                    inspected: this.inspectedTool, onFile: this.onArtifactFile,
+                    hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
+                    onToggle: (): void => {
+                      this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
+                        this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
+                    },
+                    onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
+                }
               }
+              .width('100%').justifyContent(FlexAlign.Center)
             }
-            .width('100%').justifyContent(FlexAlign.Center)
+          }, (item: DesktopTranscriptItem): string => this.sessionId + ':' + item.id +
+            (item.process?.version ?? '') + (item.command?.completed ?? '') +
+            (item.cordis === undefined ? '' : `:${item.cordis.resultSequence}:${item.cordis.state}:${item.cordis.superseded}`) +
+            (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels)))
+          if ((this.snapshot?.partial.length ?? 0) > 0) {
+            ListItem() {
+              Row() {
+                Text(this.snapshot?.partial ?? '').fontSize(this.typography.textSize).fontFamily(this.typography.textFamily)
+                  .fontColor($r('sys.color.font_primary'))
+                  .width('100%').constraintSize({ maxWidth: 712 })
+              }
+              .width('100%').justifyContent(FlexAlign.Center)
+            }
           }
-        }, (item: DesktopTranscriptItem): string => this.sessionId + ':' + item.id +
-          (item.process?.version ?? '') + (item.command?.completed ?? '') +
-          (item.cordis === undefined ? '' : `:${item.cordis.resultSequence}:${item.cordis.state}:${item.cordis.superseded}`) +
-          (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels)))
-        if ((this.snapshot?.partial.length ?? 0) > 0) {
-          ListItem() {
-            Row() {
-              Text(this.snapshot?.partial ?? '').fontSize(this.typography.textSize).fontFamily(this.typography.textFamily)
-                .fontColor($r('sys.color.font_primary'))
-                .width('100%').constraintSize({ maxWidth: 712 })
+          if (this.snapshot?.preparingTool) {
+            ListItem() {
+              Row({ space: 7 }) {
+                if (desktopCordisAction(this.snapshot?.preparingTool ?? '')) {
+                  Image(desktopCordisCardIcon(desktopCordisAction(this.snapshot?.preparingTool ?? '')))
+                    .width(14).height(14).supportSvg2(true).accessibilityLevel('no')
+                  Text(desktopCordisCardTitle(desktopCordisAction(this.snapshot?.preparingTool ?? ''))).fontSize(14)
+                    .fontColor($r('sys.color.brand'))
+                  LoadingProgress().key('desktopCordisPreparing-' + this.snapshot?.preparingTool).width(14).height(14)
+                    .accessibilityText($r('app.string.desktop_cordis_card_preparing'))
+                } else {
+                  LoadingProgress().width(16).height(16)
+                  Text(`正在准备 ${this.snapshot?.preparingTool ?? ''}`).fontSize(13)
+                }
+              }.width('100%').constraintSize({ maxWidth: 712 }).padding({ left: 7 })
             }
-            .width('100%').justifyContent(FlexAlign.Center)
           }
         }
-        if (this.snapshot?.preparingTool) {
-          ListItem() {
-            Row({ space: 7 }) {
-              if (desktopCordisAction(this.snapshot?.preparingTool ?? '')) {
-                Image(desktopCordisCardIcon(desktopCordisAction(this.snapshot?.preparingTool ?? '')))
-                  .width(14).height(14).supportSvg2(true).accessibilityLevel('no')
-                Text(desktopCordisCardTitle(desktopCordisAction(this.snapshot?.preparingTool ?? ''))).fontSize(14)
-                  .fontColor($r('sys.color.brand'))
-                LoadingProgress().key('desktopCordisPreparing-' + this.snapshot?.preparingTool).width(14).height(14)
-                  .accessibilityText($r('app.string.desktop_cordis_card_preparing'))
-              } else {
-                LoadingProgress().width(16).height(16)
-                Text(`正在准备 ${this.snapshot?.preparingTool ?? ''}`).fontSize(13)
-              }
-            }.width('100%').constraintSize({ maxWidth: 712 }).padding({ left: 7 })
+        .height('100%').width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
+        .contentEndOffset(this.outlineEndOffset)
+        .scrollBar(BarState.Auto)
+        .onScrollIndex((first: number, last: number): void => {
+          if (this.showTrajectory) { return; }
+          if (this.outlineBusyTurn < 0) {
+            if (last < this.messageCount - 1) { this.outlineEndOffset = 0; }
+            this.following = last >= this.messageCount - 1;
           }
+          this.outlineFirstVisible = first;
+          if (this.outlineWide) { this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, first); }
+        })
+        if (!this.showTrajectory && this.outlineWide && this.snapshot?.loading === false && this.outlineItems.length >= 2) {
+          DesktopTurnOutline({ items: this.outlineItems, activeTurn: this.outlineActiveTurn,
+            busyTurn: this.outlineBusyTurn, transcriptHeight: this.outlineHeight,
+            onNavigate: (item: DesktopTurnOutlineItem): void => { this.navigateTurn(item); } }).margin({ left: 12 })
         }
-      }
-      .layoutWeight(1).width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
-      .visibility(this.showTrajectory ? Visibility.None : Visibility.Visible)
-      .scrollBar(BarState.Auto)
-      .onScrollIndex((_first: number, last: number): void => {
-        if (!this.showTrajectory) { this.following = last >= this.messageCount - 1; }
-      })
+      }.width('100%').layoutWeight(1)
+        .visibility(this.showTrajectory ? Visibility.None : Visibility.Visible)
+        .onAreaChange((_old: Area, area: Area): void => {
+          this.outlineWide = Number(area.width) > 900;
+          this.outlineHeight = Number(area.height);
+          this.refreshTurnOutline();
+        })
       if (this.showTrajectory) {
         DesktopTrajectoryPane({ host: this.host, readRecords: this.snapshot?.readTrajectory,
           inspectCall: this.inspectTrajectoryCall,

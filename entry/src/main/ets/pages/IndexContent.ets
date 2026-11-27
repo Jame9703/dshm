@@ -18,6 +18,11 @@
  * 「本机 Host · 已授权」——那是安全陈述，编造它比空列表危险得多。
  */
 
+import type { DesktopAccountNotices } from '../desktop/DesktopAccountNotices';
+import type { DesktopHostActions } from '../desktop/DesktopHostActions';
+import { emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+
 import { display, router, window } from '@kit.ArkUI';
 import { KeyCode } from '@kit.InputKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -354,6 +359,10 @@ export class IndexPageLifecycle {
 
 @Component
 export struct IndexContent {
+  desktopAccountNotices?: DesktopAccountNotices;
+  desktopAccountHost?: DesktopHostActions;
+  @State private desktopAccountIdentity: DesktopAccountSettingsIdentity = emptyDesktopAccountSettingsIdentity();
+  private stopDesktopAccount?: () => void;
   pageLifecycle?: IndexPageLifecycle;
   desktopSection: string = '';
   onCloseSettings: () => void = (): void => {};
@@ -1039,8 +1048,17 @@ export struct IndexContent {
         label: '云同步', order: 50, available: (): boolean => true });
       this.desktopSettingsEntry = true;
       this.desktopSettingsVisible = true;
+      this.panelRegistry.register({ id: 'account', location: PanelLocation.SETTINGS, owner: 'settings',
+        label: '账号与余额', order: -10, available: (): boolean => this.desktopAccountIdentity.signedIn });
+      this.stopDesktopAccount = this.desktopAccountNotices?.observeAccount((identity: DesktopAccountSettingsIdentity): void => {
+        this.desktopAccountIdentity = identity;
+        if (!identity.signedIn && this.nav.settingsSection === 'account') {
+          this.selectSettingsSection('settings.general');
+        }
+      });
       this.reloadDesktopShortcutKeys();
-      this.selectSettingsSection(this.desktopSection);
+      this.selectSettingsSection(this.desktopSection === 'account' && !this.desktopAccountIdentity.signedIn ?
+        'settings.general' : this.desktopSection);
     }
     // 目录选择器**换了路径**（用户选了 A、实际用 B）时给用户一句说明：事件由 `WebApp`（Web 侧）
     // 在探写失败、改用应用公共目录时发出。此前那条路只落 diag 标记 ⇒ 用户完全看不到
@@ -1611,6 +1629,8 @@ export struct IndexContent {
   }
 
   aboutToDisappear(): void {
+    this.stopDesktopAccount?.();
+    this.stopDesktopAccount = undefined;
     if (this.pageLifecycle !== undefined) {
       this.pageLifecycle.shown = undefined;
       this.pageLifecycle.hidden = undefined;
@@ -4504,6 +4524,7 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
       === TrackPresentation.PANEL,
     settingsSection: this.nav.settingsSection,
     desktopShortcuts: this.desktopSettingsEntry,
+    desktopAccountHost: this.desktopAccountHost, desktopAccountIdentity: this.desktopAccountIdentity,
     onOpenDesktopShortcuts: (): void => { this.desktopShortcutOpen = true; },
     settingsSections: this.panelRegistry.descriptors(PanelLocation.SETTINGS),
     onSelectSettingsSection: (sectionId: string) => this.selectSettingsSection(sectionId),

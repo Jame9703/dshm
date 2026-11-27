@@ -27,6 +27,8 @@ import { PiAiSheetMode } from './PiAiProviderSheet';
 import { LocalPrefs } from 'platform';
 import { HubBanner } from './HubBanner';
 import { SettingsPane } from './SettingsPane';
+import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { WorkspacePane } from './WorkspacePane';
 import { WorkspaceBrowser } from './WorkspaceBrowser';
 import type { WorkspaceBrowserFacade } from './WorkspaceBrowser';
@@ -46,6 +48,8 @@ export interface TabContentFacade {
   /** 设置域当前分区（`NavigationState.settingsSection`） */
   settingsSection: string;
   desktopShortcuts: boolean;
+  desktopAccountHost?: DesktopHostActions;
+  desktopAccountIdentity?: DesktopAccountSettingsIdentity;
   onOpenDesktopShortcuts: () => void;
   /** 设置域的可用分区清单（注册表给；顺序即呈现顺序） */
   settingsSections: PanelDescriptor[];
@@ -219,6 +223,7 @@ export struct TabContentView {
         // P4-1：分区与清单由注册表给（唯一真值在 NavigationState.settingsSection）
         section: this.f.settingsSection,
         desktopShortcuts: this.f.desktopShortcuts,
+        desktopAccountHost: this.f.desktopAccountHost, desktopAccountIdentity: this.f.desktopAccountIdentity,
         onOpenShortcuts: this.f.onOpenDesktopShortcuts,
         sections: this.f.settingsSections,
         onSelectSection: (sectionId: string) => {

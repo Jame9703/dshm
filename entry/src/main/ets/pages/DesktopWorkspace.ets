@@ -1976,6 +1976,7 @@ struct DesktopWorkspace {
   private SettingsDialog() {
     WithTheme({ colorMode: this.workspaceColorMode() }) {
       IndexContent({ desktopSection: this.settingsSection,
+        desktopAccountNotices: this.data?.accountNotices, desktopAccountHost: this.data?.actions,
         onCloseSettings: (): void => { this.closeSettings(); },
         onSettingsSection: (section: string): void => { this.settingsSection = section; },
         onOpenPlugins: (): void => { this.settingsOpeningPlugins = true; } })

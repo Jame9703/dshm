@@ -969,6 +969,23 @@
     { "name": "desktop_cloud_upload", "value": "上传本机数据" },
     { "name": "desktop_cloud_upload_done", "value": "上传完成" },
     { "name": "desktop_cloud_upload_started", "value": "已开始上传" },
-    { "name": "desktop_cloud_working", "value": "进行中…" }
+    { "name": "desktop_cloud_working", "value": "进行中…" },
+    { "name": "desktop_account_settings_title", "value": "账号与余额" },
+    { "name": "desktop_turn_outline_label", "value": "轮次导航" },
+    { "name": "desktop_turn_outline_jump", "value": "跳转到第 %d 轮" },
+    { "name": "desktop_turn_outline_load", "value": "加载并跳转到第 %d 轮" },
+    { "name": "desktop_turn_outline_number", "value": "第 %d 轮" },
+    { "name": "desktop_turn_outline_failed", "value": "无法定位该轮会话，请重试" },
+    { "name": "desktop_account_settings_signed_in", "value": "已登录 DeepSeek" },
+    { "name": "desktop_account_settings_loading", "value": "加载中…" },
+    { "name": "desktop_account_settings_profile_unavailable", "value": "账号资料暂不可用" },
+    { "name": "desktop_account_settings_balance", "value": "充值余额" },
+    { "name": "desktop_account_settings_bonus", "value": "赠金余额" },
+    { "name": "desktop_account_settings_balance_unavailable", "value": "前往开放平台查看" },
+    { "name": "desktop_account_settings_info", "value": "更多账号信息" },
+    { "name": "desktop_account_settings_more", "value": "更多" },
+    { "name": "desktop_account_settings_usage", "value": "查询用量" },
+    { "name": "desktop_account_settings_top_up", "value": "充值" },
+    { "name": "desktop_account_settings_open_failed", "value": "无法打开该链接" }
   ]
 }

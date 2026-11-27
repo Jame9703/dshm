@@ -1,6 +1,7 @@
 import { getArray, getNumber, getRecord, getString } from 'connection';
 import { desktopAccountLocale, desktopAccountMetadata } from './DesktopAccountClient';
 import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopAccountSettingsIdentity, emptyDesktopAccountSettingsIdentity } from './DesktopAccountSettingsModel';
 
 export interface DesktopAccountNoticeAction {
   label: string;
@@ -55,12 +56,37 @@ export class DesktopAccountNotices {
   private expiry: number = -1;
   private interval: number = DEFAULT_POLL_MS;
   private current: DesktopAccountNotice[] = [];
+  private accountIdentity: DesktopAccountSettingsIdentity = emptyDesktopAccountSettingsIdentity();
+  private accountObservers?: Set<(identity: DesktopAccountSettingsIdentity) => void>;
   private readonly displayed: Set<string> = new Set<string>();
   private readonly dismissed: Set<string> = new Set<string>();
 
   constructor(host: DesktopHostActions, publish: (notices: DesktopAccountNotice[]) => void) {
     this.host = host;
     this.publish = publish;
+  }
+
+  observeAccount(listener: (identity: DesktopAccountSettingsIdentity) => void): () => void {
+    if (this.accountObservers === undefined) {
+      this.accountObservers = new Set<(identity: DesktopAccountSettingsIdentity) => void>();
+    }
+    this.accountObservers.add(listener);
+    listener(this.accountIdentity);
+    return (): void => { this.accountObservers?.delete(listener); };
+  }
+
+  private publishAccount(state?: Object): void {
+    const previous = this.accountIdentity;
+    const signedIn = getString(state, 'status') === 'credential-stored';
+    const links = signedIn ? getRecord(state, 'links') : undefined;
+    const usageUrl = getString(links, 'usageUrl') ?? '';
+    const topUpUrl = getString(links, 'topUpUrl') ?? '';
+    if (signedIn === previous.signedIn && (!signedIn || (previous.revision === this.accountVersion &&
+      previous.usageUrl === usageUrl && previous.topUpUrl === topUpUrl))) { return; }
+    this.accountIdentity = { signedIn: signedIn, revision: this.accountVersion, usageUrl: usageUrl, topUpUrl: topUpUrl };
+    this.accountObservers?.forEach((listener: (identity: DesktopAccountSettingsIdentity) => void): void => {
+      listener(this.accountIdentity);
+    });
   }
 
   connect(): void {
@@ -71,6 +97,7 @@ export class DesktopAccountNotices {
         this.watchVersion++;
         this.stopWatch = undefined;
         this.clearAccount();
+        this.publishAccount();
       }
     };
     this.stopWatch = this.host.watch('account/watch', {}, {
@@ -85,6 +112,7 @@ export class DesktopAccountNotices {
           this.signedIn = true;
           this.read(this.accountVersion);
         }
+        this.publishAccount(state);
       },
       onError: ended,
       onEnd: ended
@@ -97,6 +125,8 @@ export class DesktopAccountNotices {
     this.stopWatch?.();
     this.stopWatch = undefined;
     this.clearAccount();
+    this.publishAccount();
+    this.accountObservers?.clear();
   }
 
   private clearAccount(): void {

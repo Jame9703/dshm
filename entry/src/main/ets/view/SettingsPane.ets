@@ -39,6 +39,9 @@ import { SettingsPresets } from './SettingsPresets';
 import { SettingsSkills } from './SettingsSkills';
 import { SettingsCore } from './SettingsCore';
 import { DesktopCloudSyncSettings } from '../desktop/DesktopCloudSyncSettings';
+import { DesktopAccountSettings } from '../desktop/DesktopAccountSettings';
+import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 
 /** 设置面板（E108/E110/E114/E120） */
 @Component
@@ -130,6 +133,8 @@ export struct SettingsPane {
    */
   @Prop section: string = 'settings.general';
   @Prop desktopShortcuts: boolean = false;
+  desktopAccountHost?: DesktopHostActions;
+  @Prop desktopAccountIdentity?: DesktopAccountSettingsIdentity = undefined;
   @State private panelWidth: number = 824;
   onOpenShortcuts: () => void = () => {};
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
@@ -293,6 +298,8 @@ export struct SettingsPane {
                 this.onResetSetting(key);
               }
             })
+          } else if (this.section === 'account' && this.desktopShortcuts && this.desktopAccountIdentity !== undefined) {
+            DesktopAccountSettings({ host: this.desktopAccountHost, identity: this.desktopAccountIdentity })
           } else if (this.section === 'dshm-cloud-sync' && this.desktopShortcuts) {
             DesktopCloudSyncSettings()
           } else if (this.section === 'settings.plugins') {
@@ -352,10 +359,12 @@ export struct SettingsPane {
   };
 
   private sectionLabel(id: string): Resource {
+    if (id === 'account') { return $r('app.string.desktop_account_settings_title'); }
     return id === 'dshm-cloud-sync' ? $r('app.string.desktop_cloud_sync_section') : settingsSectionLabelRes(id);
   }
 
   private sectionGlyph(id: string): Resource {
+    if (id === 'account') { return $r('app.media.dsh_settings_account'); }
     if (id === 'settings.models') { return $r('app.media.dsh_settings_data'); }
     if (id === 'settings.presets') { return $r('app.media.dsh_settings_presets'); }
     if (id === 'settings.plugins') { return $r('app.media.dsh_settings_plugins'); }

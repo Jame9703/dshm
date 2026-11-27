@@ -928,6 +928,23 @@
     { "name": "desktop_cloud_upload", "value": "Upload local data" },
     { "name": "desktop_cloud_upload_done", "value": "Upload completed" },
     { "name": "desktop_cloud_upload_started", "value": "Uploading local data" },
-    { "name": "desktop_cloud_working", "value": "Working…" }
+    { "name": "desktop_cloud_working", "value": "Working…" },
+    { "name": "desktop_account_settings_title", "value": "Account" },
+    { "name": "desktop_turn_outline_label", "value": "Turn navigation" },
+    { "name": "desktop_turn_outline_jump", "value": "Jump to turn %d" },
+    { "name": "desktop_turn_outline_load", "value": "Load and jump to turn %d" },
+    { "name": "desktop_turn_outline_number", "value": "Turn %d" },
+    { "name": "desktop_turn_outline_failed", "value": "Couldn’t jump to this turn. Try again." },
+    { "name": "desktop_account_settings_signed_in", "value": "Signed in to DeepSeek" },
+    { "name": "desktop_account_settings_loading", "value": "Loading…" },
+    { "name": "desktop_account_settings_profile_unavailable", "value": "Account details are not available yet." },
+    { "name": "desktop_account_settings_balance", "value": "Topped-up balance" },
+    { "name": "desktop_account_settings_bonus", "value": "Granted balance" },
+    { "name": "desktop_account_settings_balance_unavailable", "value": "View on Platform" },
+    { "name": "desktop_account_settings_info", "value": "More account information" },
+    { "name": "desktop_account_settings_more", "value": "More" },
+    { "name": "desktop_account_settings_usage", "value": "View usage" },
+    { "name": "desktop_account_settings_top_up", "value": "Top up" },
+    { "name": "desktop_account_settings_open_failed", "value": "Could not open this link." }
   ]
 }

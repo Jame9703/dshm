@@ -26,6 +26,8 @@ import type { DesktopToolStep } from './DesktopToolLog';
 import type { DesktopCordisCard } from './DesktopCordisCards';
 import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopTrajectoryLog } from './DesktopTrajectoryLog';
+import { readDesktopTurnOutline } from './DesktopTurnOutlineModel';
+import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
 import { DesktopHostActions } from './DesktopHostActions';
@@ -57,6 +59,7 @@ export interface DesktopPermissionOption {
 export interface DesktopTranscriptItem {
   id: string;
   sequence: number;
+  turn?: number;
   message?: TrajectoryItem;
   attachments?: DesktopMediaAttachment[];
   referenceLabels?: string[];
@@ -73,6 +76,8 @@ export interface DesktopTranscriptItem {
 export interface DesktopConversationSnapshot {
   sessionId: string;
   transcript: DesktopTranscriptItem[];
+  turnOutline: DesktopTurnOutlineEntry[];
+  loadTurnHistory: (sequence: number, requested: () => boolean) => Promise<boolean>;
   readTrajectory: () => DesktopTraceRow[];
   trajectoryRevision: number;
   trajectoryHasEarlier: boolean;
@@ -133,6 +138,12 @@ export class DesktopConversation {
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private readonly toolLog: DesktopToolLog = new DesktopToolLog();
   private readonly trajectory: DesktopTrajectoryLog = new DesktopTrajectoryLog();
+  private turnOutline: DesktopTurnOutlineEntry[] = [];
+  private turnOutlineSequence: number = -1;
+  private latestTurn: number = 0;
+  private latestTurnEvent: number = -1;
+  private readonly loadTurnHistory = (sequence: number, requested: () => boolean): Promise<boolean> =>
+    this.loadEarlierThrough(sequence, requested);
   private readonly readTrajectory: () => DesktopTraceRow[] = (): DesktopTraceRow[] => this.trajectory.rows();
   private readonly commandRecords: Map<string, DesktopCommandRecord> = new Map();
   private commands?: DesktopCommand[];
@@ -225,6 +236,10 @@ export class DesktopConversation {
     this.team.clear();
     this.interactions.select(sessionId);
     this.transcript = [];
+    this.turnOutline = [];
+    this.turnOutlineSequence = -1;
+    this.latestTurn = 0;
+    this.latestTurnEvent = -1;
     this.trajectory.clear();
     this.recallLabels.clear();
     this.turnArtifacts.clear();
@@ -299,6 +314,17 @@ export class DesktopConversation {
     if (this.hasEarlier && !this.pageLoading) {
       this.loadPage(this.generation, true);
     }
+  }
+
+  private async loadEarlierThrough(sequence: number, requested: () => boolean): Promise<boolean> {
+    const generation = this.generation;
+    if (sequence < 0 || !this.current(generation)) { return false; }
+    while (this.current(generation) && requested() && this.hasEarlier && !this.pageLoading && this.earliest > sequence) {
+      const before = this.earliest;
+      await this.loadPage(generation, true);
+      if (this.earliest >= before) { break; }
+    }
+    return this.current(generation) && requested() && this.earliest >= 0 && this.earliest <= sequence;
   }
 
   async upload(sessionId: string, name: string, data: ArrayBuffer,
@@ -703,9 +729,13 @@ export class DesktopConversation {
       this.trajectory.clear();
       this.commandRecords.clear();
       this.replyTimeline.clear();
+      this.latestTurn = 0;
+      this.latestTurnEvent = -1;
       this.workflows.clear();
       this.inheritedSequence = -1;
     }
+    const firstSequence = getNumber(getRecord(records[0], 'event'), 'seq') ?? -1;
+    let loadedTurn = firstSequence > this.latestTurnEvent ? this.latestTurn : 0;
     for (const record of records) {
       const seq = getNumber(getRecord(record, 'event'), 'seq') ?? -1;
       if (seq >= 0 && (this.earliest < 0 || seq < this.earliest)) {
@@ -713,6 +743,13 @@ export class DesktopConversation {
       }
       const event = getRecord(record, 'event');
       const eventType = getString(event, 'type');
+      const eventTurn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
+      if (eventType === 'turn/start' && eventTurn > 0) { loadedTurn = eventTurn; }
+      if (eventType === EVENT_TURN_END) { loadedTurn = 0; }
+      if (seq > this.latestTurnEvent) {
+        this.latestTurnEvent = seq;
+        this.latestTurn = loadedTurn;
+      }
       this.trajectory.observe(record, eventType, seq);
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
@@ -754,7 +791,8 @@ export class DesktopConversation {
           message.body = desktopHideActionCardFences(message.body);
         }
         if (message.body.trim() || message.reasoning || attachments.length > 0) {
-          result.set(message.id, { id: message.id, sequence: seq, message: message, attachments: attachments });
+          result.set(message.id, { id: message.id, sequence: seq,
+            turn: eventTurn || loadedTurn || undefined, message: message, attachments: attachments });
         }
       }
     }
@@ -844,7 +882,9 @@ export class DesktopConversation {
         const cardsChanged = this.actionCards.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
         const teamChanged = this.team.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
         const modelChanged = this.observeModel(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
-        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged || modelChanged) {
+        const outlineChanged = this.readTurnOutline(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
+        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged ||
+          modelChanged || outlineChanged) {
           this.publish();
         }
       }
@@ -946,9 +986,19 @@ export class DesktopConversation {
     return changed;
   }
 
+  private readTurnOutline(values: Object | undefined, sequence: number): boolean {
+    if (this.turnOutlineSequence >= 0 && sequence <= this.turnOutlineSequence) { return false; }
+    const outline = readDesktopTurnOutline(values);
+    if (outline === undefined) { return false; }
+    this.turnOutlineSequence = sequence;
+    this.turnOutline = outline;
+    return true;
+  }
+
   private readProjection(projection: Object | undefined): void {
     const values = getRecord(projection, 'values');
     this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
+    this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readPlan(projection);
     this.readGoal(projection);
     this.readQueue(projection);
@@ -1032,7 +1082,9 @@ export class DesktopConversation {
       const cardsChanged = this.actionCards.observe(changes, getNumber(frame, 'seq') ?? 0);
       const teamChanged = this.team.observe(changes, getNumber(frame, 'seq') ?? 0);
       const modelChanged = this.observeModel(changes, getNumber(frame, 'seq') ?? 0);
-      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged) { return; }
+      const outlineChanged = this.readTurnOutline(changes, getNumber(frame, 'seq') ?? -1);
+      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged &&
+        !outlineChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
@@ -1100,6 +1152,7 @@ export class DesktopConversation {
       row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
+      turnOutline: this.turnOutline, loadTurnHistory: this.loadTurnHistory,
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
       trajectoryHasEarlier: this.hasEarlier,
       preparingTool: this.preparingTool, loading: this.loading,
