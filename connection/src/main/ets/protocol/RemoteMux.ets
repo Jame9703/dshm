@@ -26,7 +26,7 @@
 import { webSocket } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { getString, getRecord, parseJson, stringifyJson } from './JsonValue';
+import { getString, getRecord, getArray, parseJson, stringifyJson } from './JsonValue';
 import { ProtocolSurface, FALLBACK_SURFACE } from './Surface';
 import { StreamSink } from './Types';
 
@@ -593,7 +593,7 @@ export class RemoteMux {
     }
     const type: string | undefined = getString(frame, 'type');
     if (type === 'item') {
-      const value: Object | undefined = getRecord(frame, 'value');
+      const value: Object | undefined = getRecord(frame, 'value') ?? getArray(frame, 'value');
       if (value !== undefined) {
         stream.sink.onItem(value);
       }

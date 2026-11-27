@@ -14,7 +14,12 @@ export interface DesktopTerminalRow {
   title: string;
   state: string;
   cwd: string;
+  origin?: string;
+  control?: string;
+  sandboxMode?: string;
 }
+
+export type DesktopTerminalIssue = 'none' | 'discovery' | 'create' | 'attach';
 
 export interface DesktopTerminalState {
   terminals: DesktopTerminalRow[];
@@ -24,6 +29,16 @@ export interface DesktopTerminalState {
   loading: boolean;
   busy: boolean;
   error: string;
+  issue: DesktopTerminalIssue;
+  canCreate: boolean;
+  shellProblem: string;
+  shellsLoading: boolean;
+}
+
+interface DesktopTerminalCreateAttempt {
+  id: string;
+  shellPath: string;
+  request: Record<string, Object>;
 }
 
 interface TerminalInput {
@@ -66,6 +81,15 @@ export class DesktopTerminalClient {
   private loading: boolean = true;
   private busy: boolean = false;
   private error: string = '';
+  private issue: DesktopTerminalIssue = 'none';
+  private discovering: boolean = false;
+  private discovered: boolean = false;
+  private createAttempt?: DesktopTerminalCreateAttempt;
+  private unseenCreation?: DesktopTerminalRow;
+  private checkingRosterId: string = '';
+  private lastShellPath: string = '';
+  private shellProblem: string = '';
+  private shellsLoading: boolean = false;
   private cols: number = DEFAULT_COLS;
   private rows: number = DEFAULT_ROWS;
   private desiredCols: number = DEFAULT_COLS;
@@ -97,6 +121,12 @@ export class DesktopTerminalClient {
   }
 
   async start(preferredId: string): Promise<void> {
+    if (!this.live || this.discovering || this.discovered) { return; }
+    this.discovering = true;
+    this.loading = true;
+    this.error = '';
+    this.issue = 'none';
+    this.publish();
     const session: Record<string, Object> = { 'sessionId': this.sessionId };
     const agent: Record<string, Object> = { 'agentId': this.sessionId };
     const engine = loadTerminalEmulator().catch((): undefined => undefined);
@@ -106,35 +136,31 @@ export class DesktopTerminalClient {
       this.host.call('terminal/shells', agent)
     ]);
     this.createEmulator = await engine;
+    this.discovering = false;
     if (!this.live) {
       return;
     }
     this.loading = false;
     if (this.createEmulator === undefined) {
       this.error = '终端显示组件无法加载';
+      this.issue = 'discovery';
       this.publish();
       return;
     }
     if (!replies[0].ok) {
       this.error = replies[0].error?.httpStatus === 404 ?
         '当前宿主未启用终端。可在插件管理中启用终端插件包。' : desktopHostProblem(replies[0]);
+      this.issue = 'discovery';
       this.publish();
       return;
     }
+    this.discovered = true;
     this.maxCols = getNumber(replies[1].value, 'maxCols') ?? this.maxCols;
     this.maxRows = getNumber(replies[1].value, 'maxRows') ?? this.maxRows;
     this.scrollback = getNumber(replies[1].value, 'scrollback') ?? this.scrollback;
     this.maxInputBytes = getNumber(replies[1].value, 'maxInputBytes') ?? this.maxInputBytes;
-    if (replies[2].ok) {
-      const choices: DesktopShell[] = [];
-      for (const item of desktopHostItems(replies[2])) {
-        const path = getString(item, 'path') ?? '';
-        if (path) {
-          choices.push({ path: path, name: getString(item, 'name') ?? path });
-        }
-      }
-      this.shells = choices;
-    }
+    this.setShells(desktopHostItems(replies[2]));
+    this.shellProblem = desktopHostProblem(replies[2]);
     this.setTerminals(desktopHostItems(replies[0]));
     const preferred = this.terminals.find((row: DesktopTerminalRow): boolean => row.id === preferredId);
     if (preferred !== undefined) {
@@ -157,34 +183,84 @@ export class DesktopTerminalClient {
   }
 
   async create(shellPath: string = ''): Promise<void> {
-    if (!this.live || this.busy || this.loading || this.createEmulator === undefined) {
+    if (!this.live || this.busy || !this.discovered) {
       return;
     }
     this.busy = true;
+    this.lastShellPath = shellPath;
     this.error = '';
+    this.issue = 'none';
     this.publish();
-    const id = 'native-' + randomUuid();
-    const request: Record<string, Object> = {
-      'id': id, 'cols': Math.min(this.maxCols, this.desiredCols), 'rows': Math.min(this.maxRows, this.desiredRows)
-    };
-    if (shellPath) {
-      request['shellPath'] = shellPath;
+    let attempt = this.createAttempt;
+    if (attempt === undefined || attempt.shellPath !== shellPath) {
+      const id = 'native-' + randomUuid();
+      const request: Record<string, Object> = {
+        'id': id, 'cols': Math.min(this.maxCols, this.desiredCols), 'rows': Math.min(this.maxRows, this.desiredRows)
+      };
+      if (shellPath) { request['shellPath'] = shellPath; }
+      attempt = { id: id, shellPath: shellPath, request: request };
+      this.createAttempt = attempt;
     }
-    const result = await this.host.call('terminal/create', { 'agentId': this.sessionId, 'request': request });
+    const result = await this.host.call('terminal/create', { 'agentId': this.sessionId, 'request': attempt.request });
     if (!this.live) {
       return;
     }
     this.busy = false;
-    if (!result.ok || result.value === undefined) {
+    const row = result.ok && result.value !== undefined ? this.project(result.value) : undefined;
+    if (row?.id !== attempt.id) {
+      const retained = this.retainedAttempt();
+      if (retained !== undefined) { this.adopt(retained); return; }
+      if (result.error?.code === 'terminal/unavailable') { this.createAttempt = undefined; }
       this.error = desktopHostProblem(result) || '宿主未返回终端';
+      this.issue = 'create';
       this.publish();
       return;
     }
-    const row = this.project(result.value);
+    if (!this.terminals.some((terminal: DesktopTerminalRow): boolean => terminal.id === row.id)) {
+      this.unseenCreation = row;
+    }
+    this.adopt(row);
+  }
+
+  retryCreate(): void { this.create(this.lastShellPath); }
+
+  async retryShells(): Promise<void> {
+    if (!this.live || this.shellsLoading || !this.discovered) { return; }
+    this.shellsLoading = true;
+    this.shellProblem = '';
+    this.publish();
+    const result = await this.host.call('terminal/shells', { 'agentId': this.sessionId });
+    if (!this.live) { return; }
+    this.shellsLoading = false;
+    this.shellProblem = desktopHostProblem(result);
+    this.setShells(desktopHostItems(result));
+    this.publish();
+  }
+
+  private setShells(items: Object[]): void {
+    const choices: DesktopShell[] = [];
+    for (const item of items) {
+      const path = getString(item, 'path') ?? '';
+      if (path) { choices.push({ path: path, name: getString(item, 'name') ?? path }); }
+    }
+    this.shells = choices;
+  }
+
+  private retainedAttempt(): DesktopTerminalRow | undefined {
+    const id = this.createAttempt?.id;
+    return id === undefined ? undefined : this.terminals.find((row: DesktopTerminalRow): boolean =>
+      row.id === id && (row.state === 'running' || row.state === 'exited'));
+  }
+
+  private adopt(row: DesktopTerminalRow): void {
+    this.createAttempt = undefined;
+    this.issue = 'none';
+    this.error = '';
     if (!this.terminals.some((item: DesktopTerminalRow): boolean => item.id === row.id)) {
       this.terminals = [...this.terminals, row];
     }
-    this.select(row.id);
+    if (row.id === this.selected && this.stream !== undefined) { this.publish(); }
+    else { this.select(row.id); }
   }
 
   async rename(id: string, title: string): Promise<void> {
@@ -195,7 +271,8 @@ export class DesktopTerminalClient {
     this.error = desktopHostProblem(result);
     if (result.ok) {
       this.terminals = this.terminals.map((row: DesktopTerminalRow): DesktopTerminalRow => {
-        return row.id === id ? { id: row.id, title: title, state: row.state, cwd: row.cwd } : row;
+        return row.id === id ? { id: row.id, title: title, state: row.state, cwd: row.cwd,
+          origin: row.origin, control: row.control, sandboxMode: row.sandboxMode } : row;
       });
     }
     this.publish();
@@ -214,6 +291,7 @@ export class DesktopTerminalClient {
     this.busy = false;
     this.error = desktopHostProblem(result);
     if (result.ok) {
+      if (this.unseenCreation?.id === id) { this.unseenCreation = undefined; }
       this.terminals = this.terminals.filter((row: DesktopTerminalRow): boolean => row.id !== id);
       this.chooseRemaining();
     }
@@ -227,6 +305,7 @@ export class DesktopTerminalClient {
     this.detach();
     this.selected = id;
     this.error = '';
+    this.issue = 'none';
     const generation = this.generation;
     const result = this.host.attach('terminal/attach', { 'agentId': this.sessionId, 'id': id }, {
       onItem: (value: Object): void => {
@@ -240,6 +319,7 @@ export class DesktopTerminalClient {
     this.stream = result;
     if (result === undefined) {
       this.error = '宿主连接正在重建，请重连终端';
+      this.issue = 'attach';
     }
     this.publish();
   }
@@ -313,7 +393,8 @@ export class DesktopTerminalClient {
       id: getString(value, 'id') ?? '',
       title: getString(value, 'title') || getString(shell, 'name') || '终端',
       state: getString(value, 'state') ?? '',
-      cwd: getString(value, 'cwd') ?? ''
+      cwd: getString(value, 'cwd') ?? '', origin: getString(value, 'origin'),
+      control: getString(value, 'control'), sandboxMode: getString(value, 'sandboxMode')
     };
   }
 
@@ -321,10 +402,36 @@ export class DesktopTerminalClient {
     if (!this.live) {
       return;
     }
-    this.terminals = items.map((item: Object): DesktopTerminalRow => this.project(item))
+    const rows = items.map((item: Object): DesktopTerminalRow => this.project(item))
       .filter((row: DesktopTerminalRow): boolean => row.id.length > 0);
+    const created = this.unseenCreation;
+    if (created !== undefined && !rows.some((row: DesktopTerminalRow): boolean => row.id === created.id)) {
+      this.terminals = [...rows, created];
+      this.confirmCreatedRoster(created.id);
+    } else {
+      this.unseenCreation = undefined;
+      this.terminals = rows;
+    }
+    if (!this.busy && this.issue === 'create') {
+      const retained = this.retainedAttempt();
+      if (retained !== undefined) { this.adopt(retained); return; }
+    }
     this.chooseRemaining();
     this.publish();
+  }
+
+  // A watch snapshot received after create may have been captured before it committed.
+  private async confirmCreatedRoster(id: string): Promise<void> {
+    if (this.checkingRosterId === id) { return; }
+    this.checkingRosterId = id;
+    const result = await this.host.call('terminal/list', { 'sessionId': this.sessionId });
+    if (this.checkingRosterId === id) { this.checkingRosterId = ''; }
+    if (!this.live || this.unseenCreation?.id !== id || !result.ok) { return; }
+    const items = desktopHostItems(result);
+    if (!items.some((item: Object): boolean => getString(item, 'id') === id)) {
+      this.unseenCreation = undefined;
+      this.setTerminals(items);
+    }
   }
 
   private chooseRemaining(): void {
@@ -470,6 +577,7 @@ export class DesktopTerminalClient {
     if (this.live && this.generation === generation) {
       this.detach(true);
       this.error = message;
+      this.issue = 'attach';
       this.publish();
     }
   }
@@ -498,7 +606,9 @@ export class DesktopTerminalClient {
     if (this.live) {
       this.onState({
         terminals: this.terminals, shells: this.shells, selected: this.selected,
-        writable: this.writable, loading: this.loading, busy: this.busy, error: this.error
+        writable: this.writable, loading: this.loading, busy: this.busy, error: this.error,
+        issue: this.issue, canCreate: this.discovered && !this.loading && !this.busy,
+        shellProblem: this.shellProblem, shellsLoading: this.shellsLoading
       });
     }
   }

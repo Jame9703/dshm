@@ -1,8 +1,10 @@
 import { pasteboard } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { resourceManager } from '@kit.LocalizationKit';
+import { dialogMaterial } from 'platform';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
 import type { DesktopShell, DesktopTerminalRow, DesktopTerminalState } from './DesktopTerminalClient';
 import type { TerminalCellPaint, TerminalPaintFrame } from './terminal/TerminalEmulator';
@@ -47,6 +49,9 @@ export struct DesktopTerminalPane {
   private scrollY: number = 0;
   private ctrl: boolean = false;
   private createIssued: boolean = false;
+  private closeDialogId: number = -1;
+  private closeDialogOpening: boolean = false;
+  private closeDialogVersion: number = 0;
 
   aboutToAppear(): void {
     this.active = true;
@@ -56,11 +61,13 @@ export struct DesktopTerminalPane {
 
   aboutToDisappear(): void {
     this.active = false;
+    this.dismissCloseDialog();
     this.client?.dispose();
     this.client = undefined;
   }
 
   private reloadSession(): void {
+    this.dismissCloseDialog();
     this.client?.dispose();
     this.client = undefined;
     this.state = undefined;
@@ -96,7 +103,7 @@ export struct DesktopTerminalPane {
   private createFromShortcut(): void {
     if (this.createSession.length === 0) { this.createIssued = false; return; }
     if (!this.active || this.createIssued || this.createSession !== this.sessionId || this.client === undefined ||
-      this.state === undefined || this.state.loading || this.state.busy) { return; }
+      this.state?.canCreate !== true) { return; }
     this.createIssued = true;
     this.onCreateShortcut();
     this.client.create();
@@ -112,6 +119,23 @@ export struct DesktopTerminalPane {
       items.push({ value: shell.name, action: (): void => { this.client?.create(shell.path); } });
     }
     return items;
+  }
+
+  private toolbarShellMenu(): MenuElement[] {
+    const state = this.state;
+    if (state?.shellsLoading) {
+      return [{ value: $r('app.string.desktop_terminal_chrome_shell_loading'), enabled: false, action: (): void => {} }];
+    }
+    if (state?.shellProblem) {
+      return [{ value: $r('app.string.desktop_terminal_chrome_failed', state.shellProblem), enabled: false, action: (): void => {} },
+        { value: $r('app.string.desktop_terminal_chrome_retry'), action: (): void => { this.client?.retryShells(); } }];
+    }
+    return this.shellMenu();
+  }
+
+  private createTerminal(): void {
+    if (this.state?.issue === 'create') { this.client?.retryCreate(); }
+    else { this.client?.create(); }
   }
 
   private terminalMenu(): MenuElement[] {
@@ -161,20 +185,64 @@ export struct DesktopTerminalPane {
     ];
   }
 
-  private confirmClose(): void {
+  private retryTerminal(): void {
+    const client = this.client;
+    if (client === undefined || this.state?.busy) { return; }
+    switch (this.state?.issue) {
+      case 'discovery': client.start(this.preferredTerminal); break;
+      case 'create': client.retryCreate(); break;
+      case 'attach': client.select(this.state.selected); break;
+      default: break;
+    }
+  }
+
+  @Builder
+  private CloseTerminalDialog(row: DesktopTerminalRow, client: DesktopTerminalClient) {
+    DesktopTerminalCloseConfirmation({ terminalName: row.title,
+      onCancel: (): void => { this.dismissCloseDialog(); },
+      onConfirm: (): void => {
+        this.dismissCloseDialog();
+        if (this.active && this.client === client) { client.closeTerminal(row.id); }
+      } })
+  }
+
+  private async confirmClose(): Promise<void> {
     const row = this.selected();
     const client = this.client;
-    if (row === undefined || client === undefined) {
-      return;
-    }
-    this.getUIContext().getPromptAction().showDialog({
-      title: '关闭终端', message: row.title,
-      buttons: [{ text: '取消', color: '#777777' }, { text: '关闭终端', color: '#B73535' }]
-    }).then((result): void => {
-      if (result.index === 1 && this.active && this.client === client) {
-        client.closeTerminal(row.id);
+    if (row === undefined || client === undefined || this.closeDialogOpening || this.closeDialogId >= 0) { return; }
+    const version = ++this.closeDialogVersion;
+    this.closeDialogOpening = true;
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.CloseTerminalDialog(row, client); },
+        alignment: DialogAlignment.Center, width: 380, cornerRadius: 16, isModal: true, autoCancel: true,
+        systemMaterial: material, backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          if (version === this.closeDialogVersion) {
+            this.closeDialogVersion++;
+            this.closeDialogId = -1;
+            this.closeDialogOpening = false;
+          }
+        }
+      });
+      if (this.active && this.client === client && version === this.closeDialogVersion) { this.closeDialogId = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.active && version === this.closeDialogVersion) {
+        prompt.showToast({ message: $r('app.string.desktop_terminal_dialog_unavailable') });
       }
-    }).catch((): void => {});
+    } finally {
+      if (version === this.closeDialogVersion) { this.closeDialogOpening = false; }
+    }
+  }
+
+  private dismissCloseDialog(): void {
+    const id = this.closeDialogId;
+    this.closeDialogVersion++;
+    this.closeDialogId = -1;
+    this.closeDialogOpening = false;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
   }
 
   private focusInput(): void {
@@ -409,31 +477,34 @@ export struct DesktopTerminalPane {
     Column() {
       Row({ space: 3 }) {
         if (this.state?.selected) {
-          Button(this.selected()?.title || '终端', { buttonStyle: ButtonStyleMode.TEXTUAL })
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            DesktopTerminalTitle({ title: this.selected()?.title ?? '',
+              agentControlled: this.selected()?.origin === 'agent' && this.selected()?.control === 'agent',
+              sandboxMode: this.selected()?.origin === 'agent' ? this.selected()?.sandboxMode ?? '' : '' })
+          }
             .height(34).layoutWeight(1).bindMenu(this.terminalMenu(), desktopMenuOptions(Placement.BottomLeft))
           Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Text('⋯').fontSize(20).fontColor($r('sys.color.font_primary'))
           }
-            .height(32).width(36).padding(0).accessibilityText('终端操作')
+            .key('desktopTerminalActions').height(32).width(36).padding(0).accessibilityText('终端操作')
             .bindMenu(this.actions(), desktopMenuOptions(Placement.BottomRight))
         } else {
-          Text('终端').fontSize(14).fontWeight(FontWeight.Medium).layoutWeight(1)
+          Text($r('app.string.desktop_terminal_chrome_title')).fontSize(14).fontWeight(FontWeight.Medium).layoutWeight(1)
         }
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.plus')).fontSize(16).fontColor([$r('sys.color.font_primary')])
+          Image($r('app.media.dsh_reference_menu_plus')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
         }
-          .height(32).width(34).padding(0).accessibilityText('新建终端')
-          .enabled(this.state !== undefined && !this.state.loading && !this.state.busy)
-          .onClick((): void => { this.client?.create(); })
+          .key('desktopTerminalToolbarCreate').height(32).width(34).padding(0)
+          .accessibilityText($r('app.string.desktop_terminal_chrome_new'))
+          .enabled(this.state?.canCreate === true).onClick((): void => { this.createTerminal(); })
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(13).fontColor([$r('sys.color.font_secondary')])
-            .rotate({ angle: 90 })
+          Image($r('app.media.dsh_queue_chevron_down_outline')).width(13).height(13).supportSvg2(true).accessibilityLevel('no')
         }
           .height(32).width(30).padding(0).accessibilityText('选择 Shell')
-          .enabled((this.state?.shells.length ?? 0) > 0 && this.state?.busy !== true)
-          .bindMenu(this.shellMenu(), desktopMenuOptions(Placement.BottomRight))
+          .enabled(this.state?.canCreate === true)
+          .bindMenu(this.toolbarShellMenu(), desktopMenuOptions(Placement.BottomRight))
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.xmark')).fontSize(15).fontColor([$r('sys.color.font_primary')])
+          Image($r('app.media.dsh_dock_close')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
         }
           .height(32).width(32).padding(0).accessibilityText('收起终端面板')
           .onClick(this.onHidePanel)
@@ -452,22 +523,25 @@ export struct DesktopTerminalPane {
         }
         .padding(8).width('100%')
       }
-      if (this.state?.error) {
-        Text(this.state?.error ?? '').fontSize(13).fontColor($r('sys.color.warning'))
-          .padding(10).width('100%')
-      }
       if (this.state?.selected) {
+        if (this.state.error) {
+          Row({ space: 8 }) {
+            Text(this.state.error).fontSize(13).fontColor($r('sys.color.warning')).layoutWeight(1)
+            if (this.state.issue !== 'none') {
+              Button($r('app.string.desktop_terminal_chrome_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+                .key('desktopTerminalRecoveryRetry').height(28).enabled(!this.state.busy)
+                .onClick((): void => { this.retryTerminal(); })
+            }
+          }.width('100%').padding(10)
+        }
         this.TerminalScreen()
       } else {
-        Column({ space: 12 }) {
-          if (this.state?.loading || this.state?.busy) {
-            LoadingProgress().width(26).height(26)
-          } else {
-            Text('终端').fontSize(17).fontWeight(FontWeight.Medium)
-            Text('在当前会话的工作目录中打开 Shell').fontSize(13).fontColor($r('sys.color.font_secondary'))
-            Button('新建终端').enabled(this.state !== undefined && this.state.error.length === 0)
-              .onClick((): void => { this.client?.create(); })
-          }
+        Column() {
+          DesktopTerminalGuide({ canCreate: this.state?.canCreate === true, loading: this.state?.loading ?? true,
+            busy: this.state?.busy === true, problem: this.state?.error ?? '', shellItems: this.shellMenu(),
+            shellLoading: this.state?.shellsLoading === true, shellProblem: this.state?.shellProblem ?? '',
+            onCreate: (): void => { this.createTerminal(); }, onRetry: (): void => { this.retryTerminal(); },
+            onRetryShells: (): void => { this.client?.retryShells(); } })
         }
         .layoutWeight(1).width('100%').padding(10).justifyContent(FlexAlign.Center)
       }
