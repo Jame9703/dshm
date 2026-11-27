@@ -1,5 +1,6 @@
 {
   "color": [
+    {"value":"#3367E3","name":"desktop_chat_running_label"},
     {
       "name": "start_window_background",
       "value": "#FFFFFF"

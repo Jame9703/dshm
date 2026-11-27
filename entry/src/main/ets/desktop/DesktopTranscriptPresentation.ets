@@ -160,6 +160,7 @@ export interface DesktopTranscriptRow {
 }
 
 interface TurnPresentation {
+  boundary: DesktopTranscriptTurn;
   firstAnchor?: DesktopTranscriptItem;
   lastReply?: DesktopTranscriptItem;
   lastInputSequence: number;
@@ -220,28 +221,29 @@ function statusOf(reason: string): DesktopTranscriptStatus {
 export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: DesktopTranscriptTurn[],
   policy: DesktopTranscriptPolicy, overrides: Map<number, boolean>, pendingTranscriptInput: boolean = false):
   DesktopTranscriptRow[] {
-  const byTurn = new Map<number, DesktopTranscriptTurn>();
   const summaries = new Map<number, TurnPresentation>();
-  const rowTurns = new Map<string, number>();
+  const rowTurns = new Map<string, TurnPresentation>();
   const started = turns.filter((row: DesktopTranscriptTurn): boolean => row.startSequence >= 0)
     .sort((a: DesktopTranscriptTurn, b: DesktopTranscriptTurn): number => a.startSequence - b.startSequence);
   let current = -1;
   let lastInputSequence = -1;
   let lastInputTurn: number | undefined = undefined;
-  turns.forEach((row: DesktopTranscriptTurn): void => {
-    byTurn.set(row.turn, row);
+  let latestClosedTurn = -1;
+  for (const row of turns) {
+    if (row.endSequence >= 0) { latestClosedTurn = Math.max(latestClosedTurn, row.turn); }
     const summary: TurnPresentation = {
-      lastInputSequence: -1, firstProcessSequence: Infinity, protected: false, hasHiddenContent: false, grouped: false
+      boundary: row, lastInputSequence: -1, firstProcessSequence: Infinity,
+      protected: false, hasHiddenContent: false, grouped: false
     };
-    row.inputSequences.forEach((sequence: number): void => {
+    for (const sequence of row.inputSequences) {
       summary.lastInputSequence = Math.max(summary.lastInputSequence, sequence);
       if (sequence > lastInputSequence) {
         lastInputSequence = sequence;
         lastInputTurn = row.turn;
       }
-    });
+    }
     summaries.set(row.turn, summary);
-  });
+  }
 
   for (const item of items) {
     while (current + 1 < started.length && started[current + 1].startSequence <= item.sequence) { current++; }
@@ -253,8 +255,8 @@ export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: Des
       lastInputSequence = item.sequence;
       lastInputTurn = turn;
     }
-    if (summary === undefined || turn === undefined) { continue; }
-    rowTurns.set(item.id, turn);
+    if (summary === undefined) { continue; }
+    rowTurns.set(item.id, summary);
     if (item.message?.speaker === Speaker.USER) {
       summary.lastInputSequence = Math.max(summary.lastInputSequence, item.sequence);
     }
@@ -263,32 +265,29 @@ export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: Des
       summary.firstAnchor = summary.firstAnchor ?? item;
       summary.firstProcessSequence = Math.min(summary.firstProcessSequence, item.sequence);
     }
-    const step = byTurn.get(turn);
-    if (reply(item) && (step === undefined || step.latestStep < 0 || item.sequence === step.answerSequence)) {
+    const step = summary.boundary;
+    if ((step.latestStep < 0 || item.sequence === step.answerSequence) && reply(item)) {
       summary.lastReply = item;
     }
-    if (item.message?.kind === TrajectoryKind.ERROR ||
-        item.process?.steps.some((step: DesktopToolStep): boolean => needsOpen(step)) === true) {
+    if (!summary.protected && (item.message?.kind === TrajectoryKind.ERROR ||
+        item.process?.steps.some((step: DesktopToolStep): boolean => needsOpen(step)) === true)) {
       summary.protected = true;
     }
   }
 
-  for (const item of items) {
-    const turn = rowTurns.get(item.id);
-    const summary = turn === undefined ? undefined : summaries.get(turn);
-    if (summary !== undefined && (hasReasoning(item) || hidesItem(item, summary, policy))) {
-      summary.hasHiddenContent = true;
+  if (policy.foldCompletedTurns) {
+    for (const item of items) {
+      const summary = rowTurns.get(item.id);
+      if (summary !== undefined && !summary.hasHiddenContent && !summary.protected &&
+          summary.boundary.endSequence >= 0 && (hasReasoning(item) || hidesItem(item, summary, policy))) {
+        summary.hasHiddenContent = true;
+      }
     }
   }
 
-  let latestClosedTurn = -1;
-  for (const row of turns) {
-    if (row.endSequence >= 0) { latestClosedTurn = Math.max(latestClosedTurn, row.turn); }
-  }
   const deferCollapse = policy.collapseTiming === 'next-input' && !pendingTranscriptInput;
   summaries.forEach((summary: TurnPresentation, turn: number): void => {
-    const row = byTurn.get(turn);
-    if (row === undefined) { return; }
+    const row = summary.boundary;
     const closed = row.endSequence >= 0;
     const waitForInput = closed && deferCollapse && (lastInputTurn === turn ||
       (lastInputTurn === undefined && turn === latestClosedTurn && lastInputSequence < row.endSequence));
@@ -310,9 +309,8 @@ export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: Des
 
   const rows: DesktopTranscriptRow[] = [];
   for (const item of items) {
-    const turn = rowTurns.get(item.id);
-    const summary = turn === undefined ? undefined : summaries.get(turn);
-    const boundary = turn === undefined ? undefined : byTurn.get(turn);
+    const summary = rowTurns.get(item.id);
+    const turn = summary?.boundary.turn;
     const disclosure = summary?.disclosure;
     if (disclosure !== undefined && summary?.firstAnchor === item) {
       rows.push({ key: `process-disclosure:${disclosure.turn}`, process: disclosure, turn: turn,
@@ -320,7 +318,7 @@ export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: Des
     }
     const folded = disclosure?.open === false;
     if (folded && summary !== undefined && hidesItem(item, summary, policy)) { continue; }
-    const closed = (boundary?.endSequence ?? -1) >= 0;
+    const closed = (summary?.boundary.endSequence ?? -1) >= 0;
     rows.push({ key: item.id, item: item, turn: turn, showReasoning: !folded,
       previewReasoning: !closed || policy.settledReasoningPreview,
       groupProcess: summary?.grouped ?? policy.stepGrouping === 'collapsed',

@@ -27,6 +27,7 @@ import { DesktopCompactionRow } from './DesktopCompactionRow';
 import { DesktopContextMessageRow } from './DesktopContextMessageRow';
 import type { DesktopContextMessage } from './DesktopContextMessageModel';
 import { DesktopTurnTriggerRow } from './DesktopTurnTriggerRow';
+import { DesktopChatRunningStatus } from './DesktopChatRunningStatus';
 import type { DesktopCompactionRow as DesktopCompactionInfo } from './DesktopCompactionModel';
 import { DesktopUserMessageActions } from './DesktopUserMessageActions';
 import { desktopTranscriptRows } from './DesktopTranscriptPresentation';
@@ -100,6 +101,7 @@ export struct DesktopConversationPane {
   @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: DesktopDraftAttachment[] = [];
   @Prop busy: boolean = false;
+  @Prop stopping: boolean = false;
   @Prop terminalOpen: boolean = false;
   @Prop filesOpen: boolean = false;
   @Prop rightDockOpen: boolean = false;
@@ -132,6 +134,7 @@ export struct DesktopConversationPane {
     (_selection: ModelSelection): Promise<string> => Promise.resolve('');
   onSlashPermission: (preset: string) => Promise<string> = (_preset: string): Promise<string> => Promise.resolve('');
   onStop: () => void = () => {};
+  onContinue: (sequence: number) => void = (_sequence: number): void => {};
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
   onCopyTranscript: () => void = () => {};
@@ -326,7 +329,7 @@ export struct DesktopConversationPane {
     this.refreshTranscript(!sameSession);
     this.refreshTurnOutline();
     this.updateHistoryPaging();
-    const count = this.transcriptRows.length + (echoes?.length ?? 0);
+    const count = this.transcriptRowCount();
     if (newSubmission && !this.showTrajectory) { this.returnToTail(); }
     if (sameSession && count === this.messageCount && partial === this.partial && preparing === this.preparing) {
       return;
@@ -434,7 +437,7 @@ export struct DesktopConversationPane {
     if (disclosure?.canToggle !== true) { return; }
     this.transcriptOverrides.set(turn, !disclosure.open);
     this.refreshTranscript(true);
-    this.messageCount = this.transcriptRows.length + (this.snapshot?.submissionEchoes.length ?? 0);
+    this.messageCount = this.transcriptRowCount();
     this.refreshTurnOutline();
   }
 
@@ -909,7 +912,33 @@ export struct DesktopConversationPane {
   }
 
   private primaryStops(): boolean {
-    return this.snapshot?.running === true && !this.hasDraft();
+    return this.snapshot?.running === true && this.snapshot.subagent === undefined && !this.busy &&
+      (!this.hasDraft() || this.visibleInteraction().length > 0);
+  }
+
+  private canContinue(): boolean {
+    return (this.snapshot?.continuationSequence ?? -1) >= 0 && !this.hasDraft() && this.palette.length === 0 &&
+      !this.busy && !this.stopping && this.visibleInteraction().length === 0;
+  }
+
+  private stopAlongsideSend(): boolean {
+    const snapshot = this.snapshot;
+    return snapshot?.running === true && (snapshot.subagent?.mode === 'continuable' ||
+      (snapshot.subagent === undefined && this.busy));
+  }
+
+  private transcriptRowCount(): number {
+    const snapshot = this.snapshot;
+    return this.transcriptRows.length + (snapshot?.submissionEchoes.length ?? 0) +
+      (snapshot?.running || snapshot?.runningHolding ? 1 : 0);
+  }
+
+  private runningDivider(): boolean {
+    if (this.snapshot?.partial || this.snapshot?.preparingTool) { return true; }
+    if (this.pendingTranscriptInput) { return false; }
+    const last = this.transcriptRows[this.transcriptRows.length - 1];
+    return last !== undefined && last.item?.message?.speaker !== Speaker.USER &&
+      last.item?.contextMessage?.kind !== 'turn-trigger';
   }
 
   private canSteerQueue(): boolean {
@@ -917,7 +946,7 @@ export struct DesktopConversationPane {
   }
 
   private handleSend(alternateDelivery: boolean = false): void {
-    if (this.busy || this.snapshot?.loading !== false) { return; }
+    if (this.busy || this.stopping || this.snapshot?.loading !== false) { return; }
     const command = commandInvocation(this.draft.text);
     if (command !== undefined && !command.suffix) {
       const choices = commandCandidates(this.snapshot.commands ?? [], '', true);
@@ -1370,7 +1399,7 @@ export struct DesktopConversationPane {
       }.width('100%').constraintSize({ maxWidth: 712 })
     } else if (item.message !== undefined) {
       this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [],
-        row.showReasoning, row.previewReasoning, item.userCopyText ?? '')
+        row.showReasoning, row.previewReasoning, item.userCopyText ?? '', item.interrupted === true)
     } else if (item.artifacts !== undefined) {
       DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
         artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
@@ -1417,7 +1446,7 @@ export struct DesktopConversationPane {
     ForEach(this.snapshot?.submissionEchoes.filter((echo: DesktopSubmissionEcho): boolean => echo.placement === placement) ?? [],
       (echo: DesktopSubmissionEcho): void => {
         ListItem() {
-          Row() { this.Message(echo.message, echo.attachments, [], false, false, echo.message.body) }
+          Row() { this.Message(echo.message, echo.attachments, [], false, false, echo.message.body, false) }
             .width('100%').justifyContent(FlexAlign.Center)
         }.key('desktopSubmissionEcho-' + echo.requestId)
       }, (echo: DesktopSubmissionEcho): string => echo.requestId)
@@ -1425,7 +1454,7 @@ export struct DesktopConversationPane {
 
   @Builder
   private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[], referenceLabels: string[],
-    showReasoning: boolean, previewReasoning: boolean, userCopyText: string) {
+    showReasoning: boolean, previewReasoning: boolean, userCopyText: string, interrupted: boolean) {
     Column({ space: 7 }) {
       if (item.speaker === Speaker.USER) {
         if (attachments.length > 0) {
@@ -1486,6 +1515,10 @@ export struct DesktopConversationPane {
           }
         }
         if (item.body) { MarkdownRenderer({ text: item.body, onLink: this.onLink, typography: this.typography }) }
+        if (interrupted) {
+          Text($r('app.string.desktop_transcript_process_stopped')).key('desktopInterruptedReply-' + item.id)
+            .fontSize(this.typography.textSize - 1).fontColor($r('sys.color.font_tertiary'))
+        }
       }
     }
     .width('100%').constraintSize({ maxWidth: 712 })
@@ -1609,28 +1642,34 @@ export struct DesktopConversationPane {
             this.onPluginDetails('@deepseek-ai/dsh-experimental-voice-input-bundle',
               this.getUIContext().getHostContext()?.resourceManager.getStringSync($r('app.string.desktop_voice_start').id) ?? '', '');
           } })
-        if (this.snapshot?.running && !this.primaryStops()) {
-          Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            SymbolGlyph($r('sys.symbol.xmark')).fontSize(15)
-          }.key('desktopComposerStop').width(34).height(34).focusOnTouch(false)
-            .enabled(!this.busy).accessibilityText($r('app.string.desktop_chat_stop')).onClick(this.onStop)
+        if (this.stopAlongsideSend()) {
+          Button({ type: ButtonType.Circle }) {
+            Image($r('app.media.dsh_composer_stop')).width(16).height(16).draggable(false).accessibilityLevel('no')
+          }.key('desktopComposerStop').width(32).height(32).focusOnTouch(false).backgroundColor($r('sys.color.brand'))
+            .enabled(!this.stopping).accessibilityText($r('app.string.desktop_chat_stop')).onClick(this.onStop)
         }
         Button({ type: ButtonType.Circle }) {
-          SymbolGlyph(this.primaryStops() ? $r('sys.symbol.xmark') : $r('sys.symbol.arrow_up'))
-            .fontSize(17).fontColor([Color.White])
+          if (this.canContinue()) {
+            Image($r('app.media.dsh_composer_continue')).width(24).height(24).draggable(false).accessibilityLevel('no')
+          } else {
+            Image(this.primaryStops() ? $r('app.media.dsh_composer_stop') : $r('app.media.dsh_composer_send'))
+              .width(16).height(16).draggable(false).accessibilityLevel('no')
+          }
         }
-        .key('desktopComposerSubmit').width(34).height(34)
+        .key('desktopComposerSubmit').width(32).height(32)
         .backgroundColor($r('sys.color.brand')).focusOnTouch(false)
         .accessibilityText(this.primaryStops() ? $r('app.string.desktop_chat_stop') :
-          (this.snapshot?.running ? (this.snapshot.busyEnterSteers ? $r('app.string.desktop_chat_steer') :
+          this.canContinue() ? $r('app.string.desktop_chat_continue') :
+          (this.snapshot?.running && this.hasDraft() ? (this.snapshot.busyEnterSteers ? $r('app.string.desktop_chat_steer') :
             $r('app.string.desktop_chat_queue')) :
             $r('app.string.desktop_chat_send')))
-        .enabled(!this.busy && (this.snapshot?.running === true ||
-          ((this.draft.text.trim().length > 0 || this.attachments.length > 0) &&
-            this.snapshot?.loading === false)))
+        .enabled(!this.stopping && !this.busy && (this.primaryStops() || this.canContinue() ||
+          (this.hasDraft() && this.snapshot?.loading === false)))
         .onClick((): void => {
           if (this.primaryStops()) {
             this.onStop();
+          } else if (this.canContinue()) {
+            this.onContinue(this.snapshot?.continuationSequence ?? -1);
           } else {
             this.handleSend();
           }
@@ -1786,6 +1825,16 @@ export struct DesktopConversationPane {
               }.width('100%').constraintSize({ maxWidth: 712 }).padding({ left: 7 })
             }
           }
+          if (this.snapshot?.running || this.snapshot?.runningHolding) {
+            ListItem() {
+              Row() {
+                DesktopChatRunningStatus({ startTime: this.snapshot?.runningStartedAt,
+                  paused: this.snapshot?.runningPaused === true, holding: this.snapshot?.runningHolding === true,
+                  showDivider: this.runningDivider(), bodySize: this.typography.textSize,
+                  textFamily: this.typography.textFamily })
+              }.width('100%').justifyContent(FlexAlign.Center)
+            }
+          }
           this.SubmissionRows('steering')
         }
         .height('100%').width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
@@ -1797,7 +1846,8 @@ export struct DesktopConversationPane {
           if (this.showTrajectory) { return; }
           const offset = this.historyRowOffset();
           if (this.outlineBusyTurn < 0 && last - offset < this.messageCount - 1) { this.outlineEndOffset = 0; }
-          this.outlineFirstVisible = this.visibleItemIndices[Math.max(0, first - offset)] ?? 0;
+          this.outlineFirstVisible = this.visibleItemIndices[Math.max(0, first - offset)] ??
+            Math.max(0, this.visibleTranscript.length - 1);
           if (this.outlineWide) {
             this.outlineActiveTurn = desktopTurnOutlineActiveTurn(this.outlineItems, this.outlineFirstVisible);
           }

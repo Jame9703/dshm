@@ -8,7 +8,8 @@ import {
   sessionFollowPayload, sessionUpdateQueuePayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
 } from 'appstate';
 import type { FeedbackRow, ModelOption, ModelSelection, PromptContentPart, QueueActionBody } from 'appstate';
-import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
+import { Connection, ConnectionState, getArray, getBoolean, getField, getNumber, getRecord, getString, randomUuid,
+  toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
   argsFor, COMMANDS_EXECUTE_ENDPOINT, EVENT_TURN_END, mayChangeSessionTitle, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
@@ -62,6 +63,7 @@ import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopComman
 const STATE_ENDPOINT: string = 'session/state';
 const PROJECTIONS_ENDPOINT: string = 'session/projections';
 const PAGE_MESSAGES: number = 50;
+const STREAM_PRESENTATION_INTERVAL_MS: number = 16;
 
 export interface DesktopPermissionOption {
   value: string;
@@ -74,6 +76,7 @@ export interface DesktopTranscriptItem {
   sequence: number;
   turn?: number;
   message?: TrajectoryItem;
+  interrupted?: boolean;
   userCopyText?: string;
   notice?: DesktopTranscriptNotice;
   compaction?: DesktopCompactionRow;
@@ -112,6 +115,10 @@ export interface DesktopConversationSnapshot {
   loading: boolean;
   hasEarlier: boolean;
   running: boolean;
+  runningPaused: boolean;
+  runningHolding: boolean;
+  runningStartedAt?: number;
+  continuationSequence: number;
   historyLoaded: boolean;
   receivedTurn: number;
   waitingForInput: boolean;
@@ -216,6 +223,12 @@ export class DesktopConversation {
   private followCursor: number = -1;
   private earliest: number = -1;
   private running: boolean = false;
+  private runningPaused: boolean = false;
+  private streamPresentationTimer: number = -1;
+  private continuationSequence: number = -1;
+  private continuationAsOf: number = -1;
+  private nextStepHuman: boolean = false;
+  private nextStepAsOf: number = -1;
   private historyLoaded: boolean = false;
   private receivedTurn: number = 0;
   private waitingForInput: boolean = false;
@@ -316,6 +329,11 @@ export class DesktopConversation {
     this.pageLoading = false;
     this.error = '';
     this.running = false;
+    this.runningPaused = false;
+    this.continuationSequence = -1;
+    this.continuationAsOf = -1;
+    this.nextStepHuman = false;
+    this.nextStepAsOf = -1;
     this.historyLoaded = false;
     this.receivedTurn = 0;
     this.waitingForInput = false;
@@ -698,7 +716,8 @@ export class DesktopConversation {
   }
 
   async cancel(sessionId: string): Promise<string> {
-    const child = sessionId === this.sessionId ? this.subagent : undefined;
+    if (this.closed || sessionId !== this.sessionId) { return '当前会话已切换'; }
+    const child = this.subagent;
     if (child !== undefined) {
       if (child.mode !== 'continuable' || !this.historyLoaded) { return '该子智能体会话为只读'; }
       const result = await this.host.call('subagents/interruptByUser', { 'childSessionId': child.id });
@@ -708,6 +727,35 @@ export class DesktopConversation {
     const response = args === undefined ? undefined : await this.connection.call(SESSION_CANCEL_ENDPOINT, args);
     return response?.ok && getBoolean(response.value, 'accepted') === true ? '' :
       this.failure(response, '宿主未确认停止');
+  }
+
+  private canContinue(): boolean {
+    return !this.running && this.historyLoaded && this.subagent === undefined && this.continuationSequence >= 0 &&
+      this.queue.rows.length === 0 && !this.nextStepHuman && this.echoes.forSession(this.sessionId).length === 0;
+  }
+
+  async continueGeneration(sessionId: string, sequence: number): Promise<string> {
+    if (this.closed || sessionId !== this.sessionId || sequence !== this.continuationSequence || !this.canContinue()) {
+      return '本轮已无法继续生成';
+    }
+    const generation = this.generation;
+    const signature = 'continue:' + sequence;
+    let request = this.pendingRequests.get(sessionId);
+    if (request?.signature !== signature) {
+      request = { signature: signature, id: 'req-' + randomUuid() };
+      this.pendingRequests.set(sessionId, request);
+    }
+    const args = promptPayload(request.id, sessionId, PromptMode.QUEUE, [], '');
+    const response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args);
+    if (response?.ok !== true || !projectSessionPrompt(response.value).accepted) {
+      return this.failure(response, '宿主未确认继续生成');
+    }
+    this.pendingRequests.delete(sessionId);
+    if (this.current(generation) && this.continuationSequence === sequence) {
+      this.continuationSequence = -1;
+      this.publish();
+    }
+    return '';
   }
 
   async selectModel(sessionId: string, selection: ModelSelection): Promise<string> {
@@ -743,6 +791,8 @@ export class DesktopConversation {
   private stopWatching(): void {
     this.stopFollow?.();
     this.stopFollow = undefined;
+    clearTimeout(this.streamPresentationTimer);
+    this.streamPresentationTimer = -1;
     if (this.timer !== -1) {
       clearTimeout(this.timer);
       this.timer = -1;
@@ -753,8 +803,8 @@ export class DesktopConversation {
     if (this.current(generation)) {
       this.stopFollow = undefined;
       this.attempt = '';
-      this.partial = '';
       this.preparingTool = '';
+      this.runningPaused = true;
       this.publish();
     }
   }
@@ -782,6 +832,14 @@ export class DesktopConversation {
       this.historyLoaded = true;
       const cursor = getNumber(result.value, 'cursor') ?? -1;
       if (earlier || cursor >= this.cursor) {
+        if (!earlier && this.stopFollow === undefined && this.partial && page.records.some((record: Object): boolean => {
+          const event = getRecord(record, 'event');
+          const type = getString(event, 'type');
+          return (getNumber(event, 'seq') ?? -1) > this.cursor &&
+            (type === 'assistant/message' || type === 'turn/start' || type === EVENT_TURN_END);
+        })) {
+          this.partial = '';
+        }
         this.addRecords(page.records, earlier || !this.loading, page.hasMore);
         this.cursor = Math.max(this.cursor, cursor);
       }
@@ -887,6 +945,7 @@ export class DesktopConversation {
         if (message.body.trim() || message.reasoning || attachments.length > 0) {
           result.set(message.id, { id: message.id, sequence: seq,
             turn: eventTurn || loadedTurn || undefined, message: message, attachments: attachments,
+            interrupted: message.speaker === Speaker.ASSISTANT && getBoolean(getRecord(event, 'data'), 'interrupted') === true,
             userCopyText: message.speaker === Speaker.USER ? desktopUserMessageCopyText(getRecord(event, 'data')) : undefined });
         }
       }
@@ -986,7 +1045,10 @@ export class DesktopConversation {
         this.readProjection(result.value);
         this.publish();
       } else {
-        const subagentsChanged = this.readSubagents(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
+        const values = getRecord(result.value, 'values');
+        const sequence = getNumber(result.value, 'asOfSeq') ?? -1;
+        const continuationChanged = this.readContinuation(values, sequence);
+        const subagentsChanged = this.readSubagents(values, sequence);
         this.readQuestions(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
@@ -997,7 +1059,7 @@ export class DesktopConversation {
         const outlineChanged = this.readTurnOutline(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         const usageChanged = this.chatUsage.readProjection(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged ||
-          modelChanged || outlineChanged || usageChanged) {
+          modelChanged || outlineChanged || usageChanged || continuationChanged) {
           this.publish();
         }
       }
@@ -1015,18 +1077,25 @@ export class DesktopConversation {
       // A mode command can leave internal messages queued while the agent is idle.
       const active = getBoolean(response.value, 'running') === true;
       const waiting = (getArray(response.value, 'pendingInput')?.length ?? 0) > 0;
-      if (active !== this.running || waiting !== this.waitingForInput) {
+      const cursor = getNumber(response.value, 'cursor') ?? -1;
+      const currentState = cursor < 0 || cursor >= this.followCursor;
+      const resumed = this.stopFollow === undefined && this.runningPaused;
+      if (resumed) { this.runningPaused = false; }
+      if (currentState && (resumed || active !== this.running || waiting !== this.waitingForInput)) {
         this.running = active;
         this.waitingForInput = waiting;
         this.publish();
       }
-      const cursor = getNumber(response.value, 'cursor') ?? -1;
       if (this.stopFollow === undefined && cursor > this.cursor && !this.pageLoading) {
         this.loadPage(generation, false);
         this.loadSelection(generation);
       }
-    } else if (this.stopFollow === undefined && !this.pageLoading) {
-      this.loadPage(generation, false);
+    } else if (this.stopFollow === undefined) {
+      if (!this.runningPaused) {
+        this.runningPaused = true;
+        this.publish();
+      }
+      if (!this.pageLoading) { this.loadPage(generation, false); }
     }
     this.timer = setTimeout((): void => { this.pollState(generation); }, this.running ? 1200 : 3500);
   }
@@ -1113,6 +1182,7 @@ export class DesktopConversation {
     this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.chatUsage.readProjection(values, getNumber(projection, 'asOfSeq') ?? -1);
+    this.readContinuation(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readPlan(projection);
     this.readGoal(projection);
     this.readQueue(projection);
@@ -1165,12 +1235,32 @@ export class DesktopConversation {
 
   private readInbox(values: Object | undefined, sequence: number): boolean {
     const echoesChanged = this.echoes.observeInbox(this.sessionId, values, sequence);
-    return this.queue.observe(values, sequence) || echoesChanged;
+    const inbox = getField(values, 'inbox');
+    let nextStepChanged = false;
+    if (inbox !== undefined && sequence >= this.nextStepAsOf) {
+      this.nextStepAsOf = sequence;
+      const human = getArray(inbox, 'next-step')?.some((message: Object): boolean =>
+        getString(getRecord(message, 'source'), 'kind') === 'user') ?? false;
+      nextStepChanged = this.nextStepHuman !== human;
+      this.nextStepHuman = human;
+    }
+    return this.queue.observe(values, sequence) || echoesChanged || nextStepChanged;
+  }
+
+  private readContinuation(values: Object | undefined, sequence: number): boolean {
+    const value = getField(values, 'conversationContinuation');
+    if (value === undefined || sequence <= this.continuationAsOf) { return false; }
+    this.continuationAsOf = sequence;
+    const eligible = typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : -1;
+    const changed = eligible !== this.continuationSequence;
+    this.continuationSequence = eligible;
+    return changed;
   }
 
   private onFrame(frame: Object): void {
     const type = getString(frame, 'type');
     if (type === 'snapshot') {
+      this.runningPaused = false;
       this.historyLoaded = true;
       const cursor = getNumber(frame, 'cursor') ?? -1;
       this.followCursor = Math.max(this.followCursor, cursor);
@@ -1182,9 +1272,11 @@ export class DesktopConversation {
       this.error = '';
       this.readProjection(getRecord(frame, 'projections'));
       const pending = getRecord(getRecord(frame, 'assistantStream'), 'activeAttempt');
+      this.attempt = '';
+      this.partial = '';
+      this.preparingTool = '';
       if (pending !== undefined) {
         this.attempt = getString(pending, 'attemptId') ?? '';
-        this.partial = '';
         for (const entry of getArray(pending, 'stream') ?? []) {
           if (getString(entry, 'type') === 'text-chunks') {
             this.partial += toStringArray(getArray(entry, 'texts') ?? []).join('');
@@ -1195,6 +1287,7 @@ export class DesktopConversation {
     } else if (type === 'projection') {
       const goalChanged = this.goals.observeDelta(frame);
       const changes = getRecord(frame, 'changes');
+      const continuationChanged = this.readContinuation(changes, getNumber(frame, 'seq') ?? -1);
       this.readQuestions(changes, getNumber(frame, 'seq') ?? -1);
       this.readImageLimit(changes);
       const queueChanged = this.readInbox(changes, getNumber(frame, 'seq') ?? -1);
@@ -1205,9 +1298,10 @@ export class DesktopConversation {
       const outlineChanged = this.readTurnOutline(changes, getNumber(frame, 'seq') ?? -1);
       const usageChanged = this.chatUsage.readProjection(changes, getNumber(frame, 'seq') ?? -1);
       if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged &&
-        !outlineChanged && !usageChanged) { return; }
+        !outlineChanged && !usageChanged && !continuationChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
+      this.runningPaused = false;
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
       const sequence = getNumber(event, 'seq') ?? -1;
@@ -1228,6 +1322,10 @@ export class DesktopConversation {
       if (eventType === 'turn/start') {
         this.error = '';
         this.running = true;
+        if (sequence >= this.continuationAsOf) {
+          this.continuationAsOf = sequence;
+          this.continuationSequence = -1;
+        }
       } else if (eventType === EVENT_TURN_END) {
         this.running = false;
         this.waitingForInput = false;
@@ -1243,16 +1341,24 @@ export class DesktopConversation {
       const update = getRecord(frame, 'frame');
       const kind = getString(update, 'type');
       if (kind === 'start') {
+        this.runningPaused = false;
         this.running = true;
         this.attempt = getString(update, 'attemptId') ?? '';
         this.partial = '';
         this.preparingTool = '';
       } else if (this.attempt.length > 0 && getString(update, 'attemptId') === this.attempt) {
         const chunk = getRecord(update, 'chunk');
-        if (kind === 'chunk' && getString(chunk, 'type') === 'text-delta') {
-          this.partial += getString(chunk, 'text') ?? '';
-        } else if (kind === 'chunk' && getString(chunk, 'type') === 'tool-call-delta') {
-          this.preparingTool = getString(chunk, 'name') || this.preparingTool;
+        if (kind === 'chunk') {
+          const chunkType = getString(chunk, 'type');
+          const delta = getString(chunk, 'text') ?? '';
+          const name = getString(chunk, 'name') ?? '';
+          if (chunkType === 'text-delta' && delta) { this.partial += delta; }
+          else if (chunkType === 'tool-call-delta' && name && name !== this.preparingTool) { this.preparingTool = name; }
+          else { return; }
+          if (this.streamPresentationTimer < 0) {
+            this.streamPresentationTimer = setTimeout((): void => { this.publish(); }, STREAM_PRESENTATION_INTERVAL_MS);
+          }
+          return;
         } else if (kind === 'end' && getString(getRecord(update, 'outcome'), 'kind') === 'abandoned') {
           this.partial = '';
           this.attempt = '';
@@ -1266,6 +1372,8 @@ export class DesktopConversation {
   }
 
   private publish(): void {
+    clearTimeout(this.streamPresentationTimer);
+    this.streamPresentationTimer = -1;
     if (this.closed) {
       return;
     }
@@ -1273,17 +1381,26 @@ export class DesktopConversation {
     const sending = this.sending.get(this.sessionId);
     const queue = sending !== undefined && !this.queue.rows.some((row: DesktopQueuedPrompt): boolean =>
       row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
+    const transcriptTurns = this.transcriptTimeline.turns();
+    const latestTurn = transcriptTurns[transcriptTurns.length - 1];
+    const openTurn = latestTurn !== undefined && latestTurn.startSequence >= 0 && latestTurn.endSequence < 0;
+    const connectionState = this.connection.getState();
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
       turnOutline: this.turnOutline, loadTurnHistory: this.loadTurnHistory,
       chatUsage: this.chatUsage.stats(), compactUsage: this.compactUsage,
-      transcriptPolicy: this.transcriptPolicy, transcriptTurns: this.transcriptTimeline.turns(),
+      transcriptPolicy: this.transcriptPolicy, transcriptTurns: transcriptTurns,
       submissionEchoes: this.echoes.forSession(this.sessionId),
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
       trajectoryHasEarlier: this.hasEarlier, wasPartialHistory: this.wasPartialHistory,
       historyPaging: this.pageLoading && !this.loading, historyError: this.historyError,
       preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
+      runningPaused: this.runningPaused || connectionState === ConnectionState.CONNECTING ||
+        connectionState === ConnectionState.DISCONNECTED,
+      runningStartedAt: openTurn && latestTurn.startTime > 0 ? latestTurn.startTime : undefined,
+      runningHolding: !this.running && openTurn,
+      continuationSequence: this.canContinue() && sending === undefined ? this.continuationSequence : -1,
       historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,
       models: this.modelCatalog?.models ?? [], modelsLoading: this.modelsLoading, modelCatalog: this.modelCatalog,
       modelError: this.modelError, selection: selection, error: this.error,

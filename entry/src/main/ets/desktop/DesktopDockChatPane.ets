@@ -24,6 +24,7 @@ import type { DesktopTypography } from './DesktopTheme';
 
 export interface DesktopDockChatActions {
   run: (id: string, operation: (id: string) => Promise<string>) => Promise<string>;
+  stop: (id: string, conversation: DesktopConversation) => Promise<string>;
   readDraft: (id: string) => DesktopComposerDraft;
   writeDraft: (id: string, draft: DesktopComposerDraft) => void;
   readAttachments: (id: string) => DesktopDraftAttachment[];
@@ -64,6 +65,7 @@ export struct DesktopDockChatPane {
   @Prop typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @Prop @Watch('syncVisibility') shown: boolean = false;
   @Prop busy: boolean = false;
+  @Prop stopping: boolean = false;
   @Prop forking: boolean = false;
   @Prop summaries: SessionListItem[] = [];
   @State private snapshot?: DesktopConversationSnapshot = undefined;
@@ -127,6 +129,14 @@ export struct DesktopDockChatPane {
     this.actions?.writeDraft(id, draft);
   }
 
+  private async stopMessage(): Promise<void> {
+    const binding = this.binding;
+    const id = this.target?.id;
+    if (binding === undefined || !id) { return; }
+    const issue = await this.actions?.stop(id, binding.conversation);
+    if (this.binding === binding && issue) { this.problem = issue; }
+  }
+
   private send(alternate: boolean): void {
     const sent = this.draft;
     const files = this.attachments;
@@ -173,7 +183,8 @@ export struct DesktopDockChatPane {
         DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis, replyMedia: this.replyMedia,
           snapshot: this.snapshot, embedded: true,
           title: this.title, sessionDirectory: this.directory, appearance: this.appearance, typography: this.typography,
-          sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, forking: this.forking,
+          sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, stopping: this.stopping,
+          forking: this.forking,
           referenceOffer: this.referenceOffer,
           draft: this.draft, attachments: this.attachments, commandError: this.problem,
           menuOptions: desktopMenuOptions(Placement.BottomLeft),
@@ -187,7 +198,12 @@ export struct DesktopDockChatPane {
           onSubagentParent: (child: DesktopSubagentEntry): void => { this.actions?.openParent(child); },
           onDraft: (id: string, draft: DesktopComposerDraft): void => this.changeDraft(id, draft),
           onSend: (alternate: boolean): void => this.send(alternate),
-          onStop: (): void => { this.run((binding, id): Promise<string> => binding.conversation.cancel(id)); },
+          onStop: (): void => { this.stopMessage(); },
+          onContinue: (sequence: number): void => {
+            if (!this.draft.text.trim() && this.attachments.length === 0) {
+              this.run((binding, id): Promise<string> => binding.conversation.continueGeneration(id, sequence));
+            }
+          },
           onEarlier: (): void => { this.binding?.conversation.loadEarlier(); },
           onAddAttachment: (): void => { this.run((binding, id): Promise<string> =>
             this.actions?.pickAttachments(id, binding.conversation) ?? Promise.resolve('')); },

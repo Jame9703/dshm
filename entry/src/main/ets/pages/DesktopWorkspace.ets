@@ -262,6 +262,7 @@ struct DesktopWorkspace {
   private imageDialogOpening: boolean = false;
   @State private creating: boolean = false;
   @State private busySessions: string[] = [];
+  @State private stoppingSessions: string[] = [];
   @State private copyingTranscript: boolean = false;
   @State private exportingLog: boolean = false;
   @State private logStage: DesktopLogStage = DesktopLogStage.PREPARING;
@@ -458,6 +459,7 @@ struct DesktopWorkspace {
     this.pendingCreator = undefined;
     this.workspaceBusy = false;
     this.busySessions = [];
+    this.stoppingSessions = [];
     if (this.hostUrl.length === 0) {
       return;
     }
@@ -1969,10 +1971,26 @@ struct DesktopWorkspace {
     }
   }
 
-  private stopMessage(): void {
-    const conversation = this.data?.conversation;
-    if (conversation !== undefined) {
-      this.chatAction((id: string): Promise<string> => conversation.cancel(id));
+  private async stopMessage(): Promise<void> {
+    const data = this.data;
+    const session = this.sessionId;
+    if (data === undefined || !session) { return; }
+    const problem = await this.stopForSession(session, data.conversation);
+    if (problem && this.pageActive && this.data === data && this.sessionId === session) { this.chatError = problem; }
+  }
+
+  private async stopForSession(session: string, conversation: DesktopConversation): Promise<string> {
+    const owner = this.data;
+    if (!session || owner === undefined || this.stoppingSessions.includes(session)) { return ''; }
+    this.stoppingSessions = [...this.stoppingSessions, session];
+    try {
+      return await conversation.cancel(session);
+    } catch (_) {
+      return '宿主未确认停止';
+    } finally {
+      if (this.data === owner && this.pageActive) {
+        this.stoppingSessions = this.stoppingSessions.filter((id: string): boolean => id !== session);
+      }
     }
   }
 
@@ -3300,7 +3318,14 @@ struct DesktopWorkspace {
             return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
               (id: string): Promise<string> => conversation.selectPermission(id, preset));
           },
-          onStop: (): void => this.stopMessage(),
+          onStop: (): void => { this.stopMessage(); },
+          stopping: this.stoppingSessions.includes(this.sessionId),
+          onContinue: (sequence: number): void => {
+            const conversation = this.data?.conversation;
+            if (conversation !== undefined && !this.draft.text.trim() && this.attachments.length === 0) {
+              this.chatAction((id: string): Promise<string> => conversation.continueGeneration(id, sequence));
+            }
+          },
           onEarlier: (): void => this.data?.conversation.loadEarlier(),
           onWeb: (): void => { this.openWeb(false); },
           copyingTranscript: this.copyingTranscript,
@@ -3612,6 +3637,7 @@ struct DesktopWorkspace {
   private dockChatActions(data?: DesktopWorkspaceData): DesktopDockChatActions {
     return {
       run: (id: string, operation: (id: string) => Promise<string>): Promise<string> => this.chatAction(operation, undefined, id),
+      stop: (id: string, conversation: DesktopConversation): Promise<string> => this.stopForSession(id, conversation),
       readDraft: (id: string): DesktopComposerDraft => this.drafts.get(id) ?? EMPTY_DESKTOP_DRAFT,
       writeDraft: (id: string, draft: DesktopComposerDraft): void => this.storeDraft(id, draft),
       readAttachments: (id: string): DesktopDraftAttachment[] => this.attachmentsBySession.get(id) ?? [],
@@ -3699,6 +3725,7 @@ struct DesktopWorkspace {
         target: tab.chat,
         title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
         busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,
+        stopping: this.stoppingSessions.includes(tab.chat?.id ?? ''),
         appearance: this.appearance, typography: this.typography, summaries: this.sessionSummaries })
     } else if (tab.kind === DesktopDockKind.BROWSER) {
       DesktopBrowserPane({ address: tab.browserAddress ?? '', restore: tab.restoreBrowser ?? false,
