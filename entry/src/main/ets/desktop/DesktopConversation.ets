@@ -75,6 +75,7 @@ export interface DesktopConversationSnapshot {
   transcript: DesktopTranscriptItem[];
   readTrajectory: () => DesktopTraceRow[];
   trajectoryRevision: number;
+  trajectoryHasEarlier: boolean;
   partial: string;
   preparingTool: string;
   loading: boolean;
@@ -1100,6 +1101,7 @@ export class DesktopConversation {
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
+      trajectoryHasEarlier: this.hasEarlier,
       preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,

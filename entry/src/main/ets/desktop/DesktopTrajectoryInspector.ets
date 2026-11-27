@@ -1,25 +1,32 @@
-import { formatClock, formatDuration } from 'appstate';
-import { getBoolean, getField, getNumber } from 'connection';
+import { DiffLineKind, formatClock, formatDuration } from 'appstate';
+import type { DiffLine } from 'appstate';
+import { getBoolean, getField } from 'connection';
 import { copyText } from 'platform';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopHostActions } from './DesktopHostActions';
 import type { DesktopTraceRequest } from './DesktopTraceRequests';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
+import { desktopTracePromptDiff } from './DesktopTracePromptDiff';
+import type { DesktopPromptDiffSection, DesktopPromptHunk } from './DesktopTracePromptDiff';
+import { desktopTraceUsageLines } from './DesktopTraceUsage';
+import type { DesktopTraceUsageLine } from './DesktopTraceUsage';
 
 const RESULT_ENDPOINT: string = 'toolResults/watch';
-const USAGE_FIELDS: string[] = ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens', 'reasoningTokens'];
 
 @Component
 export struct DesktopTrajectoryInspector {
   host?: DesktopHostActions;
   @Prop @Watch('updateSelection') row: DesktopTraceRow | undefined = undefined;
   @Prop @Watch('updateSelection') sessionId: string = '';
+  @Prop historyIncomplete: boolean = false;
   @Prop codeFamily: string = '';
   @Prop codeSize: number = 12;
   onClose: () => void = (): void => {};
   onRecord: (id: string) => void = (_id: string): void => {};
   @State private active: string = 'overview';
   @State private liveOutput: string | undefined = undefined;
+  @State private diff: DesktopPromptDiffSection[] = [];
+  private diffRevision: number = 0;
   private selectedId: string = '';
   private selectedSession: string = '';
   private watchingSeq: number = -1;
@@ -44,7 +51,12 @@ export struct DesktopTrajectoryInspector {
       if (row?.content || (row?.resultSequence ?? -1) >= 0) { tabs.push('output'); }
       return [...tabs, 'schema', 'timing'];
     }
-    if (row?.kind === 'system') { return row.tools?.length ? ['system', 'tools', 'raw'] : ['system', 'raw']; }
+    if (row?.kind === 'system') {
+      const tabs: string[] = row.prompt?.previous !== undefined ? ['diff', 'system'] : ['system'];
+      if (row.prompt?.current.tools !== undefined) { tabs.push('tools'); }
+      if (row.detail !== undefined) { tabs.push('raw'); }
+      return tabs;
+    }
     if (row?.kind === 'compaction') { return ['overview', 'raw']; }
     return row?.usage !== undefined ? ['overview', 'preview', 'raw', 'source', 'usage'] :
       ['overview', 'preview', 'raw', 'source'];
@@ -60,11 +72,17 @@ export struct DesktopTrajectoryInspector {
     } else if (!this.tabs().includes(this.active)) {
       this.active = this.tabs()[0];
     }
-    this.syncResult();
+    this.syncTab();
   }
 
   private choose(tab: string): void {
     this.active = tab;
+    this.syncTab();
+  }
+
+  private syncTab(): void {
+    this.diffRevision++;
+    this.diff = this.active === 'diff' ? desktopTracePromptDiff(this.row?.prompt) : [];
     this.syncResult();
   }
 
@@ -127,6 +145,7 @@ export struct DesktopTrajectoryInspector {
       case 'input': return $r('app.string.desktop_trace_args');
       case 'output': return $r('app.string.desktop_trace_result');
       case 'schema': return $r('app.string.desktop_trace_schema');
+      case 'diff': return $r('app.string.desktop_trace_diff');
       case 'system': return $r('app.string.desktop_trace_system_prompt');
       case 'tools': return $r('app.string.desktop_trace_tool_definitions');
       case 'preview': return $r('app.string.desktop_trace_preview');
@@ -147,16 +166,29 @@ export struct DesktopTrajectoryInspector {
 
   private usageLabel(field: string): Resource {
     switch (field) {
-      case 'inputTokens': return $r('app.string.desktop_trace_input_tokens');
-      case 'cacheReadTokens': return $r('app.string.desktop_trace_cache_read');
-      case 'cacheWriteTokens': return $r('app.string.desktop_trace_cache_write');
-      case 'outputTokens': return $r('app.string.desktop_trace_output_tokens');
+      case 'input': return $r('app.string.desktop_trace_input_tokens');
+      case 'cacheRead': return $r('app.string.desktop_trace_cache_read');
+      case 'cacheWrite': return $r('app.string.desktop_trace_cache_write');
+      case 'uncached': return $r('app.string.desktop_trace_input_other');
+      case 'output': return $r('app.string.desktop_trace_output_tokens');
+      case 'content': return $r('app.string.desktop_trace_output_content');
       default: return $r('app.string.desktop_trace_reasoning');
     }
   }
 
-  private usageFields(usage?: Object): string[] {
-    return USAGE_FIELDS.filter((field: string): boolean => getNumber(usage, field) !== undefined);
+  private usage(cumulative: boolean): DesktopTraceUsageLine[] {
+    const request = this.row?.request;
+    return desktopTraceUsageLines(cumulative ? request?.cumulativeUsage : request?.usage ?? this.row?.usage);
+  }
+
+  private diffColor(kind: DiffLineKind): ResourceColor {
+    if (kind === DiffLineKind.ADDED) { return $r('app.color.desktop_diff_added'); }
+    if (kind === DiffLineKind.REMOVED) { return $r('app.color.desktop_diff_deleted'); }
+    return Color.Transparent;
+  }
+
+  private diffText(line: DiffLine): string {
+    return (line.kind === DiffLineKind.ADDED ? '+' : line.kind === DiffLineKind.REMOVED ? '-' : ' ') + line.text;
   }
 
   @Builder
@@ -212,10 +244,14 @@ export struct DesktopTrajectoryInspector {
       if (request.retry !== undefined) {
         this.Code(this.raw(request.retry), 'desktopTraceRetryInfo')
       }
-      if (request.assistant) {
-        Button($r('app.string.desktop_trace_assistant'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+      if (request.problem) {
+        Text(request.problem).fontSize(12).fontColor($r('sys.color.warning'))
+      }
+      if (request.result) {
+        Button(request.purpose === 'compaction' ? $r('app.string.desktop_trace_compaction') :
+          $r('app.string.desktop_trace_assistant'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopTraceRequestAssistant').height(32).fontSize(12)
-          .onClick((): void => { this.onRecord(request.assistant ?? ''); })
+          .onClick((): void => { this.onRecord(request.result ?? ''); })
       }
     } else if (this.row?.title) {
       Text(this.row?.title ?? '').fontSize(13).fontWeight(FontWeight.Medium)
@@ -227,14 +263,53 @@ export struct DesktopTrajectoryInspector {
   }
 
   @Builder
-  private Usage(usage?: Object) {
-    if (this.usageFields(usage).length > 0) {
-      ForEach(this.usageFields(usage), (field: string): void => {
-        this.Fact(this.usageLabel(field), String(getNumber(usage, field) ?? 0))
-      }, (field: string): string => field)
+  private Usage(cumulative: boolean) {
+    if (this.usage(cumulative).length > 0) {
+      ForEach(this.usage(cumulative), (line: DesktopTraceUsageLine): void => {
+        Row({ space: 8 }) {
+          Text(this.usageLabel(line.metric)).fontSize(12).fontColor($r('sys.color.font_tertiary'))
+          Text($r('app.string.desktop_trace_tokens', line.amount)).fontSize(12)
+            .key('desktopTraceUsage-' + (cumulative ? 'cumulative-' : 'request-') + line.metric)
+            .fontColor($r('sys.color.font_primary')).layoutWeight(1)
+        }.width('100%').padding({ left: line.detail ? 12 : 0 })
+      }, (line: DesktopTraceUsageLine): string => line.metric + ':' + line.amount)
     } else {
       Text($r('app.string.desktop_trace_usage_unreported')).fontSize(12).fontColor($r('sys.color.font_tertiary'))
     }
+  }
+
+  @Builder
+  private UsagePanel() {
+    if (this.row?.request !== undefined) {
+      Text($r('app.string.desktop_trace_this_request')).fontSize(13).fontWeight(FontWeight.Medium)
+    }
+    this.Usage(false)
+    if (this.row?.request !== undefined) {
+      Text(this.historyIncomplete ? $r('app.string.desktop_trace_loaded_cumulative') :
+        $r('app.string.desktop_trace_session_cumulative')).key('desktopTraceCumulativeHeading')
+        .fontSize(13).fontWeight(FontWeight.Medium).padding({ top: 8 })
+      this.Usage(true)
+    }
+  }
+
+  @Builder
+  private PromptDiff() {
+    ForEach(this.diff, (section: DesktopPromptDiffSection): void => {
+      Column({ space: 4 }) {
+        Text(this.tabLabel(section.id)).fontSize(13).fontWeight(FontWeight.Medium)
+        ForEach(section.hunks, (hunk: DesktopPromptHunk, index: number): void => {
+          Column() {
+            Text(hunk.header).fontSize(this.codeSize).fontFamily(this.codeFamily).width('100%')
+              .fontColor($r('sys.color.font_tertiary')).padding({ left: 6, top: 4, bottom: 4 })
+            ForEach(hunk.lines, (line: DiffLine): void => {
+              Text(this.diffText(line)).fontSize(this.codeSize).fontFamily(this.codeFamily).width('100%')
+                .copyOption(CopyOptions.LocalDevice).padding({ left: 6, right: 6 })
+                .backgroundColor(this.diffColor(line.kind))
+            }, (_line: DiffLine, offset: number): string => String(offset))
+          }.width('100%').borderRadius(6).clip(true).backgroundColor($r('app.color.workspace_panel'))
+        }, (hunk: DesktopPromptHunk, index: number): string => hunk.header + ':' + index)
+      }.key('desktopTracePromptDiff-' + section.id).width('100%').alignItems(HorizontalAlign.Start)
+    }, (section: DesktopPromptDiffSection): string => section.id + ':' + this.diffRevision)
   }
 
   @Builder
@@ -265,13 +340,17 @@ export struct DesktopTrajectoryInspector {
         Text($r('app.string.desktop_trace_adapter_defaults')).fontSize(12).fontColor($r('sys.color.font_secondary'))
         this.Code(this.raw(this.row?.request?.defaults), 'desktopTraceAdapterDefaults')
       }
-    } else if (this.active === 'usage') { this.Usage(this.row?.request?.usage ?? this.row?.usage) }
+    } else if (this.active === 'usage') { this.UsagePanel() }
     else if (this.active === 'timing') { this.Timing(this.row?.request) }
     else if (this.active === 'input') { this.Code(this.row?.argumentsText ?? '', 'desktopTraceToolInput') }
     else if (this.active === 'output') { this.Result() }
     else if (this.active === 'schema') { this.Code(this.raw(this.row?.schema), 'desktopTraceToolSchema') }
-    else if (this.active === 'system') { this.Code(this.row?.content ?? '', 'desktopTraceSystemPrompt') }
-    else if (this.active === 'tools') { this.Code(this.raw(this.row?.tools), 'desktopTraceSystemTools') }
+    else if (this.active === 'diff') { this.PromptDiff() }
+    else if (this.active === 'system') {
+      this.Code(this.row?.prompt?.current.system ?? this.row?.content ?? '', 'desktopTraceSystemPrompt')
+    } else if (this.active === 'tools') {
+      this.Code(this.raw(this.row?.prompt?.current.tools), 'desktopTraceSystemTools')
+    }
     else if (this.active === 'preview') {
       if (this.row?.reasoning) {
         Text($r('app.string.desktop_trace_reasoning')).fontSize(12).fontColor($r('sys.color.font_tertiary'))

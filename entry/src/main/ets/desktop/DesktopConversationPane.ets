@@ -1426,6 +1426,7 @@ export struct DesktopConversationPane {
           inspectCall: this.inspectTrajectoryCall,
           revision: this.snapshot?.trajectoryRevision ?? 0,
           sessionId: this.snapshot?.sessionId ?? '', hasEarlier: this.snapshot?.hasEarlier ?? false,
+          historyIncomplete: this.snapshot?.trajectoryHasEarlier ?? false,
           loading: this.snapshot?.loading ?? false, codeFamily: this.typography.codeFamily,
           codeSize: this.typography.codeSize, onEarlier: this.onEarlier })
       }

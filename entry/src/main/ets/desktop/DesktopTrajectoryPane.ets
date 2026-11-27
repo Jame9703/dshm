@@ -37,6 +37,7 @@ export struct DesktopTrajectoryPane {
   @Prop @Watch('reset') sessionId: string = '';
   @Prop @Watch('inspectRequested') inspectCall: string = '';
   @Prop hasEarlier: boolean = false;
+  @Prop historyIncomplete: boolean = false;
   @Prop loading: boolean = false;
   @Prop codeFamily: string = '';
   @Prop codeSize: number = 12;
@@ -319,6 +320,7 @@ export struct DesktopTrajectoryPane {
         }.key('desktopTraceLedger').layoutWeight(1).scrollBar(BarState.Auto)
         if (this.selectedRow() !== undefined) {
           DesktopTrajectoryInspector({ host: this.host, row: this.selectedRow(), sessionId: this.sessionId,
+            historyIncomplete: this.historyIncomplete,
             codeFamily: this.codeFamily, codeSize: this.codeSize, onClose: (): void => { this.selected = ''; },
             onRecord: (id: string): void => { this.openRelated(id); } })
             .width(this.wide ? 352 : '100%').height(this.wide ? '100%' : '52%')
