@@ -24,6 +24,9 @@ import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopTranscriptDisclosureRow } from './DesktopTranscriptDisclosureRow';
 import { DesktopTranscriptNoticeRow } from './DesktopTranscriptNotices';
 import { DesktopCompactionRow } from './DesktopCompactionRow';
+import { DesktopContextMessageRow } from './DesktopContextMessageRow';
+import type { DesktopContextMessage } from './DesktopContextMessageModel';
+import { DesktopTurnTriggerRow } from './DesktopTurnTriggerRow';
 import type { DesktopCompactionRow as DesktopCompactionInfo } from './DesktopCompactionModel';
 import { DesktopUserMessageActions } from './DesktopUserMessageActions';
 import { desktopTranscriptRows } from './DesktopTranscriptPresentation';
@@ -409,7 +412,9 @@ export struct DesktopConversationPane {
       if (row.item !== undefined) {
         visible.push(row.item);
         rowIndices.push(index);
-        if (row.item.notice !== undefined || row.item.compaction !== undefined) { statuses.set(row.item.id, row.item); }
+        if (row.item.notice !== undefined || row.item.compaction !== undefined || row.item.contextMessage !== undefined) {
+          statuses.set(row.item.id, row.item);
+        }
       }
       itemIndices.push(Math.max(0, visible.length - 1));
     });
@@ -1308,7 +1313,9 @@ export struct DesktopConversationPane {
 
   @Builder
   private TranscriptContent(item: DesktopTranscriptItem, row: DesktopTranscriptRow) {
-    if (item.notice !== undefined) {
+    if (item.contextMessage !== undefined) {
+      this.ContextMessage(this.transcriptStatusRows.get(item.id)?.contextMessage ?? item.contextMessage)
+    } else if (item.notice !== undefined) {
       DesktopTranscriptNoticeRow({ notice: this.transcriptStatusRows.get(item.id)?.notice ?? item.notice,
         fontSize: this.typography.textSize })
     } else if (item.compaction !== undefined) {
@@ -1384,6 +1391,16 @@ export struct DesktopConversationPane {
             this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
         },
         onInspect: (id: string): void => { this.inspectedTool = this.inspectedTool === id ? '' : id; } })
+    }
+  }
+
+  @Builder
+  private ContextMessage(context: DesktopContextMessage) {
+    if (context.kind === 'turn-trigger') {
+      DesktopTurnTriggerRow({ row: context, typography: this.typography })
+    } else {
+      DesktopContextMessageRow({ row: context, bodySize: this.typography.textSize, textFamily: this.typography.textFamily,
+        codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily })
     }
   }
 

@@ -34,6 +34,8 @@ import type { DesktopTranscriptNotice } from './DesktopTranscriptNoticesModel';
 import { desktopUserMessageCopyText } from './DesktopUserMessageActionsModel';
 import { DesktopCompactionTimeline } from './DesktopCompactionModel';
 import type { DesktopCompactionRow } from './DesktopCompactionModel';
+import { DesktopContextMessageTimeline } from './DesktopContextMessageModel';
+import type { DesktopContextMessage } from './DesktopContextMessageModel';
 import type { DesktopChatTurnUsage, DesktopChatUsageSnapshot } from './DesktopChatUsageModel';
 import { readDesktopTurnOutline } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
@@ -75,6 +77,7 @@ export interface DesktopTranscriptItem {
   userCopyText?: string;
   notice?: DesktopTranscriptNotice;
   compaction?: DesktopCompactionRow;
+  contextMessage?: DesktopContextMessage;
   attachments?: DesktopMediaAttachment[];
   referenceLabels?: string[];
   plan?: DesktopPlanDocument;
@@ -167,6 +170,7 @@ export class DesktopConversation {
   private readonly transcriptTimeline = new DesktopTranscriptTurnTimeline();
   private readonly transcriptNotices = new DesktopTranscriptNoticeTimeline();
   private readonly compactions = new DesktopCompactionTimeline();
+  private readonly contextMessages = new DesktopContextMessageTimeline();
   private turnOutline: DesktopTurnOutlineEntry[] = [];
   private turnOutlineSequence: number = -1;
   private latestTurn: number = 0;
@@ -274,6 +278,7 @@ export class DesktopConversation {
     this.transcriptTimeline.clear();
     this.transcriptNotices.clear();
     this.compactions.clear();
+    this.contextMessages.clear();
     this.latestTurn = 0;
     this.latestTurnEvent = -1;
     this.trajectory.clear();
@@ -790,7 +795,7 @@ export class DesktopConversation {
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
         if (item.artifacts === undefined && item.process === undefined && item.command === undefined && item.notice === undefined &&
-          item.compaction === undefined &&
+          item.compaction === undefined && item.contextMessage === undefined &&
           item.replyTail === undefined && item.workflow === undefined && item.cordis === undefined && !item.inheritedHistory) {
           result.set(item.id, item);
         }
@@ -804,6 +809,7 @@ export class DesktopConversation {
       this.transcriptTimeline.clear();
       this.transcriptNotices.clear();
       this.compactions.clear();
+      this.contextMessages.clear();
       this.commandRecords.clear();
       this.replyTimeline.clear();
       this.latestTurn = 0;
@@ -833,6 +839,7 @@ export class DesktopConversation {
       this.transcriptTimeline.observe(record);
       this.transcriptNotices.observe(record);
       this.compactions.observe(record);
+      this.contextMessages.observe(record);
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
@@ -907,6 +914,10 @@ export class DesktopConversation {
     for (const checkpoint of this.compactions.rows()) {
       const id = `compaction:${this.sessionId}:${checkpoint.id}`;
       result.set(id, { id: id, sequence: checkpoint.sequence, compaction: checkpoint, turn: checkpoint.turn });
+    }
+    for (const context of this.contextMessages.rows()) {
+      const id = `context:${this.sessionId}:${context.id}`;
+      result.set(id, { id: id, sequence: context.sequence, contextMessage: context, turn: context.turn });
     }
     const closingMessages: Map<number, number> = new Map();
     for (const replyTail of this.replyTimeline.completed()) {

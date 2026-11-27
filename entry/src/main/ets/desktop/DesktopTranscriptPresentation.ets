@@ -200,6 +200,9 @@ function needsOpen(step: DesktopToolStep): boolean {
 
 function hidesItem(item: DesktopTranscriptItem, turn: TurnPresentation, policy: DesktopTranscriptPolicy): boolean {
   if (keepVisible(item)) { return false; }
+  if (item.contextMessage?.kind === 'context') {
+    return turn.lastReply === undefined ? item.sequence >= turn.firstProcessSequence : item.sequence < turn.lastReply.sequence;
+  }
   if (item.process !== undefined || item.notice?.kind === 'retry') {
     return item.sequence < (turn.lastReply?.sequence ?? Infinity);
   }
