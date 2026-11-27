@@ -22,9 +22,13 @@ import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopTranscriptDisclosureRow } from './DesktopTranscriptDisclosureRow';
+import { DesktopTranscriptNoticeRow } from './DesktopTranscriptNotices';
+import type { DesktopTranscriptNotice } from './DesktopTranscriptNoticesModel';
+import { DesktopUserMessageActions } from './DesktopUserMessageActions';
 import { desktopTranscriptRows } from './DesktopTranscriptPresentation';
 import type { DesktopTranscriptDisclosure, DesktopTranscriptPolicy, DesktopTranscriptRow, DesktopTranscriptTurn }
   from './DesktopTranscriptPresentation';
+import type { DesktopSubmissionEcho } from './DesktopSubmissionEcho';
 import { DesktopTrajectoryPane } from './DesktopTrajectoryPane';
 import { DesktopChatHistoryEdge, DesktopChatReturnToTail, desktopChatHistoryState } from './DesktopChatScrollControls';
 import { DesktopTurnOutline } from './DesktopTurnOutline';
@@ -170,9 +174,14 @@ export struct DesktopConversationPane {
   private outlineFirstVisible: number = 0;
   private outlineJumpGeneration: number = 0;
   @State private transcriptRows: DesktopTranscriptRow[] = [];
+  @State private transcriptNotices: Map<string, DesktopTranscriptNotice> = new Map();
+  @State private messageActionsHover: boolean = false;
+  @State private hoveredMessage: string = '';
   private transcriptSource?: DesktopTranscriptItem[];
   private transcriptTurns?: DesktopTranscriptTurn[];
   private transcriptPolicy?: DesktopTranscriptPolicy;
+  private pendingTranscriptInput: boolean = false;
+  private submissionEchoes?: DesktopSubmissionEcho[];
   private readonly transcriptOverrides: Map<number, boolean> = new Map();
   private visibleTranscript: DesktopTranscriptItem[] = [];
   private transcriptRowIndices: number[] = [];
@@ -246,6 +255,8 @@ export struct DesktopConversationPane {
     return this.sessionSummaries.find((row: SessionListItem): boolean => row.id === id)?.title || '父会话';
   }
 
+  aboutToAppear(): void { this.onSnapshotChanged(); }
+
   aboutToDisappear(): void {
     this.outlineJumpGeneration++;
     clearTimeout(this.historyCommitTimer);
@@ -295,15 +306,22 @@ export struct DesktopConversationPane {
       this.following = true;
       this.expandedProcesses = [];
       this.expandedReasoning = [];
+      this.hoveredMessage = '';
       this.expandedTeamCommands = [];
       this.inspectedTool = '';
       this.dismissedDraft = undefined;
       this.closePalette();
     }
+    const echoes = this.snapshot?.submissionEchoes;
+    const newSubmission = sameSession && this.submissionEchoes !== echoes &&
+      (echoes?.some((echo: DesktopSubmissionEcho): boolean =>
+        !this.submissionEchoes?.some((previous: DesktopSubmissionEcho): boolean => previous.requestId === echo.requestId)) ?? false);
+    this.submissionEchoes = echoes;
     this.refreshTranscript(!sameSession);
     this.refreshTurnOutline();
     this.updateHistoryPaging();
-    const count = this.transcriptRows.length;
+    const count = this.transcriptRows.length + (echoes?.length ?? 0);
+    if (newSubmission && !this.showTrajectory) { this.returnToTail(); }
     if (sameSession && count === this.messageCount && partial === this.partial && preparing === this.preparing) {
       return;
     }
@@ -370,26 +388,32 @@ export struct DesktopConversationPane {
 
   private refreshTranscript(force: boolean): void {
     const snapshot = this.snapshot;
+    const pending = snapshot?.submissionEchoes.some((echo: DesktopSubmissionEcho): boolean =>
+      echo.placement === 'transcript') ?? false;
     if (!force && this.transcriptSource === snapshot?.transcript && this.transcriptTurns === snapshot?.transcriptTurns &&
-        this.transcriptPolicy === snapshot?.transcriptPolicy) { return; }
+        this.transcriptPolicy === snapshot?.transcriptPolicy && this.pendingTranscriptInput === pending) { return; }
     this.transcriptSource = snapshot?.transcript;
     this.transcriptTurns = snapshot?.transcriptTurns;
     this.transcriptPolicy = snapshot?.transcriptPolicy;
+    this.pendingTranscriptInput = pending;
     const rows = snapshot === undefined ? [] : desktopTranscriptRows(snapshot.transcript, snapshot.transcriptTurns,
-      snapshot.transcriptPolicy, this.transcriptOverrides);
+      snapshot.transcriptPolicy, this.transcriptOverrides, pending);
     const visible: DesktopTranscriptItem[] = [];
     const rowIndices: number[] = [];
     const itemIndices: number[] = [];
+    const notices: Map<string, DesktopTranscriptNotice> = new Map();
     rows.forEach((row: DesktopTranscriptRow, index: number): void => {
       if (row.item !== undefined) {
         visible.push(row.item);
         rowIndices.push(index);
+        if (row.item.notice !== undefined) { notices.set(row.item.id, row.item.notice); }
       }
       itemIndices.push(Math.max(0, visible.length - 1));
     });
     this.visibleTranscript = visible;
     this.transcriptRowIndices = rowIndices;
     this.visibleItemIndices = itemIndices;
+    this.transcriptNotices = notices;
     this.transcriptRows = rows;
   }
 
@@ -402,7 +426,7 @@ export struct DesktopConversationPane {
     if (disclosure?.canToggle !== true) { return; }
     this.transcriptOverrides.set(turn, !disclosure.open);
     this.refreshTranscript(true);
-    this.messageCount = this.transcriptRows.length;
+    this.messageCount = this.transcriptRows.length + (this.snapshot?.submissionEchoes.length ?? 0);
     this.refreshTurnOutline();
   }
 
@@ -1281,7 +1305,10 @@ export struct DesktopConversationPane {
 
   @Builder
   private TranscriptContent(item: DesktopTranscriptItem, row: DesktopTranscriptRow) {
-    if (item.plan !== undefined) {
+    if (item.notice !== undefined) {
+      DesktopTranscriptNoticeRow({ notice: this.transcriptNotices.get(item.id) ?? item.notice,
+        fontSize: this.typography.textSize })
+    } else if (item.plan !== undefined) {
       this.PlanCard(item.plan)
     } else if (item.command !== undefined) {
       if (item.command.name === 'team') { this.TeamCommand(item.command) }
@@ -1324,7 +1351,8 @@ export struct DesktopConversationPane {
         Divider().layoutWeight(1).color($r('app.color.workspace_border'))
       }.width('100%').constraintSize({ maxWidth: 712 })
     } else if (item.message !== undefined) {
-      this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [], row.showReasoning, row.previewReasoning)
+      this.Message(item.message, item.attachments ?? [], item.referenceLabels ?? [],
+        row.showReasoning, row.previewReasoning, item.userCopyText ?? '')
     } else if (item.artifacts !== undefined) {
       DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
         artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
@@ -1349,8 +1377,19 @@ export struct DesktopConversationPane {
   }
 
   @Builder
+  private SubmissionRows(placement: 'transcript' | 'steering') {
+    ForEach(this.snapshot?.submissionEchoes.filter((echo: DesktopSubmissionEcho): boolean => echo.placement === placement) ?? [],
+      (echo: DesktopSubmissionEcho): void => {
+        ListItem() {
+          Row() { this.Message(echo.message, echo.attachments, [], false, false, echo.message.body) }
+            .width('100%').justifyContent(FlexAlign.Center)
+        }.key('desktopSubmissionEcho-' + echo.requestId)
+      }, (echo: DesktopSubmissionEcho): string => echo.requestId)
+  }
+
+  @Builder
   private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[], referenceLabels: string[],
-    showReasoning: boolean, previewReasoning: boolean) {
+    showReasoning: boolean, previewReasoning: boolean, userCopyText: string) {
     Column({ space: 7 }) {
       if (item.speaker === Speaker.USER) {
         if (attachments.length > 0) {
@@ -1383,6 +1422,9 @@ export struct DesktopConversationPane {
             .constraintSize({ maxWidth: '82%' }).borderRadius(16)
             .backgroundColor($r('app.color.workspace_panel'))
         }
+        DesktopUserMessageActions({ messageId: item.id, timestamp: item.at, text: userCopyText,
+          bodySize: this.typography.textSize, revealOnHover: this.messageActionsHover,
+          messageHovered: this.hoveredMessage === item.id })
       } else {
         if (showReasoning && item.reasoning) {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
@@ -1412,6 +1454,20 @@ export struct DesktopConversationPane {
     }
     .width('100%').constraintSize({ maxWidth: 712 })
     .alignItems(item.speaker === Speaker.USER ? HorizontalAlign.End : HorizontalAlign.Start)
+    .onHover((active: boolean): void => {
+      if (item.speaker !== Speaker.USER) { return; }
+      if (active) {
+        this.messageActionsHover = true;
+        this.hoveredMessage = item.id;
+      } else if (this.hoveredMessage === item.id) {
+        this.hoveredMessage = '';
+      }
+    })
+    .onTouch((event: TouchEvent): void => {
+      if (item.speaker === Speaker.USER && event.type === TouchType.Down && event.source === SourceType.TouchScreen) {
+        this.messageActionsHover = false;
+      }
+    })
   }
 
   @Builder
@@ -1666,6 +1722,7 @@ export struct DesktopConversationPane {
               }.width('100%').justifyContent(FlexAlign.Center)
             }
           }, (row: DesktopTranscriptRow): string => this.transcriptRowKey(row))
+          this.SubmissionRows('transcript')
           if ((this.snapshot?.partial.length ?? 0) > 0) {
             ListItem() {
               Row() {
@@ -1693,6 +1750,7 @@ export struct DesktopConversationPane {
               }.width('100%').constraintSize({ maxWidth: 712 }).padding({ left: 7 })
             }
           }
+          this.SubmissionRows('steering')
         }
         .height('100%').width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
         .contentEndOffset(this.outlineEndOffset)

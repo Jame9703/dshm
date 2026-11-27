@@ -189,7 +189,7 @@ function hasReasoning(item: DesktopTranscriptItem): boolean {
 function keepVisible(item: DesktopTranscriptItem): boolean {
   return (item.attachments?.length ?? 0) > 0 || item.plan !== undefined || item.artifacts !== undefined ||
     item.cordis !== undefined || item.command !== undefined || item.workflow !== undefined || item.replyTail !== undefined ||
-    item.message?.kind === TrajectoryKind.ERROR;
+    item.message?.kind === TrajectoryKind.ERROR || (item.notice !== undefined && item.notice.kind !== 'retry');
 }
 
 function needsOpen(step: DesktopToolStep): boolean {
@@ -200,7 +200,9 @@ function needsOpen(step: DesktopToolStep): boolean {
 
 function hidesItem(item: DesktopTranscriptItem, turn: TurnPresentation, policy: DesktopTranscriptPolicy): boolean {
   if (keepVisible(item)) { return false; }
-  if (item.process !== undefined) { return item.sequence < (turn.lastReply?.sequence ?? Infinity); }
+  if (item.process !== undefined || item.notice?.kind === 'retry') {
+    return item.sequence < (turn.lastReply?.sequence ?? Infinity);
+  }
   if (!assistant(item) || item === turn.lastReply) { return false; }
   if (!reply(item)) { return hasReasoning(item); }
   return policy.foldedReplies === 'final' && item.sequence < (turn.lastReply?.sequence ?? Infinity);
@@ -253,7 +255,8 @@ export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: Des
     if (item.message?.speaker === Speaker.USER) {
       summary.lastInputSequence = Math.max(summary.lastInputSequence, item.sequence);
     }
-    if (assistant(item) || item.process !== undefined || item.message?.kind === TrajectoryKind.ERROR) {
+    if (assistant(item) || item.process !== undefined || item.notice?.kind === 'retry' ||
+        item.message?.kind === TrajectoryKind.ERROR) {
       summary.firstAnchor = summary.firstAnchor ?? item;
       summary.firstProcessSequence = Math.min(summary.firstProcessSequence, item.sequence);
     }

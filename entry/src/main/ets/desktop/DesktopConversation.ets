@@ -1,7 +1,7 @@
 import { util } from '@kit.ArkTS';
 import {
   commandsListEndpoint, commandsListPayload, filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress,
-  followSubagentAddress, imagePart,
+  followSubagentAddress, imagePart, makeItem,
   projectSessionPage,
   projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, queueSteerAction,
   SessionPageValue, sessionCancelPayload,
@@ -29,6 +29,9 @@ import { DesktopTrajectoryLog } from './DesktopTrajectoryLog';
 import { DesktopChatUsageState } from './DesktopChatUsageModel';
 import { DEFAULT_DESKTOP_TRANSCRIPT_POLICY, DesktopTranscriptTurnTimeline } from './DesktopTranscriptPresentation';
 import type { DesktopTranscriptPolicy, DesktopTranscriptTurn } from './DesktopTranscriptPresentation';
+import { desktopTranscriptNoticeSequence, DesktopTranscriptNoticeTimeline } from './DesktopTranscriptNoticesModel';
+import type { DesktopTranscriptNotice } from './DesktopTranscriptNoticesModel';
+import { desktopUserMessageCopyText } from './DesktopUserMessageActionsModel';
 import type { DesktopChatTurnUsage, DesktopChatUsageSnapshot } from './DesktopChatUsageModel';
 import { readDesktopTurnOutline } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
@@ -45,6 +48,8 @@ import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
 import { DesktopWorkflowTimeline } from './DesktopWorkflowTimeline';
 import type { DesktopWorkflowRun } from './DesktopWorkflowTimeline';
 import { DesktopPromptQueue, DesktopQueuedPrompt } from './DesktopPromptQueue';
+import { DesktopSubmissionEchoes } from './DesktopSubmissionEcho';
+import type { DesktopSubmissionEcho } from './DesktopSubmissionEcho';
 import { desktopImageMime, desktopMediaAttachment, desktopMessageAttachments } from './DesktopAttachments';
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
 import { commandInvocation, desktopCommandCatalog, DesktopCommand, DesktopCommandRecord, observeDesktopCommand,
@@ -65,6 +70,8 @@ export interface DesktopTranscriptItem {
   sequence: number;
   turn?: number;
   message?: TrajectoryItem;
+  userCopyText?: string;
+  notice?: DesktopTranscriptNotice;
   attachments?: DesktopMediaAttachment[];
   referenceLabels?: string[];
   plan?: DesktopPlanDocument;
@@ -86,6 +93,7 @@ export interface DesktopConversationSnapshot {
   compactUsage: boolean;
   transcriptPolicy: DesktopTranscriptPolicy;
   transcriptTurns: DesktopTranscriptTurn[];
+  submissionEchoes: DesktopSubmissionEcho[];
   loadTurnHistory: (sequence: number, requested: () => boolean) => Promise<boolean>;
   readTrajectory: () => DesktopTraceRow[];
   trajectoryRevision: number;
@@ -154,6 +162,7 @@ export class DesktopConversation {
   private compactUsage: boolean = false;
   private transcriptPolicy: DesktopTranscriptPolicy = DEFAULT_DESKTOP_TRANSCRIPT_POLICY;
   private readonly transcriptTimeline = new DesktopTranscriptTurnTimeline();
+  private readonly transcriptNotices = new DesktopTranscriptNoticeTimeline();
   private turnOutline: DesktopTurnOutlineEntry[] = [];
   private turnOutlineSequence: number = -1;
   private latestTurn: number = 0;
@@ -172,6 +181,7 @@ export class DesktopConversation {
   private readonly goals: DesktopGoalState = new DesktopGoalState();
   private readonly queue: DesktopPromptQueue = new DesktopPromptQueue();
   private readonly sending: Map<string, DesktopQueuedPrompt> = new Map<string, DesktopQueuedPrompt>();
+  private readonly echoes = new DesktopSubmissionEchoes();
   private busyEnterSteers: boolean = false;
   private imageBytesLimit?: number;
   private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
@@ -258,6 +268,7 @@ export class DesktopConversation {
     this.turnOutlineSequence = -1;
     this.chatUsage.clear();
     this.transcriptTimeline.clear();
+    this.transcriptNotices.clear();
     this.latestTurn = 0;
     this.latestTurnEvent = -1;
     this.trajectory.clear();
@@ -330,6 +341,7 @@ export class DesktopConversation {
     this.feedback.select('');
     this.stopWatching();
     this.pendingRequests.clear();
+    this.echoes.clear();
   }
 
   loadEarlier(): void {
@@ -447,26 +459,44 @@ export class DesktopConversation {
     }
     const args = promptPayload(request.id, sessionId, mode, parts, '');
     const requestId = request.id;
+    const files = attachments.map((attachment: DesktopDraftAttachment): DesktopMediaAttachment =>
+      attachment.picture ?? { id: attachment.receiptId, name: attachment.name, bytes: attachment.bytes, image: false });
+    if ((args !== undefined || child !== undefined) && (!busy || mode === PromptMode.STEER)) {
+      const message = makeItem('submit-' + requestId, TrajectoryKind.MESSAGE, Date.now());
+      message.speaker = Speaker.USER;
+      message.body = text;
+      this.echoes.begin({ sessionId: sessionId, requestId: requestId,
+        placement: busy ? 'steering' : 'transcript', message: message, attachments: files });
+    }
     if (child !== undefined) {
-      const result = await this.host.call('subagents/prompt', {
-        'childSessionId': child.id, 'requestId': requestId, 'delivery': mode, 'content': parts
-      });
-      if (!result.ok || !getString(result.value, 'messageId')) { return this.failure(result, '宿主未确认发送'); }
-      this.pendingRequests.delete(sessionId);
-      if (sessionId === this.sessionId && !this.closed) { this.loadSelection(this.generation); }
-      return '';
+      let accepted = false;
+      try {
+        const result = await this.host.call('subagents/prompt', {
+          'childSessionId': child.id, 'requestId': requestId, 'delivery': mode, 'content': parts
+        });
+        if (!result.ok || !getString(result.value, 'messageId')) { return this.failure(result, '宿主未确认发送'); }
+        accepted = true;
+        this.pendingRequests.delete(sessionId);
+        if (sessionId === this.sessionId && !this.closed) { this.loadSelection(this.generation); }
+        return '';
+      } finally {
+        this.settleSubmission(sessionId, requestId, accepted);
+      }
     }
     if (args !== undefined && busy && mode === PromptMode.QUEUE) {
-      const files = attachments.map((attachment: DesktopDraftAttachment): DesktopMediaAttachment => {
-        return attachment.picture ?? { id: attachment.receiptId, name: attachment.name, bytes: attachment.bytes, image: false };
-      });
       this.sending.set(sessionId, { id: request.id, requestId: request.id, text: text,
         editable: false, attachments: files, sending: true });
       this.publish();
     }
     const generation = this.generation;
-    const response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args);
-    const accepted = response?.ok === true && projectSessionPrompt(response.value).accepted;
+    let response: RpcResult | undefined;
+    let accepted = false;
+    try {
+      response = args === undefined ? undefined : await this.connection.call(SESSION_PROMPT_ENDPOINT, args);
+      accepted = response?.ok === true && projectSessionPrompt(response.value).accepted;
+    } finally {
+      this.settleSubmission(sessionId, requestId, accepted);
+    }
     if (this.sending.has(sessionId)) {
       if (accepted && sessionId === this.sessionId && this.current(generation) &&
         !this.queue.rows.some((row: DesktopQueuedPrompt): boolean => row.requestId === requestId)) {
@@ -480,6 +510,11 @@ export class DesktopConversation {
       return '';
     }
     return this.failure(response, '宿主未确认发送');
+  }
+
+  private settleSubmission(sessionId: string, requestId: string, accepted: boolean): void {
+    const changed = accepted ? this.echoes.accept(requestId) : this.echoes.retire(requestId);
+    if (changed && sessionId === this.sessionId && !this.closed) { this.publish(); }
   }
 
   async updateQueue(sessionId: string, itemId: string, action: QueueActionBody): Promise<string> {
@@ -749,7 +784,7 @@ export class DesktopConversation {
     let cordisResult = false;
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
-        if (item.artifacts === undefined && item.process === undefined && item.command === undefined &&
+        if (item.artifacts === undefined && item.process === undefined && item.command === undefined && item.notice === undefined &&
           item.replyTail === undefined && item.workflow === undefined && item.cordis === undefined && !item.inheritedHistory) {
           result.set(item.id, item);
         }
@@ -761,6 +796,7 @@ export class DesktopConversation {
       this.trajectory.clear();
       this.chatUsage.resetWindow();
       this.transcriptTimeline.clear();
+      this.transcriptNotices.clear();
       this.commandRecords.clear();
       this.replyTimeline.clear();
       this.latestTurn = 0;
@@ -776,6 +812,7 @@ export class DesktopConversation {
         this.earliest = seq;
       }
       const event = getRecord(record, 'event');
+      this.echoes.observe(this.sessionId, event);
       const eventType = getString(event, 'type');
       const eventTurn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
       if (eventType === 'turn/start' && eventTurn > 0) { loadedTurn = eventTurn; }
@@ -787,6 +824,7 @@ export class DesktopConversation {
       this.trajectory.observe(record, eventType, seq);
       this.chatUsage.observe(record);
       this.transcriptTimeline.observe(record);
+      this.transcriptNotices.observe(record);
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
@@ -828,7 +866,8 @@ export class DesktopConversation {
         }
         if (message.body.trim() || message.reasoning || attachments.length > 0) {
           result.set(message.id, { id: message.id, sequence: seq,
-            turn: eventTurn || loadedTurn || undefined, message: message, attachments: attachments });
+            turn: eventTurn || loadedTurn || undefined, message: message, attachments: attachments,
+            userCopyText: message.speaker === Speaker.USER ? desktopUserMessageCopyText(getRecord(event, 'data')) : undefined });
         }
       }
     }
@@ -857,10 +896,17 @@ export class DesktopConversation {
         result.set(id, { id: id, sequence: command.sequence, command: command });
       }
     });
+    const closingMessages: Map<number, number> = new Map();
     for (const replyTail of this.replyTimeline.completed()) {
       const id = `reply:${this.sessionId}:${replyTail.turn}:${replyTail.messageId}`;
       result.set(id, { id: id, sequence: replyTail.endSeq, replyTail: replyTail,
         turnUsage: this.chatUsage.turnUsage(replyTail.turn) });
+      closingMessages.set(replyTail.turn, replyTail.messageSeq);
+    }
+    for (const notice of this.transcriptNotices.notices()) {
+      const id = `notice:${this.sessionId}:${notice.id}`;
+      result.set(id, { id: id, sequence: desktopTranscriptNoticeSequence(notice, closingMessages.get(notice.turn)),
+        turn: notice.turn, notice: notice });
     }
     for (const workflow of this.workflows.runs()) {
       const id = 'workflow:' + workflow.id;
@@ -1086,7 +1132,12 @@ export class DesktopConversation {
   }
 
   private readQueue(projection?: Object): boolean {
-    return this.queue.observe(getRecord(projection, 'values'), getNumber(projection, 'asOfSeq') ?? -1);
+    return this.readInbox(getRecord(projection, 'values'), getNumber(projection, 'asOfSeq') ?? -1);
+  }
+
+  private readInbox(values: Object | undefined, sequence: number): boolean {
+    const echoesChanged = this.echoes.observeInbox(this.sessionId, values, sequence);
+    return this.queue.observe(values, sequence) || echoesChanged;
   }
 
   private onFrame(frame: Object): void {
@@ -1117,7 +1168,7 @@ export class DesktopConversation {
       const changes = getRecord(frame, 'changes');
       this.readQuestions(changes, getNumber(frame, 'seq') ?? -1);
       this.readImageLimit(changes);
-      const queueChanged = this.queue.observe(changes, getNumber(frame, 'seq') ?? -1);
+      const queueChanged = this.readInbox(changes, getNumber(frame, 'seq') ?? -1);
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);
       const cardsChanged = this.actionCards.observe(changes, getNumber(frame, 'seq') ?? 0);
       const teamChanged = this.team.observe(changes, getNumber(frame, 'seq') ?? 0);
@@ -1150,9 +1201,7 @@ export class DesktopConversation {
         this.waitingForInput = false;
         this.partial = '';
         this.attempt = '';
-        const reason = getRecord(getRecord(event, 'data'), 'reason');
-        this.error = getString(reason, 'kind') === 'error' ?
-          getString(getRecord(reason, 'error'), 'message') ?? '本轮未能完成' : '';
+        this.error = '';
       } else if (eventType === 'assistant/message') {
         this.partial = '';
         this.attempt = '';
@@ -1196,6 +1245,7 @@ export class DesktopConversation {
       turnOutline: this.turnOutline, loadTurnHistory: this.loadTurnHistory,
       chatUsage: this.chatUsage.stats(), compactUsage: this.compactUsage,
       transcriptPolicy: this.transcriptPolicy, transcriptTurns: this.transcriptTimeline.turns(),
+      submissionEchoes: this.echoes.forSession(this.sessionId),
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
       trajectoryHasEarlier: this.hasEarlier, wasPartialHistory: this.wasPartialHistory,
       historyPaging: this.pageLoading && !this.loading, historyError: this.historyError,
