@@ -19,7 +19,8 @@
  * textToSpeech 单次上限 10,000 字符，超长截断；TextReader 走单篇正文。
  */
 
-import { TextReader } from '@kit.SpeechKit';
+import { ReadStateCode, TextReader, WindowManager } from '@kit.SpeechKit';
+import { window } from '@kit.ArkUI';
 import { textToSpeech } from '@kit.CoreSpeechKit';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -59,7 +60,7 @@ function resolveXiaoyiPerson(): Promise<number> {
     return xiaoyiPersonPromise;
   }
   xiaoyiPersonPromise = textToSpeech.listVoices({
-    requestId: 'dshm-voices-' + Date.now().toString(),
+    requestId: 'dshmvoices' + Date.now().toString(),
     online: 1
   }).then((voices: Array<textToSpeech.VoiceInfo>): number => {
     for (const voice of voices) {
@@ -80,203 +81,247 @@ function resolveXiaoyiPerson(): Promise<number> {
   return xiaoyiPersonPromise;
 }
 
-/** 朗读控制器（进程内单例；由页面的桥持有） */
+/** One playback request per owner. TextReader itself is process-wide. */
 export class ReadAloud {
-  private textReaderReady: boolean = false;
-  private textReaderInit: Promise<boolean> | null = null;
-  private ttsEngine: textToSpeech.TextToSpeechEngine | null = null;
-  private requestSeq: number = 0;
+  private static nextRequest: number = 0;
+  private static textReaderOwner?: ReadAloud;
+  private static textReaderQueue: Promise<void> = Promise.resolve();
 
-  /**
-   * 开始朗读一段纯文本。
-   *
-   * @param context UIAbility 上下文（TextReader.init 与 textToSpeech 都需要）
-   * @param text 已剥掉 Markdown 标记的正文
-   * @returns `started` / `fallback` / `empty` / `unavailable`
-   */
-  start(context: common.UIAbilityContext, text: string): string {
-    const clean: string = text.trim();
-    if (clean.length === 0) {
-      return 'empty';
+  private requestId: string = '';
+  private notifyEnded?: (failed: boolean) => void;
+  private nativeRequest: string = '';
+  private nativeStarted: boolean = false;
+  private engine?: textToSpeech.TextToSpeechEngine;
+  private engineInit?: Promise<textToSpeech.TextToSpeechEngine | undefined>;
+  private engineGeneration: number = 0;
+
+  private readonly onReaderState = (state: TextReader.ReadState): void => {
+    if (state.id !== this.requestId || state.id !== this.nativeRequest) { return; }
+    if (state.state === ReadStateCode.PLAYING || state.state === ReadStateCode.PAUSED) {
+      if (!this.nativeStarted) {
+        hilog.info(DOMAIN, TAG, 'TextReader 已开始播放');
+        this.nativeStarted = true;
+      }
+    } else if (state.state === ReadStateCode.COMPLETED || (this.nativeStarted &&
+      (state.state === ReadStateCode.WAITING || state.state === ReadStateCode.NOT_IN_READ_LIST))) {
+      this.finish(state.id);
     }
+  };
+
+  static attachWindow(stage: window.WindowStage): void {
+    if (!ReadAloud.hasTextReader()) { return; }
+    try {
+      WindowManager.setWindowStage(stage);
+    } catch (_) {
+      hilog.warn(DOMAIN, TAG, 'TextReader 窗口注册失败');
+    }
+  }
+
+  start(context: common.UIAbilityContext, text: string, onEnded?: (failed: boolean) => void,
+    title?: string): string {
+    const clean = text.trim();
+    if (clean.length === 0) { return 'empty'; }
     this.stop();
-    this.requestSeq++;
-    const requestId: string = 'dshm-read-' + Date.now().toString() + '-' + this.requestSeq.toString();
-    if (this.textReaderAvailable()) {
-      this.startTextReader(context, clean, requestId);
+    const id = 'dshmread' + Date.now().toString() + 'n' + (++ReadAloud.nextRequest).toString();
+    this.requestId = id;
+    this.notifyEnded = onEnded;
+    if (ReadAloud.hasTextReader()) {
+      ReadAloud.queueTextReader((): Promise<void> => this.startTextReader(context, clean, id, title));
       return 'started';
     }
-    this.startFallback(clean, requestId);
+    this.startFallback(clean, id);
     return 'fallback';
   }
 
-  /** 停止当前朗读（TextReader.stop / TTS.stop 都是幂等的） */
   stop(): void {
-    if (this.textReaderReady) {
-      try {
-        TextReader.stop().catch((e: BusinessError): void => {
-          hilog.debug(DOMAIN, TAG, 'TextReader.stop 拒绝 code=%{public}d', e.code);
-        });
-      } catch (err) {
-        hilog.debug(DOMAIN, TAG, 'TextReader.stop 不适用：%{public}s', (err as BusinessError).message);
-      }
+    this.finish(this.requestId);
+    if (ReadAloud.textReaderOwner === this && this.nativeRequest.length > 0) {
+      ReadAloud.queueTextReader(async (): Promise<void> => {
+        if (ReadAloud.textReaderOwner !== this) { return; }
+        this.nativeRequest = '';
+        this.nativeStarted = false;
+        try {
+          await TextReader.stop();
+        } catch (_) {
+          hilog.debug(DOMAIN, TAG, 'TextReader.stop 调用失败');
+        }
+      });
     }
-    const engine: textToSpeech.TextToSpeechEngine | null = this.ttsEngine;
-    if (engine !== null) {
-      try {
-        engine.stop();
-      } catch (err) {
-        hilog.debug(DOMAIN, TAG, 'TTS.stop 不适用：%{public}s', (err as BusinessError).message);
-      }
+    try {
+      this.engine?.stop();
+    } catch (_) {
+      hilog.debug(DOMAIN, TAG, 'TTS.stop 调用失败');
     }
   }
 
-  /** 页面销毁/Ability 退出时释放引擎资源（幂等） */
   release(): void {
     this.stop();
-    if (this.textReaderReady) {
-      try {
-        TextReader.release().catch((e: BusinessError): void => {
-          hilog.debug(DOMAIN, TAG, 'TextReader.release 拒绝 code=%{public}d', e.code);
-        });
-      } catch (err) {
-        hilog.debug(DOMAIN, TAG, 'TextReader.release 不适用：%{public}s', (err as BusinessError).message);
-      }
-      this.textReaderReady = false;
-    }
-    this.textReaderInit = null;
-    const engine: textToSpeech.TextToSpeechEngine | null = this.ttsEngine;
-    if (engine !== null) {
-      try {
-        engine.shutdown();
-      } catch (err) {
-        hilog.debug(DOMAIN, TAG, 'TTS.shutdown 不适用：%{public}s', (err as BusinessError).message);
-      }
-      this.ttsEngine = null;
-    }
+    ReadAloud.queueTextReader((): Promise<void> => this.releaseTextReader());
+    this.engineGeneration++;
+    const engine = this.engine;
+    this.engine = undefined;
+    this.engineInit = undefined;
+    if (engine !== undefined) { this.shutdown(engine); }
   }
 
-  /** 设备是否有 TextReader 系统能力（按 syscap 判定，不猜型号） */
-  private textReaderAvailable(): boolean {
+  private finish(id: string, failed: boolean = false): void {
+    if (id.length === 0 || id !== this.requestId) { return; }
+    this.requestId = '';
+    const notify = this.notifyEnded;
+    this.notifyEnded = undefined;
+    notify?.(failed);
+  }
+
+  private static hasTextReader(): boolean {
     try {
       return canIUse('SystemCapability.AI.Component.TextReader');
-    } catch (err) {
+    } catch (_) {
       return false;
     }
   }
 
-  /** 首次用到时才 init；并发调用共享同一个 Promise */
-  private ensureTextReader(context: common.UIAbilityContext): Promise<boolean> {
-    if (this.textReaderReady) {
-      return Promise.resolve(true);
+  private static queueTextReader(run: () => Promise<void>): void {
+    ReadAloud.textReaderQueue = ReadAloud.textReaderQueue.then(run).catch((): void => {
+      hilog.warn(DOMAIN, TAG, 'TextReader 操作失败');
+    });
+  }
+
+  private async openTextReader(context: common.UIAbilityContext, id: string): Promise<boolean> {
+    if (ReadAloud.textReaderOwner === this) { return true; }
+    const previous = ReadAloud.textReaderOwner;
+    if (previous !== undefined) {
+      previous.finish(previous.nativeRequest);
+      await previous.releaseTextReader();
     }
-    if (this.textReaderInit !== null) {
-      return this.textReaderInit;
-    }
-    const params: TextReader.ReaderParam = {
+    if (id !== this.requestId) { return false; }
+    const settings: TextReader.ReaderParam = {
       isVoiceBrandVisible: false,
-      // 1 = 离线合成：回复文本不出设备
       online: 1,
-      // entry/phone 都已声明 KEEP_BACKGROUND_RUNNING（权限面不变）
       keepBackgroundRunning: true,
       isMinibarNeeded: true
     };
     try {
-      this.textReaderInit = TextReader.init(context, params).then((): boolean => {
-        this.textReaderReady = true;
-        hilog.info(DOMAIN, TAG, 'TextReader 已初始化');
-        return true;
-      }).catch((e: BusinessError): boolean => {
-        hilog.warn(DOMAIN, TAG, 'TextReader.init 失败，降级 textToSpeech：%{public}s', e.message);
-        this.textReaderInit = null;
-        return false;
-      });
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'TextReader.init 同步失败，降级 textToSpeech：%{public}s',
-        (err as BusinessError).message);
-      this.textReaderInit = null;
-      return Promise.resolve(false);
+      await TextReader.init(context, settings);
+      ReadAloud.textReaderOwner = this;
+      TextReader.on('stateChange', this.onReaderState);
+      hilog.info(DOMAIN, TAG, 'TextReader 已初始化');
+      return true;
+    } catch (_) {
+      hilog.warn(DOMAIN, TAG, 'TextReader.init 失败，使用 TTS');
+      await this.releaseTextReader();
+      return false;
     }
-    return this.textReaderInit;
   }
 
-  private startTextReader(context: common.UIAbilityContext, text: string, requestId: string): void {
-    this.ensureTextReader(context).then((ready: boolean): void => {
-      if (!ready) {
-        this.startFallback(text, requestId);
-        return;
-      }
-      const title: TextReader.TextInfo = { text: 'DSHM 回答', isClickable: false };
-      const info: TextReader.ReadInfo = {
-        id: requestId,
-        title: title,
-        bodyInfo: text
-      };
-      const list: TextReader.ReadInfo[] = [info];
-      const params: TextReader.StartParams = { startPercent: 0 };
-      try {
-        TextReader.start(list, requestId, params).catch((e: BusinessError): void => {
-          hilog.warn(DOMAIN, TAG, 'TextReader.start 失败，降级 textToSpeech：%{public}s', e.message);
-          this.startFallback(text, requestId);
-        });
-      } catch (err) {
-        hilog.warn(DOMAIN, TAG, 'TextReader.start 同步失败，降级 textToSpeech：%{public}s',
-          (err as BusinessError).message);
-        this.startFallback(text, requestId);
-      }
-    });
+  private async releaseTextReader(): Promise<void> {
+    if (ReadAloud.textReaderOwner !== this) { return; }
+    ReadAloud.textReaderOwner = undefined;
+    this.nativeRequest = '';
+    this.nativeStarted = false;
+    try {
+      TextReader.off('stateChange', this.onReaderState);
+    } catch (_) {
+      hilog.debug(DOMAIN, TAG, 'TextReader.off 调用失败');
+    }
+    try {
+      await TextReader.release();
+    } catch (_) {
+      hilog.debug(DOMAIN, TAG, 'TextReader.release 调用失败');
+    }
   }
 
-  /** 无面板兜底：Core Speech Kit 直接合成并播报（离线、中文） */
-  private startFallback(text: string, requestId: string): void {
-    const clipped: string = text.length > TTS_MAX_CHARS ? text.substring(0, TTS_MAX_CHARS) : text;
-    if (this.ttsEngine !== null) {
-      this.speakWithEngine(this.ttsEngine, clipped, requestId);
+  private async startTextReader(context: common.UIAbilityContext, text: string, id: string,
+    title?: string): Promise<void> {
+    if (id !== this.requestId) { return; }
+    const ready = await this.openTextReader(context, id);
+    if (id !== this.requestId) { return; }
+    if (!ready) {
+      this.startFallback(text, id);
       return;
     }
-    /*
-     * 【先解析音色再建引擎】listVoices 是异步的，但只读一次并缓存（见 resolveXiaoyiPerson），
-     * 首次朗读多一次本机查询（毫秒级），换来"设备有小艺音色就用小艺"；后续朗读零额外成本。
-     * 任何一步失败都按 13 号推荐音色继续，不会因为音色问题而不出声。
-     */
+    this.nativeRequest = id;
+    this.nativeStarted = false;
+    const heading: TextReader.TextInfo = { text: title || 'DSHM 回答', isClickable: false };
+    const article: TextReader.ReadInfo = { id: id, title: heading, bodyInfo: text };
+    const params: TextReader.StartParams = { startPercent: 0 };
     try {
-      resolveXiaoyiPerson().then((person: number): void => {
-        const params: textToSpeech.CreateEngineParams = {
-          language: 'zh-CN',
-          person: person,
-          online: 1
-        };
-        textToSpeech.createEngine(params).then((engine: textToSpeech.TextToSpeechEngine): void => {
-          this.ttsEngine = engine;
-          engine.setListener({
-            onStart: (_requestId: string, _response: textToSpeech.StartResponse): void => {
-            },
-            onComplete: (_requestId: string, _response: textToSpeech.CompleteResponse): void => {
-            },
-            onStop: (_requestId: string, _response: textToSpeech.StopResponse): void => {
-            },
-            onError: (_requestId: string, errorCode: number, errorMessage: string): void => {
-              hilog.warn(DOMAIN, TAG, 'TTS 错误 %{public}d：%{public}s', errorCode, errorMessage);
-            }
-          });
-          this.speakWithEngine(engine, clipped, requestId);
-        }).catch((e: BusinessError): void => {
-          hilog.warn(DOMAIN, TAG, 'TTS 引擎创建失败：%{public}s', e.message);
-        });
-      }).catch((e: BusinessError): void => {
-        hilog.warn(DOMAIN, TAG, '音色解析失败（不应发生）：%{public}s', e.message);
-      });
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'TTS 引擎创建同步失败：%{public}s', (err as BusinessError).message);
+      await TextReader.start([article], id, params);
+      if (id === this.requestId) { hilog.info(DOMAIN, TAG, 'TextReader.start 完成'); }
+    } catch (_) {
+      this.nativeRequest = '';
+      if (id !== this.requestId) { return; }
+      hilog.warn(DOMAIN, TAG, 'TextReader.start 失败，使用 TTS');
+      await this.releaseTextReader();
+      this.startFallback(text, id);
     }
   }
 
-  private speakWithEngine(engine: textToSpeech.TextToSpeechEngine, text: string, requestId: string): void {
+  private async startFallback(text: string, id: string): Promise<void> {
+    if (id !== this.requestId) { return; }
+    const engine = await this.getEngine();
+    if (id !== this.requestId) { return; }
+    if (engine === undefined) {
+      this.finish(id, true);
+      return;
+    }
+    const params: textToSpeech.SpeakParams = { requestId: id };
     try {
-      const params: textToSpeech.SpeakParams = { requestId: requestId };
-      engine.speak(text, params);
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'TTS.speak 失败：%{public}s', (err as BusinessError).message);
+      engine.speak(text.substring(0, TTS_MAX_CHARS), params);
+    } catch (_) {
+      hilog.warn(DOMAIN, TAG, 'TTS.speak 调用失败');
+      this.finish(id, true);
+    }
+  }
+
+  private getEngine(): Promise<textToSpeech.TextToSpeechEngine | undefined> {
+    if (this.engine !== undefined) { return Promise.resolve(this.engine); }
+    if (this.engineInit !== undefined) { return this.engineInit; }
+    const generation = this.engineGeneration;
+    this.engineInit = this.createEngine(generation).finally((): void => {
+      if (this.engineGeneration === generation) { this.engineInit = undefined; }
+    });
+    return this.engineInit;
+  }
+
+  private async createEngine(generation: number): Promise<textToSpeech.TextToSpeechEngine | undefined> {
+    let engine: textToSpeech.TextToSpeechEngine | undefined;
+    try {
+      const person = await resolveXiaoyiPerson();
+      if (this.engineGeneration !== generation) { return undefined; }
+      const params: textToSpeech.CreateEngineParams = { language: 'zh-CN', person: person, online: 1 };
+      engine = await textToSpeech.createEngine(params);
+      if (this.engineGeneration !== generation) {
+        this.shutdown(engine);
+        return undefined;
+      }
+      const listener: textToSpeech.SpeakListener = {
+        onStart: (id: string, _response: textToSpeech.StartResponse): void => {
+          if (id === this.requestId) { hilog.info(DOMAIN, TAG, 'TTS 已开始'); }
+        },
+        onComplete: (id: string, response: textToSpeech.CompleteResponse): void => {
+          if (response.type === 1) { this.finish(id); }
+        },
+        onStop: (id: string, _response: textToSpeech.StopResponse): void => { this.finish(id); },
+        onError: (id: string, code: number, _message: string): void => {
+          hilog.warn(DOMAIN, TAG, 'TTS 错误 %{public}d', code);
+          this.finish(id, true);
+        }
+      };
+      engine.setListener(listener);
+      this.engine = engine;
+      return engine;
+    } catch (_) {
+      if (engine !== undefined) { this.shutdown(engine); }
+      hilog.warn(DOMAIN, TAG, 'TTS 引擎创建失败');
+      return undefined;
+    }
+  }
+
+  private shutdown(engine: textToSpeech.TextToSpeechEngine): void {
+    try {
+      engine.shutdown();
+    } catch (_) {
+      hilog.debug(DOMAIN, TAG, 'TTS.shutdown 调用失败');
     }
   }
 }

@@ -3,6 +3,7 @@ import { mimeTypeForName } from 'platform';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopReferenceAction } from './DesktopReferenceActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopSecretRange, desktopSecretRanges } from './DesktopSecretMask';
 
 export interface DesktopReferenceRun {
   kind: string;
@@ -10,6 +11,7 @@ export interface DesktopReferenceRun {
   label: string;
   path: string;
   start: number;
+  masked?: string;
 }
 
 function textRun(raw: string, start: number): DesktopReferenceRun {
@@ -20,9 +22,21 @@ export function desktopReferenceRuns(text: string, sessionLabels: string[]): Des
   const runs: DesktopReferenceRun[] = [];
   const wire = /@\[((?:\\.|[^\\\]\r\n])+)\]\(dsh-session:[A-Za-z0-9_-]+\)/uy;
   const pathToken = /@"[^"\r\n]+"|@[^\s"]+/uy;
+  const secrets: DesktopSecretRange[] = desktopSecretRanges(text);
+  let secretIndex = 0;
   let emitted = 0;
   let next = text.indexOf('@');
-  while (next >= 0) {
+  while (next >= 0 || secretIndex < secrets.length) {
+    const secret = secrets[secretIndex];
+    if (secret !== undefined && (next < 0 || secret.start <= next)) {
+      if (secret.start > emitted) { runs.push(textRun(text.slice(emitted, secret.start), emitted)); }
+      runs.push({ kind: 'secret', raw: text.slice(secret.start, secret.end), label: '', path: '',
+        start: secret.start, masked: secret.masked });
+      secretIndex++;
+      emitted = secret.end;
+      next = text.indexOf('@', emitted);
+      continue;
+    }
     wire.lastIndex = next;
     const explicit = wire.exec(text);
     let part: DesktopReferenceRun | undefined;
@@ -50,7 +64,9 @@ export function desktopReferenceRuns(text: string, sessionLabels: string[]): Des
         }
       }
     }
-    if (part === undefined) {
+    // A reference overlapping a credential is plain text outside the credential's mask.
+    // This also keeps the secret out of a workspace reference lookup.
+    if (part === undefined || (secret !== undefined && next + part.raw.length > secret.start)) {
       next = text.indexOf('@', next + 1);
       continue;
     }
@@ -65,18 +81,20 @@ export function desktopReferenceRuns(text: string, sessionLabels: string[]): Des
 
 @Component
 export struct DesktopReferenceMessage {
-  @Prop @Watch('refresh') text: string = '';
+  @Prop @Watch('resetMessage') text: string = '';
   @Prop @Watch('refresh') referenceLabels: string[] = [];
-  @Prop @Watch('refresh') sessionId: string = '';
+  @Prop @Watch('resetMessage') sessionId: string = '';
   @Prop nodeKey: string = '';
   @Prop bodySize: number = 14;
   @Prop bodyFamily: string = '';
+  @Prop codeFamily: string = 'monospace';
   host?: DesktopHostActions;
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   @Prop canAddReference: boolean = false;
   onAction: (action: DesktopReferenceAction, path: string, name: string) => void =
     (_action: DesktopReferenceAction, _path: string, _name: string): void => {};
   @State private runs: DesktopReferenceRun[] = [];
+  @State private revealed: number[] = [];
   @State private menuTarget: DesktopReferenceRun | undefined = undefined;
   @State private menuShown: boolean = false;
   @State private menuAnchor: Position = { x: 0, y: 0 };
@@ -88,6 +106,7 @@ export struct DesktopReferenceMessage {
   private visible: boolean = false;
   private requested: boolean = false;
   private revision: number = 0;
+  private messageRevision: number = 0;
 
   aboutToAppear(): void {
     this.active = true;
@@ -100,7 +119,14 @@ export struct DesktopReferenceMessage {
     this.menuShown = false;
     this.pendingMenuAction = undefined;
     this.menuTarget = undefined;
+    this.revealed = [];
     this.revision++;
+  }
+
+  private resetMessage(): void {
+    this.messageRevision++;
+    this.revealed = [];
+    this.refresh();
   }
 
   private refresh(): void {
@@ -147,6 +173,25 @@ export struct DesktopReferenceMessage {
     return run.kind === 'session' || (run.path !== '' && this.confirmed.includes(run.path));
   }
 
+  private isRevealed(run: DesktopReferenceRun): boolean { return this.revealed.includes(run.start); }
+
+  private displaySecret(run: DesktopReferenceRun): string {
+    return this.isRevealed(run) ? run.raw : run.masked ?? '';
+  }
+
+  private toggleSecret(run: DesktopReferenceRun): void {
+    if (!this.active) { return; }
+    this.controller.closeSelectionMenu();
+    this.revealed = this.isRevealed(run) ?
+      this.revealed.filter((start: number): boolean => start !== run.start) : this.revealed.concat(run.start);
+  }
+
+  private runKey(run: DesktopReferenceRun): string {
+    // Never put a hidden secret in the identity of an ArkUI node.
+    return run.kind === 'secret' ? String(run.start) + ':secret:' + this.messageRevision :
+      String(run.start) + ':' + run.raw;
+  }
+
   private fileAt(x: number, y: number): DesktopReferenceRun | undefined {
     if (!this.active) { return undefined; }
     const context = this.getUIContext();
@@ -155,6 +200,10 @@ export struct DesktopReferenceMessage {
     const layout = this.controller.getLayoutManager();
     let start = 0;
     for (const run of this.runs) {
+      if (run.kind === 'secret') {
+        start += this.displaySecret(run).length + 1;
+        continue;
+      }
       const chip = this.showsChip(run);
       // The inline image occupies one text position, followed by the label's leading space.
       const end = start + (chip ? run.label.length + 2 : run.raw.length);
@@ -245,12 +294,22 @@ export struct DesktopReferenceMessage {
       Stack({ alignContent: Alignment.TopStart }) {
         Text(undefined, { controller: this.controller }) {
           ForEach(this.runs, (run: DesktopReferenceRun): void => {
-            if (this.showsChip(run)) {
+            if (run.kind === 'secret') {
+              Span(this.isRevealed(run) ? run.raw : run.masked ?? '')
+                .fontSize(this.bodySize * 0.875).fontFamily(this.codeFamily)
+              ImageSpan(this.isRevealed(run) ? $r('app.media.dsh_secret_eye_off') : $r('app.media.dsh_secret_eye'))
+                .size({ width: Math.max(14, this.bodySize * 0.875), height: Math.max(14, this.bodySize * 0.875) })
+                .verticalAlign(ImageSpanAlignment.CENTER)
+                .key(this.nodeKey + '-secretToggle-' + run.start)
+                .accessibilityText(this.isRevealed(run) ? $r('app.string.desktop_secret_hide') :
+                  $r('app.string.desktop_secret_reveal'))
+                .onClick((): void => { this.toggleSecret(run); })
+            } else if (this.showsChip(run)) {
               this.Chip(run)
             } else {
               Span(run.raw)
             }
-          }, (run: DesktopReferenceRun): string => String(run.start) + ':' + run.raw)
+          }, (run: DesktopReferenceRun): string => this.runKey(run))
         }.key(this.nodeKey).fontSize(this.bodySize).fontFamily(this.bodyFamily)
         .fontColor($r('sys.color.font_primary')).copyOption(CopyOptions.LocalDevice)
           .onMouse((event: MouseEvent): void => {

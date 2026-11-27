@@ -37,9 +37,11 @@ import { DesktopGoalBar } from './DesktopGoalBar';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
 import { DesktopReferenceMessage } from './DesktopReferenceMessage';
+import { desktopSecretRanges } from './DesktopSecretMask';
 import { DesktopReferenceAction } from './DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
 import { DesktopReplyActions } from './DesktopReplyActions';
+import type { DesktopReplyMedia } from './DesktopReplyMedia';
 import { DesktopVoiceInput } from './DesktopVoiceInput';
 import type { DesktopVoiceInsertion } from './DesktopVoiceInput';
 import { DesktopWorkflowPane } from './DesktopWorkflowPane';
@@ -63,6 +65,7 @@ import type { DesktopComposerDraft, DesktopDraftReference } from './DesktopDraft
 export struct DesktopConversationPane {
   host?: DesktopHostActions;
   cordis?: DesktopCordisRuntime;
+  replyMedia?: DesktopReplyMedia;
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop sessionSummaries: SessionListItem[] = [];
   @Prop embedded: boolean = false;
@@ -1085,10 +1088,13 @@ export struct DesktopConversationPane {
             }, (row: DesktopMediaAttachment, index: number): string => row.id + ':' + index)
           }.width('100%').constraintSize({ maxWidth: '82%' })
         }
-        if (item.body.includes('@') || referenceLabels.length > 0) {
+        if (item.body.includes('@') || referenceLabels.length > 0 || desktopSecretRanges(item.body).length > 0) {
           DesktopReferenceMessage({ text: item.body, referenceLabels: referenceLabels,
             bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily,
-            sessionId: this.sessionId, host: this.host, nodeKey: 'desktopInlineReferences-' + item.id,
+            codeFamily: this.typography.codeFamily,
+            sessionId: this.sessionId, host: this.host,
+            nodeKey: (item.body.includes('@') || referenceLabels.length > 0 ?
+              'desktopInlineReferences-' : 'desktopUserMessage-') + item.id,
             canAddReference: this.acceptsAttachments(), onFile: this.onArtifactFile, onAction: this.onReferenceFileAction })
         } else if (item.body) {
           Text(item.body).key('desktopUserMessage-' + item.id)
@@ -1364,7 +1370,8 @@ export struct DesktopConversationPane {
                   } })
               } else if (item.replyTail !== undefined) {
                 Column({ space: 10 }) {
-                  DesktopReplyActions({ messageId: item.replyTail.messageId, text: desktopHideActionCardFences(item.replyTail.text),
+                  DesktopReplyActions({ messageId: item.replyTail.messageId, scopeId: this.snapshot?.sessionId ?? '',
+                    replyMedia: this.replyMedia, text: desktopHideActionCardFences(item.replyTail.text),
                     timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
                     canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
                     onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },

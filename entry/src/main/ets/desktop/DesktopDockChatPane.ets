@@ -1,5 +1,6 @@
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from './DesktopConversationPane';
+import type { DesktopReplyMedia } from './DesktopReplyMedia';
 import { getString } from 'connection';
 import { EMPTY_DESKTOP_DRAFT, sameDesktopDraft } from './DesktopDraftReferences';
 import { desktopMenuOptions } from './DesktopMenuOptions';
@@ -54,6 +55,7 @@ export interface DesktopDockChatActions {
 export struct DesktopDockChatPane {
   data?: DesktopWorkspaceData;
   actions?: DesktopDockChatActions;
+  replyMedia?: DesktopReplyMedia;
   @Prop target: DesktopDockChatTarget | undefined = undefined;
   @Prop title: string = '';
   @Prop directory: string = '';
@@ -167,7 +169,7 @@ export struct DesktopDockChatPane {
   build() {
     Column() {
       if (this.snapshot !== undefined && this.target !== undefined) {
-        DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis,
+        DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis, replyMedia: this.replyMedia,
           snapshot: this.snapshot, embedded: true,
           title: this.title, sessionDirectory: this.directory, appearance: this.appearance, typography: this.typography,
           sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, forking: this.forking,

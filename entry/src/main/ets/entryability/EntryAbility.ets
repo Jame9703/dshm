@@ -75,6 +75,7 @@ import {
   LocalPrefs,
   NotificationCenter,
   parseWindowParams,
+  ReadAloud,
   readDeviceFacts,
   registerWindow,
   relabelWindow,
@@ -1524,6 +1525,7 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
       this.launchParams.kind === WindowKind.MAIN;
     let logTaskWatchStart: boolean = false;
     if (this.launchParams.kind === WindowKind.MAIN) {
+      if (desktopForced) { ReadAloud.attachWindow(windowStage); }
       // 主窗 stage 已就绪：`dsh/home` 此时必已可写，再写一次作为 onForeground 的兜底。
       writeAppLifecycle(this.context.filesDir, true, 'onWindowStageCreate');
       this.publishRememberedHost();

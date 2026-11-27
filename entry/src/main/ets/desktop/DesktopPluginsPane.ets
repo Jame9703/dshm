@@ -4,6 +4,9 @@ import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
+import { DESKTOP_VOICE_BUNDLE, DesktopVoiceSettings } from './DesktopVoiceSettings';
+import { desktopVoiceNeedsInstallation, desktopVoiceSelectedProvider, readDesktopVoiceCatalog } from './DesktopVoiceSettingsModel';
+import { showDesktopVoiceSetup } from './DesktopVoiceSettingsPrompt';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
 import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
@@ -100,6 +103,9 @@ export struct DesktopPluginsPane {
   private connectorOpening: boolean = false;
   private activationBundle: string = '';
   private activationShowing: string = '';
+  private voiceSetupGeneration: number = 0;
+  private stopVoiceSetupFollow?: () => void;
+  private voiceSetupTimer: number = -1;
 
   aboutToAppear(): void {
     this.active = true;
@@ -117,6 +123,7 @@ export struct DesktopPluginsPane {
     this.stopAccounts = undefined;
     this.closeInstall();
     this.closeConnectorDialog();
+    this.stopVoiceSetup();
   }
 
   private requestedBundleChanged(): void {
@@ -314,8 +321,49 @@ export struct DesktopPluginsPane {
     }
   }
 
+  private stopVoiceSetup(): void {
+    ++this.voiceSetupGeneration;
+    this.stopVoiceSetupFollow?.();
+    this.stopVoiceSetupFollow = undefined;
+    clearTimeout(this.voiceSetupTimer);
+    this.voiceSetupTimer = -1;
+  }
+
+  private openVoiceActivation(): void {
+    this.stopVoiceSetup();
+    const generation = this.voiceSetupGeneration;
+    this.voiceSetupTimer = setTimeout((): void => { this.stopVoiceSetup(); }, 30000);
+    const stop = this.host?.watch('speech/follow', {}, {
+      onItem: (frame: Object): void => {
+        if (!this.active || generation !== this.voiceSetupGeneration) { return; }
+        const provider = desktopVoiceSelectedProvider(readDesktopVoiceCatalog(frame));
+        if (provider === undefined || provider.preparation.phase === 'checking') { return; }
+        this.stopVoiceSetup();
+        if (desktopVoiceNeedsInstallation(provider)) {
+          showDesktopVoiceSetup(this.getUIContext(), true, (): void => { this.openBundle(DESKTOP_VOICE_BUNDLE); });
+        }
+      },
+      onError: (_code: string, _message: string): void => {
+        if (generation === this.voiceSetupGeneration) { this.stopVoiceSetup(); }
+      },
+      onEnd: (): void => {
+        if (generation === this.voiceSetupGeneration) { this.stopVoiceSetup(); }
+      }
+    });
+    if (generation === this.voiceSetupGeneration) { this.stopVoiceSetupFollow = stop; }
+    else { stop?.(); }
+  }
+
   private updateActivation(): void {
-    if (!this.active || !this.connectorAccounts.linked) { return; }
+    if (!this.active) { return; }
+    if (this.activationBundle === DESKTOP_VOICE_BUNDLE) {
+      if (!this.bundles.some((row: DesktopPluginRow): boolean => row.id === DESKTOP_VOICE_BUNDLE && row.enabled)) { return; }
+      if (this.installDialog >= 0) { this.closeInstall(); return; }
+      this.activationBundle = '';
+      this.openVoiceActivation();
+      return;
+    }
+    if (!this.connectorAccounts.linked) { return; }
     if (this.activationShowing && this.connectorAccounts.byBundle(this.activationShowing)?.phase !== 'disconnected') {
       this.closeConnectorDialog();
     }
@@ -421,6 +469,7 @@ export struct DesktopPluginsPane {
       result.push({ value: row.enabled ? '停用' : '启用', action: (): void => {
         if (this.tab === 'bundles') {
           if (row.enabled && this.activationBundle === row.id) { this.activationBundle = ''; }
+          if (row.enabled && row.id === DESKTOP_VOICE_BUNDLE) { this.stopVoiceSetup(); }
           this.mutate('pluginManager/setBundleEnabled', { 'name': row.id, 'enabled': !row.enabled }, row.enabled ? '' : row.id);
         } else {
           this.mutate('pluginManager/setPluginEnabled', { 'id': row.id, 'enabled': !row.enabled });
@@ -517,6 +566,10 @@ export struct DesktopPluginsPane {
         onAction: (account: DesktopConnectorAccount, action: DesktopConnectorAction): void => {
           this.accountAction(account, action);
         } })
+      if (this.detailName === DESKTOP_VOICE_BUNDLE &&
+        this.bundles.some((row: DesktopPluginRow): boolean => row.id === this.detailName && row.enabled)) {
+        DesktopVoiceSettings({ host: this.host })
+      }
       if (this.detailLoading) {
         LoadingProgress().width(22).height(22)
       } else if (this.detailError) {

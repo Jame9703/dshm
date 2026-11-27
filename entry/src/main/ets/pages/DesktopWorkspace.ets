@@ -35,6 +35,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
+import { DesktopReplyMedia } from '../desktop/DesktopReplyMedia';
 import type { DesktopDockChatActions } from '../desktop/DesktopDockChatPane';
 import { EMPTY_DESKTOP_DRAFT } from '../desktop/DesktopDraftReferences';
 import type { DesktopComposerDraft } from '../desktop/DesktopDraftReferences';
@@ -259,6 +260,7 @@ struct DesktopWorkspace {
   private selectedSubagent?: DesktopSubagentEntry;
   private readonly subagentAddresses: Map<string, DesktopSubagentEntry> = new Map();
   private data?: DesktopWorkspaceData;
+  private readonly replyMedia = new DesktopReplyMedia();
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
   private accountOpening: boolean = false;
@@ -315,6 +317,7 @@ struct DesktopWorkspace {
   }
 
   aboutToDisappear(): void {
+    this.replyMedia.release();
     this.active = false;
     this.pageActive = false;
     this.pageVisible = false;
@@ -2922,7 +2925,7 @@ struct DesktopWorkspace {
     Row() {
       if (this.sessionId.length > 0) {
         DesktopConversationPane({
-          host: this.data?.actions,
+          host: this.data?.actions, replyMedia: this.replyMedia,
           cordis: this.data?.cordis,
           snapshot: this.chat,
           sessionSummaries: this.sessionSummaries,
@@ -3424,7 +3427,8 @@ struct DesktopWorkspace {
         document: this.dockStoredTab(index, tab.id)?.plan, shown: this.dockTabShown(index, tab.id),
         onClosePreview: (): void => this.closeDockTab(index, tab.id) })
     } else if (tab.kind === DesktopDockKind.CHAT) {
-      DesktopDockChatPane({ data: this.data, actions: this.dockChatActions(this.data), target: tab.chat,
+      DesktopDockChatPane({ data: this.data, actions: this.dockChatActions(this.data), replyMedia: this.replyMedia,
+        target: tab.chat,
         title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
         busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,
         appearance: this.appearance, typography: this.typography, summaries: this.sessionSummaries })

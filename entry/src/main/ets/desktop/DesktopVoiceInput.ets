@@ -1,16 +1,18 @@
 import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { getArray, getNumber, getRecord, getString } from 'connection';
+import { getString } from 'connection';
 import { HMS_SAMPLE_RATE } from 'appstate';
-import { dialogMaterial } from 'platform';
-import { DesktopVoiceCapture } from '../speech/DesktopVoiceCapture';
+import { DesktopVoiceCapture, DesktopVoiceMicrophoneUnavailable } from '../speech/DesktopVoiceCapture';
 import { VOICE_WAV_HEADER_BYTES } from '../speech/VoiceWave';
+import { desktopVoiceIsReady, desktopVoiceNeedsInstallation, desktopVoiceSelectedProvider,
+  readDesktopVoiceCatalog } from './DesktopVoiceSettingsModel';
+import { readDesktopVoiceMicrophone } from './DesktopVoiceSettingsPreferences';
+import { showDesktopVoiceSetup } from './DesktopVoiceSettingsPrompt';
 import type { DesktopComposerDraft } from './DesktopDraftReferences';
 import type { DesktopHostActions } from './DesktopHostActions';
 
 const MIC: Permissions = 'ohos.permission.MICROPHONE';
 const PCM_BYTES_PER_SECOND = HMS_SAMPLE_RATE * 2;
-const READY: string[] = ['ready', 'standby', 'waking'];
 const WAVEFORM_LENGTH = 15;
 
 export interface DesktopVoiceInsertion {
@@ -66,16 +68,9 @@ export struct DesktopVoiceInput {
     this.phase = 'feedback';
   }
 
-  private setup(): void {
+  private setup(install: boolean = false): void {
     this.cancel();
-    this.getUIContext().showAlertDialog({
-      title: $r('app.string.desktop_voice_setup'),
-      message: $r('app.string.desktop_voice_setup_detail'),
-      systemMaterial: dialogMaterial(),
-      autoCancel: true,
-      primaryButton: { value: $r('app.string.desktop_voice_cancel'), action: (): void => {} },
-      secondaryButton: { value: $r('app.string.desktop_voice_settings'), action: this.onSettings }
-    });
+    showDesktopVoiceSetup(this.getUIContext(), install, this.onSettings);
   }
 
   private async start(): Promise<void> {
@@ -88,17 +83,14 @@ export struct DesktopVoiceInput {
     try {
       const result = await this.host.call('speech/catalog');
       if (this.generation !== generation) { return; }
-      if (!result.ok) { this.setup(); return; }
-      const selection = getRecord(result.value, 'selection');
-      const id = getString(selection, 'providerId') ?? '';
-      const language = getString(selection, 'language') ?? '';
-      const provider = getArray(result.value, 'providers')?.find((item: Object): boolean => getString(item, 'id') === id);
-      if (!id || !language || !READY.includes(getString(getRecord(provider, 'preparation'), 'phase') ?? '')) {
-        this.setup();
+      const catalog = result.ok ? readDesktopVoiceCatalog(result.value) : undefined;
+      const provider = desktopVoiceSelectedProvider(catalog);
+      if (catalog === undefined || !catalog.language || !desktopVoiceIsReady(provider?.preparation.phase)) {
+        this.setup(desktopVoiceNeedsInstallation(provider));
         return;
       }
-      const maxDuration = Math.min(120, getNumber(result.value, 'maxDurationSeconds') ?? 120);
-      const byteLimit = Math.min(4 * 1024 * 1024, getNumber(result.value, 'maxAudioBytes') ?? 4 * 1024 * 1024);
+      const maxDuration = Math.min(120, catalog.maxDurationSeconds);
+      const byteLimit = Math.min(4 * 1024 * 1024, catalog.maxAudioBytes);
       const maxBytes = Math.min(Math.floor(maxDuration * PCM_BYTES_PER_SECOND), byteLimit - VOICE_WAV_HEADER_BYTES);
       if (!Number.isFinite(maxBytes) || maxBytes < PCM_BYTES_PER_SECOND / 5) {
         this.fail($r('app.string.desktop_voice_failed'));
@@ -111,26 +103,31 @@ export struct DesktopVoiceInput {
       if (this.generation !== generation) { return; }
       if (permission.authResults[0] !== 0) { this.fail($r('app.string.desktop_voice_permission')); return; }
       if (!this.foreground) { this.cancel(); return; }
-      this.provider = id;
-      this.language = language;
+      this.provider = catalog.providerId;
+      this.language = catalog.language;
       this.levels = new Array<number>(WAVEFORM_LENGTH).fill(0);
-      const capture = new DesktopVoiceCapture((): void => {
-        if (this.generation === generation) { this.cancel(); }
+      const capture = new DesktopVoiceCapture((microphoneLost?: boolean): void => {
+        if (this.generation !== generation) { return; }
+        if (microphoneLost) { this.fail($r('app.string.desktop_voice_device_lost')); }
+        else { this.cancel(); }
       });
       this.capture = capture;
       const started = await capture.start(maxBytes, (value: number): void => {
         if (this.generation === generation && this.phase === 'recording') {
           this.levels = this.levels.slice(1).concat(value);
         }
-      });
+      }, readDesktopVoiceMicrophone(ability));
       if (this.generation !== generation) { return; }
       if (!started) { this.fail($r('app.string.desktop_voice_busy')); return; }
       if (!this.foreground) { this.cancel(); return; }
       this.phase = 'recording';
       this.status = $r('app.string.desktop_voice_recording');
       this.timeout = setTimeout((): void => { this.finish(); }, maxBytes / PCM_BYTES_PER_SECOND * 1000);
-    } catch (_) {
-      if (this.generation === generation) { this.fail($r('app.string.desktop_voice_failed')); }
+    } catch (error) {
+      if (this.generation === generation) {
+        this.fail(error instanceof DesktopVoiceMicrophoneUnavailable ? $r('app.string.desktop_voice_device_lost') :
+          $r('app.string.desktop_voice_failed'));
+      }
     }
   }
 
