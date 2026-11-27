@@ -125,7 +125,7 @@ export class RemoteMux {
   private state: MuxState = MuxState.CLOSED;
   private streams: Map<string, LogicalStream> = new Map<string, LogicalStream>();
   private disposed: boolean = false;
-  private openWaiters: Array<(ok: boolean, reason?: string) => void> = [];
+  private openWaiters: Array<(ok: boolean) => void> = [];
   private lastError?: string;
   /**
    * 物理连接失效时的通知回调（由 `Connection` 注册）。
@@ -195,7 +195,7 @@ export class RemoteMux {
       return true;
     }
     if (this.state === MuxState.CONNECTING) {
-      return await this.waitForOpen(timeoutMs);
+      return await this.waitForOpen();
     }
 
     const socket: webSocket.WebSocket = webSocket.createWebSocket();
@@ -203,8 +203,22 @@ export class RemoteMux {
     this.state = MuxState.CONNECTING;
     this.lastError = undefined;
 
-    socket.on('message', (err: BusinessError, data: string | ArrayBuffer) => {
+    // connect() 只表示系统接受了请求。收到 open 后才能发送首批逻辑流。
+    socket.on('open', (err: BusinessError) => {
+      if (this.socket !== socket || this.state !== MuxState.CONNECTING) {
+        return;
+      }
       if (err !== undefined && err !== null && err.code !== 0) {
+        this.failHandshake(socket, `WebSocket 握手失败 code=${err.code}`);
+        return;
+      }
+      this.state = MuxState.OPEN;
+      this.lastError = undefined;
+      this.startLivenessProbe();
+      this.resolveOpenWaiters(true);
+    });
+    socket.on('message', (err: BusinessError, data: string | ArrayBuffer) => {
+      if (this.socket !== socket || !this.isOpen() || (err !== undefined && err !== null && err.code !== 0)) {
         return;
       }
       // 收到帧 = 链路活着的**证据**：撤销 error 记录，并让探活成功
@@ -215,11 +229,17 @@ export class RemoteMux {
       }
     });
     socket.on('close', (err: BusinessError, value: webSocket.CloseResult) => {
+      if (this.socket !== socket) {
+        return;
+      }
       const code: number = value === undefined || value === null ? 0 : value.code;
       const reason: string = value === undefined || value === null ? '' : (value.reason ?? '');
       this.onSocketClosed(`close code=${code}${reason.length > 0 ? ` reason=${reason}` : ''}${err !== undefined && err !== null && err.code !== 0 ? ` err=${err.code}` : ''}`);
     });
     socket.on('error', (err: BusinessError) => {
+      if (this.socket !== socket || this.state === MuxState.CLOSED) {
+        return;
+      }
       // 【`error` 事件不是「连接已断」——这是本文件最重要的一条实测结论】
       //
       // 设备内部探测（`entry/src/ohosTest/ets/test/MuxProbe.test.ets`，
@@ -321,49 +341,43 @@ export class RemoteMux {
       'DSHM-MUX connect url=%{public}s headerKeys=%{public}s cookieLen=%{public}d',
       target, Object.keys(header).join(','), cookie === undefined ? 0 : cookie.length);
 
+    const ready: Promise<boolean> = this.waitForOpen();
+    const timer: number = setTimeout((): void => {
+      this.failHandshake(socket, this.lastError ?? 'WebSocket 握手超时');
+    }, timeoutMs);
     try {
-      const opened: boolean = await socket.connect(target, options);
-      if (!opened) {
-        // 【诊断（E65）】WS 升级被 fence 拒 403 时，必须能区分"cookie 是空的"与
-        // "cookie 有值但没被发出去（ArkTS webSocket.connect 是否转发自定义 header）"。
-        // 不引入新导入：把结论并进 lastError，它会经 SessionHub.lastError 显示到
-        // `DSHM-AUTH connect 结果 … err=` 上。
-        this.lastError = `ws connect 返回 false（cookie=${cookie === undefined ? '无' : `${cookie.length}B`}）`;
-        this.state = MuxState.CLOSED;
-        this.resolveOpenWaiters(false, this.lastError);
-        return false;
-      }
-      this.state = MuxState.OPEN;
-      this.resolveOpenWaiters(true);
-      this.startLivenessProbe();
-      return true;
+      socket.connect(target, options).then((accepted: boolean): void => {
+        if (!accepted) {
+          this.failHandshake(socket, 'WebSocket 连接请求被拒绝');
+        }
+      }).catch((error: BusinessError): void => {
+        this.failHandshake(socket, 'WebSocket 连接请求失败 code=' + error.code + ' message=' + error.message);
+      });
     } catch (error) {
-      const businessError: BusinessError = error as BusinessError;
-      this.lastError = `ws connect 失败 code=${businessError.code} message=${businessError.message}`
-        + `（cookie=${cookie === undefined ? '无' : `${cookie.length}B`}）`;
-      this.state = MuxState.CLOSED;
-      this.resolveOpenWaiters(false, this.lastError);
-      return false;
+      this.failHandshake(socket, 'WebSocket 连接请求创建失败');
+    }
+    const opened: boolean = await ready;
+    clearTimeout(timer);
+    return opened && this.socket === socket && this.isOpen();
+  }
+
+  private failHandshake(socket: webSocket.WebSocket, reason: string): void {
+    if (this.socket === socket && this.state === MuxState.CONNECTING) {
+      this.socket = undefined;
+      this.onSocketClosed(reason);
+      socket.close().catch((): void => {});
     }
   }
 
-  private waitForOpen(timeoutMs: number): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const timer: number = setTimeout(() => {
-        resolve(false);
-      }, timeoutMs);
-      this.openWaiters.push((ok: boolean, reason?: string) => {
-        clearTimeout(timer);
-        resolve(ok);
-      });
-    });
+  private waitForOpen(): Promise<boolean> {
+    return new Promise<boolean>((resolve): void => { this.openWaiters.push(resolve); });
   }
 
-  private resolveOpenWaiters(ok: boolean, reason?: string): void {
+  private resolveOpenWaiters(ok: boolean): void {
     const waiters = this.openWaiters;
     this.openWaiters = [];
     for (let i = 0; i < waiters.length; i++) {
-      waiters[i](ok, reason);
+      waiters[i](ok);
     }
   }
 
@@ -536,15 +550,17 @@ export class RemoteMux {
     if (this.state === MuxState.CLOSED) {
       return;
     }
+    const wasOpen: boolean = this.state === MuxState.OPEN;
     this.state = MuxState.CLOSED;
+    this.lastError = reason;
     // 连接已死：停掉探活，否则计时器会在 CLOSED 之后继续跑并重复收尾
     this.stopLivenessProbe();
     // 把「底层已判死」这件事**向上传递**，否则上层会一直以为自己是 live
     const notify: ((reason: string) => void) | undefined = this.onSocketDead;
-    if (notify !== undefined) {
+    if (wasOpen && notify !== undefined) {
       notify(reason);
     }
-    this.resolveOpenWaiters(false, reason);
+    this.resolveOpenWaiters(false);
     const ids: string[] = [];
     this.streams.forEach((_value: LogicalStream, key: string) => {
       ids.push(key);
