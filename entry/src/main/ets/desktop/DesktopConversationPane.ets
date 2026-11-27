@@ -24,7 +24,7 @@ import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
-import { desktopMenuOptions } from './DesktopMenuOptions';
+import { desktopMenuOptions, desktopPluginEntryItems } from './DesktopMenuOptions';
 import { DesktopModelPicker } from './DesktopModelPicker';
 import { activeDesktopReference, desktopReferenceChoices, desktopReferenceCrumbs, desktopReferenceText,
   desktopFileReferenceInsertion, desktopSettledReference } from './DesktopReferences';
@@ -97,6 +97,8 @@ export struct DesktopConversationPane {
   onLoadModels: (refresh: boolean) => void = () => {};
   onModelsSettings: () => void = () => {};
   onPluginDetails: (name: string, title: string, description: string) => void = (): void => {};
+  onBrowsePlugins?: () => void;
+  onCreatePlugin?: () => void;
   onLoadCommands: () => void = () => {};
   onCommand: (name: string) => Promise<string> = (_name: string): Promise<string> => Promise.resolve('');
   onSelectModel: (selection: ModelSelection) => Promise<string> =
@@ -1216,6 +1218,15 @@ export struct DesktopConversationPane {
               { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
               .key('desktopOpenCompatSession').height(34).focusOnTouch(false).onClick(this.onWeb)
           }
+        }
+        if (!this.embedded && this.onCreatePlugin !== undefined) {
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.dsh_session_ellipsis')).width(13).height(13).supportSvg2(true).draggable(false)
+              .accessibilityLevel('no')
+          }.key('desktopConversationViewsMore').width(29).height(30).padding(0).focusOnTouch(false)
+          .accessibilityText($r('app.string.desktop_plugin_entry_more_views')).enabled(this.snapshot?.loading === false)
+          .bindMenu(desktopPluginEntryItems(this.onBrowsePlugins, this.onCreatePlugin),
+            desktopMenuOptions(Placement.BottomRight))
         }
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_session_ellipsis')).width(18).height(18).supportSvg2(true).draggable(false)

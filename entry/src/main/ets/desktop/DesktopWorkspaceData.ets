@@ -4,8 +4,9 @@ import { Connection, getArray, getRecord, getString, toStringArray } from 'conne
 import type { EventSink, StreamSink } from 'connection';
 import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
-  SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
-import { DesktopHostActions } from './DesktopHostActions';
+  PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
+  WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
+import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
 import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
@@ -27,10 +28,16 @@ export interface DesktopForkResult {
   problem: string;
 }
 
+export interface DesktopSessionCreation {
+  id: string;
+  problem: string;
+}
+
 export interface DesktopWorkspaceRow {
   id: string;
   path: string;
   title: string;
+  createdAt: string;
   sessionIds: string[];
 }
 
@@ -59,6 +66,7 @@ function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
     id: id,
     path: getString(raw, 'path') ?? '',
     title: getString(raw, 'title') ?? '',
+    createdAt: getString(raw, 'createdAt') ?? '',
     sessionIds: toStringArray(getArray(raw, 'sessionIds') ?? [])
   };
 }
@@ -264,20 +272,56 @@ export class DesktopWorkspaceData {
     return getString(workspace, 'workspaceId') ?? '';
   }
 
-  async createSession(workspaceId: string): Promise<string> {
-    const args = sessionCreatePayload(workspaceId, '', '', '');
+  creatorWorkspace(sessionId: string): string {
+    const owner = this.workspaces.find((row: DesktopWorkspaceRow): boolean => row.sessionIds.includes(sessionId));
+    if (owner !== undefined) { return owner.id; }
+    const activity: Map<string, number> = new Map();
+    for (const session of this.sessions) { activity.set(session.id, session.updatedAt); }
+    let chosen = '';
+    let newest = Number.NEGATIVE_INFINITY;
+    for (const workspace of this.workspaces) {
+      let last = Number.NEGATIVE_INFINITY;
+      for (const id of workspace.sessionIds) { last = Math.max(last, activity.get(id) ?? Number.NEGATIVE_INFINITY); }
+      if (last === Number.NEGATIVE_INFINITY) {
+        const created = Date.parse(workspace.createdAt);
+        if (Number.isFinite(created)) { last = created; }
+      }
+      if (!chosen || last > newest) { chosen = workspace.id; newest = last; }
+    }
+    return chosen;
+  }
+
+  private reusableBlank(workspaceId: string, preset: string): string {
+    const workspace = this.workspaces.find((row: DesktopWorkspaceRow): boolean => row.id === workspaceId);
+    if (workspace === undefined) { return ''; }
+    const blank = this.sessions.find((session: SessionListItem): boolean => {
+      if (!session.blank || session.cwd !== workspace.path || !workspace.sessionIds.includes(session.id) ||
+        this.archivedIds.has(session.id)) { return false; }
+      const values = getRecord(getRecord(session.raw, 'projections'), 'values');
+      const current = getString(values, PROJECTION_AGENT_PRESET);
+      return current === undefined || current === preset;
+    });
+    return blank?.id ?? '';
+  }
+
+  async createSession(workspaceId: string, preset: string = ''): Promise<DesktopSessionCreation> {
+    const args = sessionCreatePayload(workspaceId, '', preset ? this.reusableBlank(workspaceId, preset) : '', preset);
     if (args === undefined) {
-      return '';
+      return { id: '', problem: '' };
     }
     const result = await this.connection.call(SESSION_CREATE_ENDPOINT, args);
     if (!this.active || !result.ok) {
-      return '';
+      return { id: '', problem: desktopHostProblem(result) };
     }
-    const id = projectSessionCreate(result.value)?.sessionId ?? '';
+    const created = projectSessionCreate(result.value);
+    const id = created?.sessionId ?? '';
     if (id.length > 0) {
       await this.refreshSessions();
     }
-    return id;
+    if (preset && created?.agentPreset !== undefined && created.agentPreset !== preset) {
+      return { id: '', problem: '' };
+    }
+    return { id: id, problem: '' };
   }
 
   async forkSession(sessionId: string, atSeq?: number): Promise<DesktopForkResult> {

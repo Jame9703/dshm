@@ -28,7 +28,7 @@ import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
 import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openExternalUrl, openFileLocation, openSystemPreview, PickOutcome,
   pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
-import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
+import { desktopMenuOptions, desktopPluginEntryItems } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
 import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -82,6 +82,14 @@ interface DesktopDockDrag {
   session: string;
   pane: number;
   tab: string;
+}
+
+interface DesktopCreatorNavigation {
+  id: string;
+  workspace: string;
+  sourceSession: string;
+  sourceWorkspace: string;
+  sourcePanel: string;
 }
 
 interface DesktopSessionDrag {
@@ -199,6 +207,7 @@ struct DesktopWorkspace {
   @State private forking: boolean = false;
   private pendingForkId: string = '';
   private pendingForkSource: string = '';
+  private pendingCreator?: DesktopCreatorNavigation;
   @State private archivedIds: string[] = [];
   @State private archiveFilter: DesktopArchiveFilter = DesktopArchiveFilter.HIDE;
   @State private archiveRequest: DesktopArchiveRequest | undefined = undefined;
@@ -399,6 +408,7 @@ struct DesktopWorkspace {
     this.terminalCreateSession = '';
     this.chatError = '';
     this.creating = false;
+    this.pendingCreator = undefined;
     this.workspaceBusy = false;
     this.busySessions = [];
     if (this.hostUrl.length === 0) {
@@ -514,6 +524,7 @@ struct DesktopWorkspace {
       this.pendingForkId = '';
       this.pendingForkSource = '';
     }
+    this.openPendingCreator();
   }
 
   private showRename(id: string, workspace: boolean, title: ResourceStr): void {
@@ -1169,29 +1180,54 @@ struct DesktopWorkspace {
     this.data?.conversation.open('');
   }
 
-  private async newSession(targetWorkspaceId?: string): Promise<void> {
+  private async newSession(targetWorkspaceId?: string, creatorPrompt: string = ''): Promise<void> {
     const data = this.data;
     if (data === undefined || !this.ready || this.creating) {
       return;
     }
-    const preferred = targetWorkspaceId ?? this.workspaceId;
+    const preferred = creatorPrompt ? data.creatorWorkspace(this.sessionId) : targetWorkspaceId ?? this.workspaceId;
     const workspace = this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id && group.id === preferred) ??
-      (targetWorkspaceId === undefined ? this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id) : undefined);
+      (!creatorPrompt && targetWorkspaceId === undefined ?
+        this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id) : undefined);
     if (workspace === undefined) {
-      if (targetWorkspaceId === undefined) { this.addWorkspace(); }
+      if (creatorPrompt) {
+        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_plugin_entry_workspace_required') });
+      } else if (targetWorkspaceId === undefined) { this.addWorkspace(); }
       return;
     }
     this.creating = true;
+    this.pendingCreator = undefined;
     this.chatError = '';
     const previousWorkspace = this.workspaceId;
     const previousSession = this.sessionId;
-    const id = await data.createSession(workspace.id);
+    const previousPanel = this.panel;
+    const created = await data.createSession(workspace.id, creatorPrompt ? 'cordis' : '');
     if (!this.pageActive || this.data !== data) {
       return;
     }
     this.creating = false;
+    const id = created.id;
     if (id.length === 0) {
-      this.chatError = this.accessibilityLabel($r('app.string.desktop_chat_create_failed'));
+      if (creatorPrompt) {
+        this.getUIContext().getPromptAction().showToast({
+          message: created.problem || $r('app.string.desktop_chat_create_failed')
+        });
+      } else {
+        this.chatError = this.accessibilityLabel($r('app.string.desktop_chat_create_failed'));
+      }
+      return;
+    }
+    if (creatorPrompt) {
+      if (this.workspaceId !== previousWorkspace || this.sessionId !== previousSession || this.panel !== previousPanel) { return; }
+      if (this.busySessions.includes(id)) {
+        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_chat_create_failed') });
+        return;
+      }
+      const draft = this.drafts.get(id) ?? EMPTY_DESKTOP_DRAFT;
+      this.storeDraft(id, { text: draft.text ? draft.text + '\n' + creatorPrompt : creatorPrompt, references: draft.references });
+      this.pendingCreator = { id: id, workspace: workspace.id, sourceSession: previousSession,
+        sourceWorkspace: previousWorkspace, sourcePanel: previousPanel };
+      this.openPendingCreator();
       return;
     }
     const group = this.groups.find((item: DesktopWorkspaceGroup): boolean => item.id === workspace.id);
@@ -1202,6 +1238,24 @@ struct DesktopWorkspace {
       this.selectSession(group, session);
       this.panel = 'session';
     }
+  }
+
+  private openPendingCreator(): void {
+    const pending = this.pendingCreator;
+    if (pending === undefined) { return; }
+    if (this.workspaceId !== pending.sourceWorkspace || this.sessionId !== pending.sourceSession ||
+      this.panel !== pending.sourcePanel) { this.pendingCreator = undefined; return; }
+    const group = this.groups.find((item: DesktopWorkspaceGroup): boolean => item.id === pending.workspace);
+    const session = group?.sessions.find((item: SessionListItem): boolean => item.id === pending.id);
+    if (group === undefined || session === undefined) { return; }
+    this.pendingCreator = undefined;
+    this.pickWorkspace(group);
+    this.selectSession(group, session);
+    this.panel = 'session';
+  }
+
+  private createPluginDraft(prompt: Resource): void {
+    this.newSession(undefined, this.accessibilityLabel(prompt));
   }
 
   private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string,
@@ -2072,9 +2126,10 @@ struct DesktopWorkspace {
     }
     return [
       { value: $r('app.string.desktop_workspace_settings'), action: (): void => { this.openSettings(); } },
-      { value: $r('app.string.desktop_experiment_plugins'), action: (): void => { this.openPlugins(); } },
       { value: $r('app.string.desktop_experiment_schedule'), action: (): void => { this.panel = 'schedule'; } },
-      { value: '已归档会话', action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); } }
+      { value: '已归档会话', action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); } },
+      ...desktopPluginEntryItems(this.ready ? (): void => { this.openPlugins(); } : undefined,
+        (): void => { this.createPluginDraft($r('app.string.desktop_plugin_prompt_sidebar')); })
     ];
   }
 
@@ -2184,6 +2239,7 @@ struct DesktopWorkspace {
     .padding({ left: this.sidebarCollapsed ? 0 : 8, right: this.sidebarCollapsed ? 0 : 8 })
     .align(this.sidebarCollapsed ? Alignment.Center : Alignment.Start)
     .focusOnTouch(false)
+    .key(footer ? 'desktopSidebarFooterMenu' : 'desktopSidebarPanelMenu')
     .accessibilityText(footer ? $r('app.string.desktop_experiment_footer_menu') :
       $r('app.string.desktop_experiment_more'))
     .bindMenu(this.sidebarActions(footer), desktopMenuOptions(footer ? Placement.TopLeft : Placement.BottomLeft))
@@ -2912,6 +2968,8 @@ struct DesktopWorkspace {
               (id: string): Promise<string> => conversation.mutateGoal(id, action, ref, objective));
           },
           onPlanPreview: (plan: DesktopPlanDocument): void => { this.showPlan(plan); },
+          onBrowsePlugins: (): void => { this.openPlugins(); },
+          onCreatePlugin: (): void => { this.createPluginDraft($r('app.string.desktop_plugin_prompt_conversation')); },
           onPlanResume: (id: string): void => { this.data?.interactions.reopenPlanReview(id); },
           onArtifactFile: (path: string, name: string): void => { this.showArtifact(path, name); },
           onReferenceFileAction: (action: DesktopReferenceAction, path: string, name: string): void => {
@@ -3428,6 +3486,17 @@ struct DesktopWorkspace {
         .onClick((): void => this.openDockTool(index, DesktopDockKind.TERMINAL))
       Button($r('app.string.desktop_browser_title'), { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideBrowser-' + index)
         .onClick((): void => this.openBrowser(index))
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 8 }) {
+          Image($r('app.media.dsh_right_more_tools')).width(22).height(22).supportSvg2(true)
+            .draggable(false).accessibilityLevel('no')
+          Text($r('app.string.desktop_plugin_entry_more_tools')).fontSize(14).fontColor($r('sys.color.font_primary'))
+        }
+      }.key('desktopDockGuideMore-' + index).height(36).borderRadius(8)
+      .accessibilityText($r('app.string.desktop_plugin_entry_more_tools'))
+      .bindMenu(desktopPluginEntryItems((): void => { this.openPlugins(); },
+        (): void => { this.createPluginDraft($r('app.string.desktop_plugin_prompt_rightbar')); }),
+        desktopMenuOptions(Placement.BottomRight))
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)
   }
 
