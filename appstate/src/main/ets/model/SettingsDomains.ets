@@ -43,7 +43,8 @@ export const GENERAL_NAMESPACES: string[] = [
   'locale',
   'ui-conversation',
   'ui-chat',
-  'ui-onboarding'
+  'ui-onboarding',
+  'action-cards'
 ];
 
 /** 该命名空间是否属于「通用」分区（用户面向的功能包设置） */

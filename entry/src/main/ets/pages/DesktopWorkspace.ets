@@ -183,6 +183,9 @@ struct DesktopWorkspace {
   @State private error: string = '';
   @State private switching: boolean = false;
   @State @Watch('syncReading') private panel: string = 'session';
+  @State private pluginName: string = '';
+  private pluginTitle: string = '';
+  private pluginDescription: string = '';
   @State private workspaceBusy: boolean = false;
   @State private forking: boolean = false;
   private pendingForkId: string = '';
@@ -1876,6 +1879,13 @@ struct DesktopWorkspace {
     }
   }
 
+  private openPlugins(name: string = '', title: string = '', description: string = ''): void {
+    this.pluginTitle = title;
+    this.pluginDescription = description;
+    this.pluginName = name;
+    this.panel = 'plugins';
+  }
+
   private async openSettings(section: string = 'settings.general'): Promise<void> {
     if (this.switching) {
       return;
@@ -2000,7 +2010,7 @@ struct DesktopWorkspace {
     }
     return [
       { value: $r('app.string.desktop_workspace_settings'), action: (): void => { this.openSettings(); } },
-      { value: $r('app.string.desktop_experiment_plugins'), action: (): void => { this.panel = 'plugins'; } },
+      { value: $r('app.string.desktop_experiment_plugins'), action: (): void => { this.openPlugins(); } },
       { value: $r('app.string.desktop_experiment_schedule'), action: (): void => { this.panel = 'schedule'; } },
       { value: '已归档会话', action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); } }
     ];
@@ -2031,7 +2041,7 @@ struct DesktopWorkspace {
     }
   }
 
-  private async openWeb(leaveExperiment: boolean, action: string = ''): Promise<void> {
+  private async openWeb(leaveExperiment: boolean, action: string = '', session: string = this.sessionId): Promise<void> {
     if (this.switching) {
       return;
     }
@@ -2046,8 +2056,10 @@ struct DesktopWorkspace {
         await setDesktopWorkspaceEnabled(context, false);
       }
       this.webAction = leaveExperiment ? '' : action;
-      this.webSessionId = leaveExperiment || (action.length > 0 && action !== 'new-session') ? '' : this.sessionId;
-      this.webWorkspaceId = this.webSessionId.length > 0 ? this.workspaceId : '';
+      this.webSessionId = leaveExperiment || (action.length > 0 && action !== 'new-session') ? '' : session;
+      this.webWorkspaceId = !this.webSessionId ? '' : session === this.sessionId ? this.workspaceId :
+        this.groups.find((group: DesktopWorkspaceGroup): boolean =>
+          group.sessions.some((row: SessionListItem): boolean => row.id === session))?.id ?? '';
       hilog.warn(DOMAIN, TAG, 'DSHM-TRACE 从 ArkUI 打开 WebUI');
       await ui.getRouter().replaceUrl({ url: WEB_WORKSPACE_PAGE });
     } catch (_) {
@@ -2760,7 +2772,7 @@ struct DesktopWorkspace {
         (): void => { this.newSession(); }, true)
       Blank().height(12)
       this.SidebarShortcut($r('sys.symbol.square_grid_2x2'), $r('app.string.desktop_experiment_plugins'),
-        (): void => { this.panel = 'plugins'; }, false)
+        (): void => { this.openPlugins(); }, false)
       this.SidebarShortcut($r('sys.symbol.clock'), $r('app.string.desktop_experiment_schedule'),
         (): void => { this.panel = 'schedule'; }, false)
       this.SidebarShortcut($r('sys.symbol.gearshape'), $r('app.string.desktop_workspace_settings'),
@@ -2863,6 +2875,9 @@ struct DesktopWorkspace {
           },
           onLoadModels: (): void => { this.data?.conversation.loadModels(true); },
           onModelsSettings: (): void => { this.openSettings('settings.models'); },
+          onPluginDetails: (name: string, title: string, description: string): void => {
+            this.openPlugins(name, title, description);
+          },
           onLoadCommands: (): void => { this.data?.conversation.loadCommands(this.sessionId); },
           onCommand: (name: string): Promise<string> => {
             const conversation = this.data?.conversation;
@@ -3217,6 +3232,10 @@ struct DesktopWorkspace {
       openLink: (href: string): void => this.openConversationLink(href),
       openChanges: (target: DesktopChangeTarget): void => this.showChanges(target, target.sessionId),
       openModels: (): void => { this.openSettings('settings.models'); },
+      openPlugin: (name: string, title: string, description: string): void => {
+        this.openPlugins(name, title, description);
+      },
+      openWeb: (id: string): void => { this.openWeb(false, '', id); },
       copy: (id: string): void => { this.copyTranscript(id); },
       exportLog: (id: string): Promise<string> => this.exportLog(id),
       feedback: (id: string, conversation: DesktopConversation): Promise<string> => this.openSessionFeedback(id, conversation.feedback),
@@ -3520,6 +3539,8 @@ struct DesktopWorkspace {
             if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
               DesktopPluginsPane({
                 host: this.data.actions,
+                requestedBundle: this.pluginName, requestedTitle: this.pluginTitle,
+                requestedDescription: this.pluginDescription,
                 onWeb: (): void => { this.openWeb(false, 'plugins'); }
               })
             } else if (this.panel === 'schedule' && this.ready && this.data !== undefined) {

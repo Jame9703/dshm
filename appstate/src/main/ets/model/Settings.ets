@@ -557,6 +557,7 @@ export function projectSettingsNamespace(view: Object, writable: boolean): Setti
       (meta === undefined ? '' : (getString(meta, 'role') ?? '')) === META_ROLE_CREDENTIAL_REF;
     const current: Object | undefined = fieldOf(value, field);
     const itemKey: string = `${ns}.${field}`;
+    const recommendations = itemKey === 'action-cards.enabled';
     const minValue: number | undefined = meta === undefined ? undefined : getNumber(meta, 'min');
     const maxValue: number | undefined = meta === undefined ? undefined : getNumber(meta, 'max');
     const stepValue: number | undefined = meta === undefined ? undefined : getNumber(meta, 'step');
@@ -573,8 +574,8 @@ export function projectSettingsNamespace(view: Object, writable: boolean): Setti
     }
     const base: SettingItem = {
       key: itemKey,
-      label: humanizeKey(field),
-      hint: hintFor(ns, field, meta, credentialRef),
+      label: recommendations ? '个性化推荐' : humanizeKey(field),
+      hint: recommendations ? '针对你对 DSH 的个性化需求，在回答下方展示推荐卡片' : hintFor(ns, field, meta, credentialRef),
       kind: SettingKind.INFO,
       boolValue: false,
       textValue: '',

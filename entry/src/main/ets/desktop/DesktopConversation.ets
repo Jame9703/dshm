@@ -25,6 +25,8 @@ import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopFeedback } from './DesktopFeedback';
+import { DesktopActionCardState, desktopHideActionCardFences } from './DesktopActionCards';
+import type { DesktopActionCard } from './DesktopActionCards';
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
 import { DesktopWorkflowTimeline } from './DesktopWorkflowTimeline';
 import type { DesktopWorkflowRun } from './DesktopWorkflowTimeline';
@@ -83,6 +85,7 @@ export interface DesktopConversationSnapshot {
   commandLoading: boolean;
   commandError: string;
   feedbackRows: FeedbackRow[];
+  actionCards: Map<number, DesktopActionCard>;
   queue: DesktopQueuedPrompt[];
   busyEnterSteers: boolean;
   subagent?: DesktopSubagentEntry;
@@ -126,6 +129,7 @@ export class DesktopConversation {
   private imageBytesLimit?: number;
   private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
   private readonly workflows: DesktopWorkflowTimeline = new DesktopWorkflowTimeline();
+  private readonly actionCards: DesktopActionCardState = new DesktopActionCardState();
   private inheritedSequence: number = -1;
   readonly feedback: DesktopFeedback;
   private models: ModelOption[] = [];
@@ -194,6 +198,7 @@ export class DesktopConversation {
     this.subagents = [];
     this.subagentCatalogSequence = -1;
     this.feedback.select(sessionId);
+    this.actionCards.clear();
     this.interactions.select(sessionId);
     this.transcript = [];
     this.recallLabels.clear();
@@ -701,8 +706,13 @@ export class DesktopConversation {
         desktopMessageAttachments(getRecord(event, 'data')) : [];
       if (message !== undefined && message.kind === TrajectoryKind.MESSAGE && !message.internal && message.speaker !== Speaker.SYSTEM &&
         (message.body.length > 0 || message.reasoning.length > 0 || attachments.length > 0)) {
-        result.set(message.id, { id: message.id, sequence: seq, message: message, attachments: attachments });
-        if (message.speaker === Speaker.ASSISTANT) { this.replyTimeline.observe(event, message.body); }
+        if (message.speaker === Speaker.ASSISTANT) {
+          this.replyTimeline.observe(event, message.body);
+          message.body = desktopHideActionCardFences(message.body);
+        }
+        if (message.body.trim() || message.reasoning || attachments.length > 0) {
+          result.set(message.id, { id: message.id, sequence: seq, message: message, attachments: attachments });
+        }
       }
     }
     this.turnArtifacts.forEach((row: DesktopTurnArtifacts): void => {
@@ -768,7 +778,8 @@ export class DesktopConversation {
         this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
-        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged) {
+        const cardsChanged = this.actionCards.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
+        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged) {
           this.publish();
         }
       }
@@ -873,6 +884,7 @@ export class DesktopConversation {
     this.readGoal(projection);
     this.readQueue(projection);
     const values = getRecord(projection, 'values');
+    this.actionCards.observe(values, getNumber(projection, 'asOfSeq') ?? 0);
     this.readSubagents(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readImageLimit(values);
     const model = getRecord(values, 'modelSelection');
@@ -940,7 +952,8 @@ export class DesktopConversation {
       this.readImageLimit(changes);
       const queueChanged = this.queue.observe(changes, getNumber(frame, 'seq') ?? -1);
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);
-      if (!goalChanged && !queueChanged && !subagentsChanged) { return; }
+      const cardsChanged = this.actionCards.observe(changes, getNumber(frame, 'seq') ?? 0);
+      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
@@ -1007,7 +1020,8 @@ export class DesktopConversation {
     const queue = sending !== undefined && !this.queue.rows.some((row: DesktopQueuedPrompt): boolean =>
       row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
     this.listener({
-      sessionId: this.sessionId, transcript: this.transcript, partial: this.partial, preparingTool: this.preparingTool, loading: this.loading,
+      sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
+      preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,
       models: this.models, modelsLoading: this.modelsLoading, selection: selection, error: this.error,
@@ -1015,7 +1029,7 @@ export class DesktopConversation {
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
       goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
-      feedbackRows: this.feedback.rows, queue: queue, busyEnterSteers: this.busyEnterSteers,
+      feedbackRows: this.feedback.rows, actionCards: this.actionCards.cards, queue: queue, busyEnterSteers: this.busyEnterSteers,
       subagent: this.subagent, subagents: this.subagents
     });
   }

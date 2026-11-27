@@ -39,6 +39,8 @@ export interface DesktopDockChatActions {
   openPlan: (id: string, plan: DesktopPlanDocument) => void;
   openChanges: (target: DesktopChangeTarget) => void;
   openModels: () => void;
+  openPlugin: (name: string, title: string, description: string) => void;
+  openWeb: (id: string) => void;
   copy: (id: string) => void;
   exportLog: (id: string) => Promise<string>;
   feedback: (id: string, conversation: DesktopConversation) => Promise<string>;
@@ -220,6 +222,10 @@ export struct DesktopDockChatPane {
           onSteerQueue: (): void => { this.run((binding, id): Promise<string> => binding.conversation.steerQueue(id)); },
           onLoadModels: (): void => { this.binding?.conversation.loadModels(true); },
           onModelsSettings: (): void => { this.actions?.openModels(); },
+          onPluginDetails: (name: string, title: string, description: string): void => {
+            this.actions?.openPlugin(name, title, description);
+          },
+          onWeb: (): void => { if (this.target !== undefined) { this.actions?.openWeb(this.target.id); } },
           onLoadCommands: (): void => { this.binding?.conversation.loadCommands(this.target?.id ?? ''); },
           onCommand: (command: string): Promise<string> => this.run((binding, id): Promise<string> =>
             binding.conversation.runCommandChoice(id, command, (session: string): Promise<string> =>

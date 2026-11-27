@@ -34,6 +34,9 @@ import { DesktopReferenceAction } from './DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
 import { DesktopReplyActions } from './DesktopReplyActions';
 import { DesktopWorkflowPane } from './DesktopWorkflowPane';
+import { DesktopActionCardPane } from './DesktopActionCardPane';
+import { desktopHideActionCardFences } from './DesktopActionCards';
+import type { DesktopActionCard } from './DesktopActionCards';
 import type { DesktopWorkflowView } from './DesktopWorkflowTimeline';
 import { DesktopQueueDock } from './DesktopQueueDock';
 import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
@@ -86,6 +89,7 @@ export struct DesktopConversationPane {
   onSteerQueue: () => void = (): void => {};
   onLoadModels: () => void = () => {};
   onModelsSettings: () => void = () => {};
+  onPluginDetails: (name: string, title: string, description: string) => void = (): void => {};
   onLoadCommands: () => void = () => {};
   onCommand: (name: string) => Promise<string> = (_name: string): Promise<string> => Promise.resolve('');
   onSlashModel: (selection: ModelSelection) => Promise<string> =
@@ -211,6 +215,11 @@ export struct DesktopConversationPane {
         }
       }, 30);
     }
+  }
+
+  private actionCardForTurn(turn: number): DesktopActionCard[] {
+    const card = this.snapshot?.actionCards.get(turn);
+    return card === undefined ? [] : [card];
   }
 
   private updateWorkflowViews(): void {
@@ -1120,14 +1129,23 @@ export struct DesktopConversationPane {
                     this.onSubagent(child, parent === undefined ? [] : [parent]);
                   } })
               } else if (item.replyTail !== undefined) {
-                DesktopReplyActions({ messageId: item.replyTail.messageId, text: item.replyTail.text,
-                  timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
-                  canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
-                  onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
-                  choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
-                  onRating: (messageId: string, rating: DesktopRating): void => {
-                    this.onReplyRating(this.sessionId, messageId, rating);
-                  } })
+                Column({ space: 10 }) {
+                  DesktopReplyActions({ messageId: item.replyTail.messageId, text: desktopHideActionCardFences(item.replyTail.text),
+                    timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],
+                    canFork: item.replyTail.lastContentSeq === item.replyTail.messageSeq, forking: this.forking,
+                    onFork: (): void => { this.onFork(this.sessionId, item.replyTail?.endSeq ?? -1); },
+                    choosing: this.choosingFeedback, onWarm: (): void => { this.onWarmFeedback(this.sessionId); },
+                    onRating: (messageId: string, rating: DesktopRating): void => {
+                      this.onReplyRating(this.sessionId, messageId, rating);
+                    } })
+                  if (this.snapshot?.actionCards.has(item.replyTail.turn)) {
+                    ForEach(this.actionCardForTurn(item.replyTail.turn), (card: DesktopActionCard): void => {
+                      DesktopActionCardPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+                        card: this.snapshot?.actionCards.get(item.replyTail?.turn ?? -1) ?? card,
+                        onPlugin: this.onPluginDetails, onWeb: this.onWeb })
+                    }, (card: DesktopActionCard): string => card.id)
+                  }
+                }.width('100%').constraintSize({ maxWidth: 712 })
               } else if (item.inheritedHistory === true) {
                 Row({ space: 8 }) {
                   Divider().layoutWeight(1).color($r('app.color.workspace_border'))

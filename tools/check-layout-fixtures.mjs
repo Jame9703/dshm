@@ -1694,8 +1694,8 @@ console.log('\n## P0 页面框架：面板注册表 + 导航状态（页面 ≠ 
     t.eq('key：点在最前 ⇒ 域未知', settingsDomainOfKey('.fontSize'), SETTINGS_DOMAIN_UNKNOWN);
 
     // 白名单本身也要钉住：多一个/少一个都会让"通用"页的内容变样
-    t.eq('通用白名单五项', GENERAL_NAMESPACES.length, 5);
-    t.eq('通用白名单内容', GENERAL_NAMESPACES.join(','), 'ui-theme,locale,ui-conversation,ui-chat,ui-onboarding');
+    t.eq('通用白名单六项', GENERAL_NAMESPACES.length, 6);
+    t.eq('通用白名单内容', GENERAL_NAMESPACES.join(','), 'ui-theme,locale,ui-conversation,ui-chat,ui-onboarding,action-cards');
   }
 
   // ── P2-7：会话头上下文行（工作区名 · 模型 · 最近活动）──

@@ -1,9 +1,10 @@
 import { util } from '@kit.ArkTS';
 import { getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
-import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './DesktopHostActions';
+import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
+import { MarkdownRenderer } from '../view/MarkdownRenderer';
 
 const MARKET_BUNDLE: string = '@deepseek-ai/dsh-experimental-plugin-market-bundle';
 
@@ -50,16 +51,17 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
   return rows;
 }
 
-function localizedText(value: Object, field: string): string {
-  const map = getRecord(value, field);
-  return getString(value, field) || getString(map, 'zh-CN') || getString(map, 'zh') ||
-    getString(map, 'en-US') || getString(map, 'en') || '';
-}
-
 @Component
 export struct DesktopPluginsPane {
   host?: DesktopHostActions;
+  @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
+  @Prop requestedTitle: string = '';
+  @Prop requestedDescription: string = '';
   onWeb: () => void = (): void => {};
+  @State private detailName: string = '';
+  @State private detailText: string = '';
+  @State private detailError: string = '';
+  @State private detailLoading: boolean = false;
   @State private tab: string = 'bundles';
   @State private settingsVisited: boolean = false;
   @State private bundles: DesktopPluginRow[] = [];
@@ -80,14 +82,40 @@ export struct DesktopPluginsPane {
   @State private versionOwner: string = '';
   @State private versions: string[] = [];
   private active: boolean = false;
+  private detailRead: number = 0;
 
   aboutToAppear(): void {
     this.active = true;
     this.refresh();
+    this.requestedBundleChanged();
   }
 
   aboutToDisappear(): void {
     this.active = false;
+  }
+
+  private requestedBundleChanged(): void {
+    if (this.requestedBundle) { this.openBundle(this.requestedBundle); }
+    else { this.closeBundle(); }
+  }
+
+  private closeBundle(): void {
+    this.detailRead++;
+    this.detailName = '';
+  }
+
+  private async openBundle(name: string): Promise<void> {
+    this.tab = 'bundles';
+    this.detailName = name;
+    this.detailText = '';
+    this.detailError = '';
+    this.detailLoading = true;
+    const version = ++this.detailRead;
+    const result = await this.host?.call('pluginManager/readBundleDetail', { 'name': name, 'language': 'zh-CN' });
+    if (!this.active || version !== this.detailRead) { return; }
+    this.detailLoading = false;
+    if (!result?.ok) { this.detailError = result?.error?.message || '无法读取插件详情'; }
+    else if (getString(result.value, 'status') === 'found') { this.detailText = getString(result.value, 'markdown') ?? ''; }
   }
 
   private async refresh(): Promise<void> {
@@ -113,7 +141,7 @@ export struct DesktopPluginsPane {
       for (const item of desktopHostItems(results[2])) {
         const url = getString(item, 'url') ?? '';
         if (url.length > 0) {
-          sources.push({ url: url, title: localizedText(item, 'title') || url });
+          sources.push({ url: url, title: desktopLocalizedText(item, 'title') || url });
         }
       }
       this.sources = sources;
@@ -321,7 +349,7 @@ export struct DesktopPluginsPane {
   }
 
   @Builder
-  private PluginRow(row: DesktopPluginRow) {
+  private PluginRow(row: DesktopPluginRow, navigable: boolean = false) {
     Row({ space: 10 }) {
       Column({ space: 4 }) {
         Text(row.title).fontSize(15).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -329,6 +357,9 @@ export struct DesktopPluginsPane {
           item.length > 0).join(' · ')).fontSize(12).fontColor($r('sys.color.font_secondary'))
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (navigable) {
+        Button('查看详情', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.openBundle(row.id); })
+      }
       if (this.versionOwner === row.id && this.versions.length > 0) {
         Button('选择更新版本', { buttonStyle: ButtonStyleMode.TEXTUAL })
           .enabled(!this.busy)
@@ -348,6 +379,30 @@ export struct DesktopPluginsPane {
     }
     .width('100%').constraintSize({ minHeight: 60 }).padding(10)
     .borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
+  }
+
+  @Builder
+  private BundleDetail() {
+    Column({ space: 12 }) {
+      Button('返回插件包', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
+        .onClick((): void => { this.closeBundle(); })
+      Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') || this.detailName)
+        .key('desktopPluginDetailTitle').fontSize(22).fontWeight(FontWeight.Medium)
+      if (this.detailName === this.requestedBundle && this.requestedDescription) {
+        Text(this.requestedDescription).fontSize(14).fontColor($r('sys.color.font_secondary'))
+      }
+      ForEach(this.bundles.filter((row: DesktopPluginRow): boolean => row.id === this.detailName), (row: DesktopPluginRow): void => {
+        this.PluginRow(row)
+      }, (row: DesktopPluginRow): string => JSON.stringify(row))
+      if (this.detailLoading) {
+        LoadingProgress().width(22).height(22)
+      } else if (this.detailError) {
+        Text(this.detailError).fontSize(13).fontColor($r('app.color.workspace_status_error'))
+        Button('重试', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.openBundle(this.detailName); })
+      } else if (this.detailText) {
+        MarkdownRenderer({ text: this.detailText })
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
   private canEnableMarket(): boolean {
@@ -419,8 +474,8 @@ export struct DesktopPluginsPane {
     ForEach(this.market, (entry: Object) => {
       Row({ space: 8 }) {
         Column({ space: 4 }) {
-          Text(localizedText(entry, 'title') || getString(entry, 'name') || '').fontSize(15)
-          Text(localizedText(entry, 'description')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+          Text(desktopLocalizedText(entry, 'title') || getString(entry, 'name') || '').fontSize(15)
+          Text(desktopLocalizedText(entry, 'description')).fontSize(13).fontColor($r('sys.color.font_secondary'))
         }
         .layoutWeight(1).alignItems(HorizontalAlign.Start)
         if (this.marketActions(entry).length > 0) {
@@ -445,52 +500,57 @@ export struct DesktopPluginsPane {
         Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy).onClick(this.onWeb)
       }
       .width('100%')
-      Row({ space: 8 }) {
-        Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' :
-          this.tab === 'settings' ? '配置' : '插件市场',
-          { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopPluginsView').enabled(!this.busy)
-          .bindMenu([
-            { value: '插件包', action: (): void => { this.tab = 'bundles'; } },
-            { value: '运行中的插件', action: (): void => { this.tab = 'entries'; } },
-            { value: '配置', action: (): void => { this.settingsVisited = true; this.tab = 'settings'; } },
-            { value: '插件市场', action: (): void => {
-              this.tab = 'market';
-              if (this.market.length === 0) {
-                this.searchMarket(false);
-              }
-            } }
-          ], desktopMenuOptions(Placement.BottomLeft))
-        if (this.tab === 'bundles') {
-          TextInput({ 'text': this.spec, placeholder: 'npm 包名或插件仓库地址' }).layoutWeight(1)
-            .onChange((value: string): void => { this.spec = value; })
-          Button('安装插件').enabled(!this.busy && this.spec.trim().length > 0)
-            .onClick((): void => { this.install(this.spec); })
-        }
-        if (this.installId.length > 0) {
-          Button('取消安装', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.cancelInstall(); })
-        }
-        if (this.busy) {
-          LoadingProgress().width(24).height(24)
-        }
+      if (!this.detailName) {
+        Row({ space: 8 }) {
+          Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' :
+            this.tab === 'settings' ? '配置' : '插件市场',
+            { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopPluginsView').enabled(!this.busy)
+            .bindMenu([
+              { value: '插件包', action: (): void => { this.tab = 'bundles'; } },
+              { value: '运行中的插件', action: (): void => { this.tab = 'entries'; } },
+              { value: '配置', action: (): void => { this.settingsVisited = true; this.tab = 'settings'; } },
+              { value: '插件市场', action: (): void => {
+                this.tab = 'market';
+                if (this.market.length === 0) {
+                  this.searchMarket(false);
+                }
+              } }
+            ], desktopMenuOptions(Placement.BottomLeft))
+          if (this.tab === 'bundles') {
+            TextInput({ 'text': this.spec, placeholder: 'npm 包名或插件仓库地址' }).layoutWeight(1)
+              .onChange((value: string): void => { this.spec = value; })
+            Button('安装插件').enabled(!this.busy && this.spec.trim().length > 0)
+              .onClick((): void => { this.install(this.spec); })
+          }
+          if (this.installId.length > 0) {
+            Button('取消安装', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.cancelInstall(); })
+          }
+          if (this.busy) {
+            LoadingProgress().width(24).height(24)
+          }
+        }.width('100%')
       }
-      .width('100%')
       if (this.status.length > 0) {
         Text(this.status).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
       }
       Scroll() {
         Column({ space: 8 }) {
-          if (this.settingsVisited) {
-            DesktopPluginSettings({ host: this.host }).visibility(this.tab === 'settings' ? Visibility.Visible : Visibility.None)
-          }
-          if (this.tab === 'market') {
-            this.Discover()
-          } else if (this.tab !== 'settings') {
-            ForEach(this.tab === 'bundles' ? this.bundles : this.plugins, (row: DesktopPluginRow) => {
-              this.PluginRow(row)
-            }, (row: DesktopPluginRow): string => JSON.stringify(row))
-            if (!this.busy && (this.tab === 'bundles' ? this.bundles.length : this.plugins.length) === 0) {
-              Text('暂无插件').fontColor($r('sys.color.font_secondary'))
+          if (this.detailName) {
+            this.BundleDetail()
+          } else {
+            if (this.settingsVisited) {
+              DesktopPluginSettings({ host: this.host }).visibility(this.tab === 'settings' ? Visibility.Visible : Visibility.None)
+            }
+            if (this.tab === 'market') {
+              this.Discover()
+            } else if (this.tab !== 'settings') {
+              ForEach(this.tab === 'bundles' ? this.bundles : this.plugins, (row: DesktopPluginRow) => {
+                this.PluginRow(row, this.tab === 'bundles')
+              }, (row: DesktopPluginRow): string => JSON.stringify(row))
+              if (!this.busy && (this.tab === 'bundles' ? this.bundles.length : this.plugins.length) === 0) {
+                Text('暂无插件').fontColor($r('sys.color.font_secondary'))
+              }
             }
           }
         }

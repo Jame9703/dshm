@@ -125,3 +125,9 @@ export function desktopHostItems(result: RpcResult): Object[] {
   const wrapped: Record<string, Object> = { 'items': result.value ?? '' };
   return getArray(wrapped, 'items') ?? [];
 }
+
+export function desktopLocalizedText(value: Object | undefined, field: string): string {
+  const map = getRecord(value, field);
+  return getString(value, field) || getString(map, 'zh-CN') || getString(map, 'zh') ||
+    getString(map, 'en-US') || getString(map, 'en') || '';
+}
