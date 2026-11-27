@@ -13,6 +13,7 @@ import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
 import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
 import { DesktopFileSearchPreferenceBook } from '../desktop/DesktopFileSearchPreference';
+import type { DesktopDocumentViewState } from '../desktop/DesktopDocumentZoomModel';
 import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
 import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
@@ -282,6 +283,7 @@ struct DesktopWorkspace {
   private readonly subagentAddresses: Map<string, DesktopSubagentEntry> = new Map();
   private data?: DesktopWorkspaceData;
   private fileSearchBook?: DesktopFileSearchPreferenceBook;
+  private readonly documentViews = new Map<string, DesktopDocumentViewState>();
   private readonly replyMedia = new DesktopReplyMedia();
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
@@ -450,6 +452,7 @@ struct DesktopWorkspace {
     this.archivedIds = [];
     this.shownPlanReviews.clear();
     this.docks.clear();
+    this.documentViews.clear();
     this.terminalSelections.clear();
     this.dockSessionId = '';
     this.rightDock = emptyDesktopDock();
@@ -1834,6 +1837,7 @@ struct DesktopWorkspace {
   }
 
   private closeDockTab(index: number, id: string): void {
+    this.documentViews.delete(this.documentViewKey(id));
     if (id === DesktopDockKind.TERMINAL) { this.terminalCreateSession = ''; }
     this.dockTabBounds.delete(id);
     this.setDock(index < 0 ? desktopDockCloseFloat(this.rightDock, id) : desktopDockCloseTab(this.rightDock, index, id));
@@ -3700,6 +3704,21 @@ struct DesktopWorkspace {
       this.sessionSummaries.find((row: SessionListItem): boolean => row.id === session)?.cwd ?? '';
   }
 
+  private documentViewKey(tabId: string): string { return JSON.stringify([this.sessionId, tabId]); }
+
+  private documentViewReader(tabId: string): () => DesktopDocumentViewState | undefined {
+    const key = this.documentViewKey(tabId);
+    return (): DesktopDocumentViewState | undefined => this.documentViews.get(key);
+  }
+
+  private documentViewWriter(index: number, tabId: string): (view: DesktopDocumentViewState) => void {
+    const owner = this.sessionId;
+    const key = this.documentViewKey(tabId);
+    return (view: DesktopDocumentViewState): void => {
+      if (owner === this.sessionId && this.dockTabShown(index, tabId)) { this.documentViews.set(key, view); }
+    };
+  }
+
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
@@ -3708,6 +3727,8 @@ struct DesktopWorkspace {
         sessionId: tab.sourceSessionId ?? this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
         workspaceRoot: this.fileSearchRoot(tab), shown: this.dockTabShown(index, tab.id),
         preferenceBook: tab.kind === DesktopDockKind.FILES ? this.fileSearchPreferences() : undefined,
+        readDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewReader(tab.id) : undefined,
+        onDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewWriter(index, tab.id) : undefined,
         onHide: (): void => this.closeDockTab(index, tab.id),
         onOpenFile: (path: string, name: string): void => {
           this.focusDockPane(index);

@@ -14,6 +14,10 @@ import type { DesktopFileSearchPreferenceBook } from './DesktopFileSearchPrefere
 import { desktopFileSearchResults, desktopWorkspaceRelativePath } from './DesktopFileSearchResults';
 import type { DesktopFileNameSpan, DesktopFileSearchNode, DesktopFileSearchResults } from './DesktopFileSearchResults';
 import { DesktopFileSearchSettings } from './DesktopFileSearchSettings';
+import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
+import lazy { DesktopImageFilePreview } from './DesktopImageFilePreview';
+import type { DesktopDocumentViewState } from './DesktopDocumentZoomModel';
+import { copyDesktopReferenceImage, saveDesktopReferenceFile } from './DesktopReferenceActions';
 
 interface FileRow {
   path: string;
@@ -45,6 +49,8 @@ function imageName(name: string): boolean {
   return previewKindOf(name, 0) === PreviewKind.IMAGE || name.toLowerCase().endsWith('.bmp');
 }
 
+function pdfName(name: string): boolean { return name.toLowerCase().endsWith('.pdf'); }
+
 @Component
 export struct DesktopFilesPane {
   host?: DesktopHostActions;
@@ -57,6 +63,8 @@ export struct DesktopFilesPane {
   @Prop previewOnly: boolean = false;
   onHide: () => void = (): void => {};
   onOpenFile?: (path: string, name: string) => void;
+  readDocumentView?: () => DesktopDocumentViewState | undefined;
+  onDocumentView?: (view: DesktopDocumentViewState) => void;
   onReferenceWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onAttachWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
 
@@ -75,9 +83,13 @@ export struct DesktopFilesPane {
   @State private selected?: FileRow = undefined;
   @State private preview?: FilePreview = undefined;
   @State private previewUri: string = '';
+  @State private previewPath: string = '';
+  @State private previewAssetVersion: number = 0;
+  @State private documentViewState: DesktopDocumentViewState | undefined = undefined;
   @State private previewLoading: boolean = false;
   @State private previewError: string = '';
   @State private rawMarkdown: boolean = false;
+  @State private previewWrap: boolean = true;
   @State private previewOffset: number = 1;
   @State private previewLines: number = 0;
   private readonly directories: Map<string, Directory> = new Map<string, Directory>();
@@ -92,6 +104,7 @@ export struct DesktopFilesPane {
   private boundSearchRoot?: string;
   private readonly collapsedResults = new Set<string>();
   private previewRevision: number = 0;
+  private previewNeedsRefresh: boolean = false;
   private cancelPreviewWatch?: () => void;
 
   aboutToAppear(): void {
@@ -314,6 +327,9 @@ export struct DesktopFilesPane {
     } else if (this.active && this.query.trim() && !this.searchRequestKey) {
       this.queueSearch(this.query);
     }
+    if (this.shown && this.active && this.previewNeedsRefresh && this.selected !== undefined) {
+      this.loadPreview(this.selected, this.previewOffset);
+    }
   }
 
   private queueSearch(value: string, force: boolean = false): void {
@@ -396,6 +412,9 @@ export struct DesktopFilesPane {
     this.selected = undefined;
     this.preview = undefined;
     this.previewUri = '';
+    this.previewPath = '';
+    this.previewNeedsRefresh = false;
+    this.documentViewState = undefined;
     this.previewError = '';
     this.previewLoading = false;
     this.previewOffset = 1;
@@ -405,12 +424,14 @@ export struct DesktopFilesPane {
   private openPreview(row: FileRow): void {
     this.closePreview();
     this.rawMarkdown = false;
+    this.previewWrap = true;
     this.selected = row;
     this.loadPreview(row);
     this.cancelPreviewWatch = this.host?.watch('workspaceFiles/changes', this.args(row.path), {
       onItem: (value: Object): void => {
         if (this.selected?.path === row.path && getString(value, 'kind') === 'change') {
-          this.loadPreview(row, this.previewOffset);
+          if (this.shown) { this.loadPreview(row, this.previewOffset); }
+          else { this.previewNeedsRefresh = true; }
         }
       },
       onError: (): void => {},
@@ -424,15 +445,20 @@ export struct DesktopFilesPane {
       return;
     }
     const revision = ++this.previewRevision;
-    this.previewLoading = true;
+    this.previewNeedsRefresh = false;
+    const visualAsset = pdfName(row.name) || imageName(row.name);
+    this.previewLoading = !visualAsset || !this.previewPath;
     this.previewError = '';
-    if (imageName(row.name) || (previewKindOf(row.name, 0) === PreviewKind.BINARY && isSystemPreviewableName(row.name))) {
+    if (visualAsset || (previewKindOf(row.name, 0) === PreviewKind.BINARY && isSystemPreviewableName(row.name))) {
       const result = await host.call('workspaceFiles/stat', this.args(row.path));
       if (revision === this.previewRevision) {
-        const path = getString(result.value, 'absolutePath') ?? '';
-        this.previewUri = path.startsWith('/') ? uriFromPath(path) : '';
+        const path = result.ok ? getString(result.value, 'absolutePath') ?? '' : '';
+        this.previewPath = path.startsWith('/') && !path.includes('\0') ? path : '';
+        this.previewUri = this.previewPath ? uriFromPath(this.previewPath) : '';
+        this.previewAssetVersion++;
         this.previewLoading = false;
-        this.previewError = result.ok ? (this.previewUri ? '' : '系统无法访问此文件') : desktopHostProblem(result);
+        this.previewError = result.ok ? ((pdfName(row.name) ? this.previewPath : this.previewUri) ?
+          '' : '系统无法访问此文件') : desktopHostProblem(result);
       }
       return;
     }
@@ -457,6 +483,38 @@ export struct DesktopFilesPane {
     const ability = this.ability;
     if (ability === undefined || !(await openSystemPreview(ability, this.previewUri, row.name, mimeTypeForName(row.name)))) {
       this.getUIContext().getPromptAction().showToast({ message: '系统未能打开此文件的预览' });
+    }
+  }
+
+  private documentView(): DesktopDocumentViewState | undefined {
+    return this.readDocumentView?.() ?? this.documentViewState;
+  }
+
+  private saveDocumentView(view: DesktopDocumentViewState): void {
+    if (this.shown && this.selected !== undefined) {
+      this.documentViewState = view;
+      this.onDocumentView?.(view);
+    }
+  }
+
+  private async previewFileAction(row: FileRow, copyImage: boolean): Promise<void> {
+    const session = this.sessionId;
+    const ability = this.ability;
+    if (ability === undefined || !this.active) { return; }
+    const stat = await this.host?.call('workspaceFiles/stat', this.args(row.path));
+    if (!this.active || this.sessionId !== session) { return; }
+    const path = stat?.ok ? getString(stat.value, 'absolutePath') ?? '' : '';
+    if (!path.startsWith('/') || path.includes('\0')) {
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_file_preview_action_failed') });
+      return;
+    }
+    try {
+      if (copyImage) { await copyDesktopReferenceImage(path); }
+      else { await saveDesktopReferenceFile(ability, path, row.name); }
+    } catch (_) {
+      if (this.active && this.sessionId === session) {
+        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_file_preview_action_failed') });
+      }
     }
   }
 
@@ -583,6 +641,15 @@ export struct DesktopFilesPane {
     }
     if (!row.directory && this.ability !== undefined) {
       items.push({ value: '在文件夹中显示', action: (): void => { this.revealFile(row); } });
+      if (this.selected?.path === row.path && this.previewUri) {
+        items.push({ value: $r('app.string.desktop_file_preview_system'), action: (): void => { this.openSystem(row); } });
+        items.push({ value: $r('app.string.desktop_file_preview_save'), action: (): void => { this.previewFileAction(row, false); } });
+        if (imageName(row.name)) {
+          items.push({ value: $r('app.string.desktop_file_preview_copy_image'), action: (): void => {
+            this.previewFileAction(row, true);
+          } });
+        }
+      }
     }
     return items;
   }
@@ -674,11 +741,22 @@ export struct DesktopFilesPane {
       LoadingProgress().width(25).height(25).margin(15)
     } else if (this.previewError) {
       Text(this.previewError).fontSize(13).fontColor($r('sys.color.warning')).padding(12)
+    } else if (this.previewPath && pdfName(this.selected?.name ?? '')) {
+      Column() {
+        DesktopPdfPreview({ path: this.previewPath, active: this.shown, initialView: this.documentView(),
+          ownerKey: this.sessionId + ':' + this.previewAssetVersion,
+          onViewChange: (view: DesktopDocumentViewState): void => { this.saveDocumentView(view); }, onOpenSystem: (): void => {
+            if (this.selected !== undefined) { this.openSystem(this.selected); }
+          } })
+      }.width('100%').layoutWeight(1)
+    } else if (this.previewUri && imageName(this.selected?.name ?? '')) {
+      Column() {
+        DesktopImageFilePreview({ source: this.previewUri, name: this.selected?.name ?? '', active: this.shown,
+          revision: this.previewAssetVersion, initialView: this.documentView(),
+          onViewChange: (view: DesktopDocumentViewState): void => { this.saveDocumentView(view); } })
+      }.width('100%').layoutWeight(1)
     } else if (this.previewUri) {
-      if (imageName(this.selected?.name ?? '')) {
-        Image(this.previewUri).objectFit(ImageFit.Contain).width('100%').layoutWeight(1)
-      }
-      Button('系统预览', { buttonStyle: ButtonStyleMode.TEXTUAL }).margin(10)
+      Button($r('app.string.desktop_file_preview_system'), { buttonStyle: ButtonStyleMode.TEXTUAL }).margin(10)
         .onClick((): void => {
           const row = this.selected;
           if (row !== undefined) {
@@ -693,9 +771,14 @@ export struct DesktopFilesPane {
         Column({ space: 8 }) {
           if (this.preview.kind === PreviewKind.MARKDOWN && !this.rawMarkdown) {
             MarkdownRenderer({ text: this.preview.text })
-          } else {
+          } else if (this.previewWrap) {
             Text(this.preview.text).fontSize(13).fontFamily('monospace').copyOption(CopyOptions.LocalDevice)
-              .width('100%')
+              .key('desktopFilePreviewWrapped').width('100%')
+          } else {
+            Scroll() {
+              Text(this.preview.text).fontSize(13).fontFamily('monospace').copyOption(CopyOptions.LocalDevice)
+            }.key('desktopFilePreviewUnwrapped').width('100%').scrollable(ScrollDirection.Horizontal)
+              .align(Alignment.TopStart).scrollBar(BarState.Auto)
           }
         }
         .alignItems(HorizontalAlign.Start).padding(12).width('100%')
@@ -707,7 +790,7 @@ export struct DesktopFilesPane {
   build() {
     Column() {
       Row({ space: 6 }) {
-        if (this.selected !== undefined) {
+        if (this.selected !== undefined && !this.previewOnly) {
           Button('‹', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(32).padding(0)
             .accessibilityText('返回文件列表').onClick((): void => { this.closePreview(); })
         }
@@ -718,6 +801,20 @@ export struct DesktopFilesPane {
             Button(this.rawMarkdown ? '预览' : '源码', { buttonStyle: ButtonStyleMode.TEXTUAL })
               .onClick((): void => { this.rawMarkdown = !this.rawMarkdown; })
           }
+          if (this.preview !== undefined && (this.preview.kind !== PreviewKind.MARKDOWN || this.rawMarkdown)) {
+            Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+              Image(this.previewWrap ? $r('app.media.dsh_file_preview_nowrap') : $r('app.media.dsh_file_preview_wrap'))
+                .width(15).height(15).supportSvg2(true).accessibilityLevel('no')
+            }.key('desktopFilePreviewWrap').width(30).height(30).padding(0).borderRadius(7)
+              .accessibilityText($r('app.string.desktop_file_preview_wrap')).accessibilitySelected(this.previewWrap)
+              .onClick((): void => { this.previewWrap = !this.previewWrap; })
+          }
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.dsh_browser_refresh_outline')).width(15).height(15).supportSvg2(true).accessibilityLevel('no')
+          }.key('desktopFilePreviewReload').width(30).height(30).padding(0).borderRadius(7).enabled(!this.previewLoading)
+            .accessibilityText($r('app.string.desktop_file_preview_reload')).onClick((): void => {
+              if (this.selected !== undefined) { this.loadPreview(this.selected, this.previewOffset); }
+            })
           Button('⋯', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(36).padding(0)
             .bindMenu(this.fileOptions(this.selected), desktopMenuOptions(Placement.BottomRight))
         } else {
