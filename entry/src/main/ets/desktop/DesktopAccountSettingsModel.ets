@@ -3,6 +3,7 @@ import { getArray, getRecord, getString } from 'connection';
 import { desktopBrowserAddress } from './DesktopBrowserAddress';
 
 export interface DesktopAccountSettingsIdentity {
+  ready: boolean;
   signedIn: boolean;
   revision: number;
   usageUrl: string;
@@ -10,7 +11,7 @@ export interface DesktopAccountSettingsIdentity {
 }
 
 export function emptyDesktopAccountSettingsIdentity(): DesktopAccountSettingsIdentity {
-  return { signedIn: false, revision: 0, usageUrl: '', topUpUrl: '' };
+  return { ready: false, signedIn: false, revision: 0, usageUrl: '', topUpUrl: '' };
 }
 
 export interface DesktopAccountSettingsProfile {

@@ -31,6 +31,11 @@ import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
+import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import { DesktopAccountQuotaDialog, DesktopQuotaToast, DESKTOP_QUOTA_TOAST_HOLD_MS, DESKTOP_QUOTA_TOAST_FADE_MS }
+  from '../desktop/DesktopQuotaNotice';
+import type { DesktopQuotaNotice } from '../desktop/DesktopQuotaNoticeModel';
 import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openExternalUrl, openFileLocation, openSystemPreview, PickOutcome,
   pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
 import { desktopMenuOptions, desktopPluginEntryItems } from '../desktop/DesktopMenuOptions';
@@ -90,6 +95,14 @@ interface DesktopDockDrag {
   session: string;
   pane: number;
   tab: string;
+}
+
+interface DesktopQuotaBrowserVisit {
+  notice: number;
+  release: () => void;
+  departed: boolean;
+  returned: boolean;
+  launched: boolean;
 }
 
 interface DesktopCreatorNavigation {
@@ -273,6 +286,17 @@ struct DesktopWorkspace {
   @State private accountDialog: number = -1;
   @State private accountNotices: DesktopAccountNotice[] = [];
   @State private accountNoticesWindowShown: boolean = true;
+  private quotaNotice?: DesktopQuotaNotice;
+  private quotaAccount = emptyDesktopAccountSettingsIdentity();
+  private stopQuotaAccount?: () => void;
+  private quotaDialogId: number = -1;
+  private quotaDialogToken: number = -1;
+  @State private quotaToastToken: number = -1;
+  @State private quotaToastFading: boolean = false;
+  private quotaFadeTimer: number = -1;
+  private quotaToastTimer: number = -1;
+  private quotaBrowserTimer: number = -1;
+  private quotaBrowserVisit?: DesktopQuotaBrowserVisit;
   private pageActive: boolean = false;
   @State private pageVisible: boolean = false;
   private readingWindow?: window.Window;
@@ -282,6 +306,12 @@ struct DesktopWorkspace {
       this.accountNoticesWindowShown = false;
     } else if (event === window.WindowEventType.WINDOW_SHOWN || event === window.WindowEventType.WINDOW_ACTIVE) {
       this.accountNoticesWindowShown = true;
+    }
+    if (event === window.WindowEventType.WINDOW_HIDDEN || event === window.WindowEventType.WINDOW_INACTIVE) {
+      this.noteQuotaBrowserFocus(false);
+    } else if (event === window.WindowEventType.WINDOW_ACTIVE) {
+      this.noteQuotaBrowserFocus(true);
+      this.showQuotaSurface();
     }
     this.readingFocused = event === window.WindowEventType.WINDOW_ACTIVE ||
       (event === window.WindowEventType.WINDOW_SHOWN && this.readingWindow?.isFocused() === true);
@@ -330,6 +360,7 @@ struct DesktopWorkspace {
     try { this.readingWindow?.off('windowEvent', this.readingWindowEvent); } catch (_) {}
     this.readingWindow = undefined;
     this.closeAccount();
+    this.resetQuota();
     this.closeSettings();
     this.closeLogDialog();
     this.closeFeedback();
@@ -343,6 +374,8 @@ struct DesktopWorkspace {
 
   onPageShow(): void {
     this.pageVisible = true;
+    this.noteQuotaBrowserFocus(true);
+    this.showQuotaSurface();
     this.reloadShortcutBindings();
     this.attachReadingWindow();
     this.syncReading();
@@ -350,6 +383,7 @@ struct DesktopWorkspace {
 
   onPageHide(): void {
     this.pageVisible = false;
+    this.noteQuotaBrowserFocus(false);
     this.shortcutsOpen = false;
     this.clearSessionDrag();
     this.clearWorkspaceDrag();
@@ -358,12 +392,14 @@ struct DesktopWorkspace {
 
   private syncReading(): void {
     const chat = this.chat?.sessionId === this.sessionId ? this.chat : undefined;
-    const visible = this.pageActive && this.pageVisible && !this.settingsOpen && this.panel === 'session' &&
+    const visible = this.pageActive && this.pageVisible && !this.settingsOpen && this.quotaDialogToken < 0 &&
+      this.panel === 'session' &&
       this.readingFocused;
     this.data?.reading.show(this.sessionId, chat?.historyLoaded === true, chat?.receivedTurn ?? 0, visible);
   }
 
   onBackPress(): boolean {
+    if (this.quotaDialogToken >= 0) { this.data?.dismissQuota(this.quotaDialogToken); return true; }
     if (this.settingsOpen) { this.closeSettings(); return true; }
     if (this.panel === 'session' && this.rightDock.focusedFloat) {
       this.closeDockTab(-1, this.rightDock.focusedFloat);
@@ -389,6 +425,7 @@ struct DesktopWorkspace {
     this.closeImagePreview();
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
+    this.resetQuota();
     this.data?.stop();
     this.data = undefined;
     this.attachmentsBySession.clear();
@@ -470,6 +507,8 @@ struct DesktopWorkspace {
       return this.pageActive ? openExternalUrl(link) : Promise.resolve(false);
     }, (message: ResourceStr): void => {
       if (this.pageActive) { this.getUIContext().getPromptAction().showToast({ message: message }); }
+    }, (notice?: DesktopQuotaNotice): void => {
+      if (this.pageActive) { this.presentQuota(notice); }
     });
     this.data.start(this.hostUrl);
   }
@@ -2152,6 +2191,159 @@ struct DesktopWorkspace {
     }
   }
 
+  private resetQuota(): void {
+    this.quotaNotice = undefined;
+    this.stopQuotaAccount?.();
+    this.stopQuotaAccount = undefined;
+    this.quotaAccount = emptyDesktopAccountSettingsIdentity();
+    this.releaseQuotaBrowser();
+    this.closeQuotaSurface();
+  }
+
+  private presentQuota(notice?: DesktopQuotaNotice): void {
+    this.closeQuotaSurface();
+    this.quotaNotice = notice;
+    if (notice === undefined) {
+      this.releaseQuotaBrowser();
+      return;
+    }
+    const data = this.data;
+    if (notice.code === 'ACCOUNT_QUOTA' && data !== undefined && this.stopQuotaAccount === undefined) {
+      this.stopQuotaAccount = data.accountNotices.observeAccount((identity: DesktopAccountSettingsIdentity): void => {
+        if (this.data !== data) { return; }
+        const signedOut = this.quotaAccount.signedIn && !identity.signedIn;
+        this.quotaAccount = identity;
+        if (signedOut && this.quotaNotice?.code === 'ACCOUNT_QUOTA') {
+          data.dismissQuota(this.quotaNotice.token);
+        } else {
+          this.showQuotaSurface();
+        }
+      });
+      data.accountNotices.connect();
+    }
+    this.showQuotaSurface();
+  }
+
+  private showQuotaSurface(): void {
+    const notice = this.quotaNotice;
+    if (notice === undefined || !this.pageActive || !this.pageVisible || !this.accountNoticesWindowShown ||
+        this.quotaBrowserVisit !== undefined || this.quotaDialogToken >= 0 || this.quotaToastToken >= 0) { return; }
+    if (notice.code === 'ACCOUNT_QUOTA') {
+      if (!this.quotaAccount.ready) { return; }
+      if (this.quotaAccount.signedIn && desktopAccountPlatformLink(this.quotaAccount.topUpUrl)) {
+        this.openQuotaDialog(notice.token);
+        return;
+      }
+    }
+    this.showQuotaToast(notice.token);
+  }
+
+  private showQuotaToast(token: number): void {
+    this.quotaToastToken = token;
+    this.quotaToastFading = false;
+    this.quotaFadeTimer = setTimeout((): void => {
+      if (this.quotaToastToken === token) { this.quotaToastFading = true; }
+    }, DESKTOP_QUOTA_TOAST_HOLD_MS);
+    this.quotaToastTimer = setTimeout((): void => { this.data?.dismissQuota(token); },
+      DESKTOP_QUOTA_TOAST_HOLD_MS + DESKTOP_QUOTA_TOAST_FADE_MS);
+  }
+
+  private closeQuotaSurface(): void {
+    clearTimeout(this.quotaFadeTimer);
+    clearTimeout(this.quotaToastTimer);
+    this.quotaToastToken = -1;
+    this.quotaToastFading = false;
+    const id = this.quotaDialogId;
+    const wasModal = this.quotaDialogToken >= 0;
+    this.quotaDialogId = -1;
+    this.quotaDialogToken = -1;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
+    if (wasModal) { this.syncReading(); }
+  }
+
+  @Builder
+  private QuotaDialog(owner: DesktopWorkspaceData, token: number) {
+    WithTheme({ colorMode: this.workspaceColorMode() }) {
+      DesktopAccountQuotaDialog({ onDismiss: (): void => { if (this.data === owner) { owner.dismissQuota(token); } },
+        onTopUp: (): void => { if (this.data === owner) { this.openQuotaTopUp(token); } } })
+    }
+  }
+
+  private async openQuotaDialog(token: number): Promise<void> {
+    const owner = this.data;
+    if (owner === undefined) { return; }
+    this.quotaDialogToken = token;
+    this.syncReading();
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.QuotaDialog(owner, token); }, alignment: DialogAlignment.Center,
+        width: Math.max(220, Math.min(380, this.workbenchWidth - 48)), cornerRadius: 16,
+        autoCancel: true, isModal: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          if (this.data === owner && this.quotaDialogToken === token) {
+            this.quotaDialogId = -1;
+            owner.dismissQuota(token);
+          }
+        }
+      });
+      if (this.pageActive && this.data === owner && this.quotaDialogToken === token) { this.quotaDialogId = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.data === owner && this.quotaDialogToken === token) {
+        this.quotaDialogToken = -1;
+        this.syncReading();
+        this.showQuotaToast(token);
+      }
+    }
+  }
+
+  private async openQuotaTopUp(token: number): Promise<void> {
+    const data = this.data;
+    const href = desktopAccountPlatformLink(this.quotaAccount.topUpUrl);
+    if (data === undefined || this.quotaNotice?.token !== token || this.quotaBrowserVisit !== undefined || !href) { return; }
+    const visit: DesktopQuotaBrowserVisit = {
+      notice: token, release: data.holdQuota(token), departed: false, returned: false, launched: false
+    };
+    this.quotaBrowserVisit = visit;
+    this.closeQuotaSurface();
+    const opened = await openExternalUrl(href);
+    if (this.quotaBrowserVisit !== visit || this.data !== data) { return; }
+    if (!opened) {
+      this.releaseQuotaBrowser();
+      this.showQuotaSurface();
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_account_settings_open_failed') });
+      return;
+    }
+    visit.launched = true;
+    if (visit.returned) { data.dismissQuota(token); }
+    else if (!visit.departed) {
+      // Some system handlers open the link without taking focus from the workbench.
+      this.quotaBrowserTimer = setTimeout((): void => {
+        if (this.quotaBrowserVisit === visit && !visit.departed) { data.dismissQuota(token); }
+      }, 1500);
+    }
+  }
+
+  private noteQuotaBrowserFocus(focused: boolean): void {
+    const visit = this.quotaBrowserVisit;
+    if (visit === undefined) { return; }
+    if (!focused) { visit.departed = true; }
+    else if (visit.departed) {
+      visit.returned = true;
+      if (visit.launched) { this.data?.dismissQuota(visit.notice); }
+    }
+  }
+
+  private releaseQuotaBrowser(): void {
+    clearTimeout(this.quotaBrowserTimer);
+    const visit = this.quotaBrowserVisit;
+    this.quotaBrowserVisit = undefined;
+    visit?.release();
+  }
+
   private sidebarActions(footer: boolean): Array<MenuElement> {
     if (footer) {
       return [
@@ -3826,6 +4018,12 @@ struct DesktopWorkspace {
           onClose: (): void => { this.shortcutsOpen = false; }, onChanged: (): void => this.reloadShortcutBindings() })
         if (this.archiveNotice !== undefined) {
           this.ArchiveNoticeContent(this.archiveNotice)
+        }
+        if (this.quotaToastToken >= 0) {
+          Column() {
+            DesktopQuotaToast({ fading: this.quotaToastFading })
+          }.width('100%').height('100%').padding({ top: 40, left: 24, right: 24 })
+            .alignItems(HorizontalAlign.Center).hitTestBehavior(HitTestMode.None)
         }
         if (this.workspaceDropCue !== undefined) { this.WorkspaceDropMarker(this.workspaceDropCue) }
         if (this.workspaceDragTitle) {

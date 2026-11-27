@@ -25,6 +25,8 @@ import { DesktopSessionReading } from './DesktopSessionReading';
 import type { DesktopUnreadSession } from './DesktopSessionReading';
 import { desktopInsertWorkspaceBefore } from './DesktopSessionOrder';
 import type { DesktopSidebarPending } from './DesktopSidebarStatus';
+import { DesktopQuotaNoticeModel } from './DesktopQuotaNoticeModel';
+import type { DesktopQuotaNotice } from './DesktopQuotaNoticeModel';
 
 export interface DesktopForkResult {
   id: string;
@@ -87,6 +89,11 @@ export class DesktopWorkspaceData {
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private readonly afterFrame: (run: () => void) => void;
   private readonly onTheme: (theme: DesktopTheme) => void;
+  private readonly quota = new DesktopQuotaNoticeModel();
+  private readonly onQuotaNotice: (notice?: DesktopQuotaNotice) => void;
+  private readonly onLiveTurnEnd = (sessionId: string, frame: Object): void => {
+    if (this.active && this.quota.observe(sessionId, frame, true)) { this.onQuotaNotice(this.quota.snapshot()); }
+  };
   private accountWatchScheduled: boolean = false;
   private accountWatchEnabled: boolean = false;
   private active: boolean = true;
@@ -116,17 +123,25 @@ export class DesktopWorkspaceData {
     onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void,
     onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void,
     onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void,
-    openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void) {
+    openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void,
+    onQuotaNotice: (notice?: DesktopQuotaNotice) => void) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
+    this.onQuotaNotice = onQuotaNotice;
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices);
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.interactions.observeSidebarPending(onSidebarPending);
     this.conversation = new DesktopConversation(this.connection, onConversation,
-      (): void => { this.refreshSessions(); }, this.interactions, this.actions, this.cordis);
+      (): void => { this.refreshSessions(); }, this.interactions, this.actions, this.cordis, this.onLiveTurnEnd);
+  }
+
+  holdQuota(token: number): () => void { return this.quota.hold(token); }
+
+  dismissQuota(token: number): void {
+    if (this.active && this.quota.dismiss(token)) { this.onQuotaNotice(undefined); }
   }
 
   createDockConversation(onConversation: (snapshot: DesktopConversationSnapshot) => void,
@@ -136,7 +151,7 @@ export class DesktopWorkspaceData {
     this.dockConversations = conversations;
     const interactions = this.interactions.createView(onInteractions);
     const conversation = new DesktopConversation(this.connection, onConversation,
-      (): void => { this.refreshSessions(); }, interactions, this.actions, this.cordis);
+      (): void => { this.refreshSessions(); }, interactions, this.actions, this.cordis, this.onLiveTurnEnd);
     const binding: DesktopDockConversation = { conversation: conversation, interactions: interactions,
       close: (): void => {
         if (!conversations.delete(binding)) { return; }
@@ -401,6 +416,7 @@ export class DesktopWorkspaceData {
 
   stop(): void {
     this.active = false;
+    this.quota.clear();
     this.pluginInstall.dispose();
     this.connectorAccounts.dispose();
     this.cordis.dispose();

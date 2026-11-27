@@ -151,6 +151,7 @@ export class DesktopConversation {
   private readonly interactions: DesktopInteractions;
   private readonly listener: (snapshot: DesktopConversationSnapshot) => void;
   private readonly refreshSessions: () => void;
+  private readonly onLiveTurnEnd: (sessionId: string, frame: Object) => void;
   private sessionId: string = '';
   private subagent?: DesktopSubagentEntry;
   private subagents: DesktopSubagentEntry[] = [];
@@ -212,6 +213,7 @@ export class DesktopConversation {
   private wasPartialHistory: boolean = false;
   private historyError: string = '';
   private cursor: number = -1;
+  private followCursor: number = -1;
   private earliest: number = -1;
   private running: boolean = false;
   private historyLoaded: boolean = false;
@@ -227,13 +229,15 @@ export class DesktopConversation {
 
   constructor(connection: Connection, listener: (snapshot: DesktopConversationSnapshot) => void,
     refreshSessions: () => void, interactions: DesktopInteractions, host: DesktopHostActions,
-    cordis?: DesktopCordisRuntime) {
+    cordis?: DesktopCordisRuntime,
+    onLiveTurnEnd: (sessionId: string, frame: Object) => void = (_sessionId: string, _frame: Object): void => {}) {
     this.connection = connection;
     this.host = host;
     this.cordis = cordis;
     this.interactions = interactions;
     this.listener = listener;
     this.refreshSessions = refreshSessions;
+    this.onLiveTurnEnd = onLiveTurnEnd;
     this.feedback = new DesktopFeedback(host, (): void => this.publish());
     this.stopModelCatalogWatch = host.watchModelCatalog((): void => {
       if (this.sessionId && !this.closed) { this.loadModels(); }
@@ -303,6 +307,7 @@ export class DesktopConversation {
     this.modelSequence = -1;
     this.permission = '';
     this.cursor = -1;
+    this.followCursor = -1;
     this.earliest = -1;
     this.hasEarlier = false;
     this.wasPartialHistory = false;
@@ -1168,6 +1173,7 @@ export class DesktopConversation {
     if (type === 'snapshot') {
       this.historyLoaded = true;
       const cursor = getNumber(frame, 'cursor') ?? -1;
+      this.followCursor = Math.max(this.followCursor, cursor);
       if (cursor >= this.cursor) {
         this.addRecords(getArray(frame, 'records') ?? [], !this.loading, getBoolean(frame, 'hasMore') === true);
         this.cursor = cursor;
@@ -1204,6 +1210,9 @@ export class DesktopConversation {
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
       const eventType = getString(event, 'type');
+      const sequence = getNumber(event, 'seq') ?? -1;
+      const appended = sequence > this.followCursor;
+      this.followCursor = Math.max(this.followCursor, sequence);
       if (eventType === 'tool/call' || eventType === EVENT_TURN_END || eventType === 'assistant/message') {
         this.preparingTool = '';
       }
@@ -1211,7 +1220,7 @@ export class DesktopConversation {
         eventType === 'plan/mode' || eventType === 'command/done' || eventType === 'goal/change') {
         this.loadSelection(this.generation);
       }
-      this.cursor = Math.max(this.cursor, getNumber(event, 'seq') ?? -1);
+      this.cursor = Math.max(this.cursor, sequence);
       if (this.addRecords([frame], true, this.hasEarlier)) { this.cordis?.refresh(); }
       if (eventType === EVENT_TURN_END || (eventType !== undefined && mayChangeSessionTitle(eventType))) {
         this.refreshSessions();
@@ -1225,6 +1234,7 @@ export class DesktopConversation {
         this.partial = '';
         this.attempt = '';
         this.error = '';
+        if (appended) { this.onLiveTurnEnd(this.sessionId, frame); }
       } else if (eventType === 'assistant/message') {
         this.partial = '';
         this.attempt = '';

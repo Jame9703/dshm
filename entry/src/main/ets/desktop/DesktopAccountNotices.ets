@@ -81,9 +81,10 @@ export class DesktopAccountNotices {
     const links = signedIn ? getRecord(state, 'links') : undefined;
     const usageUrl = getString(links, 'usageUrl') ?? '';
     const topUpUrl = getString(links, 'topUpUrl') ?? '';
-    if (signedIn === previous.signedIn && (!signedIn || (previous.revision === this.accountVersion &&
+    if (previous.ready && signedIn === previous.signedIn && (!signedIn || (previous.revision === this.accountVersion &&
       previous.usageUrl === usageUrl && previous.topUpUrl === topUpUrl))) { return; }
-    this.accountIdentity = { signedIn: signedIn, revision: this.accountVersion, usageUrl: usageUrl, topUpUrl: topUpUrl };
+    this.accountIdentity = { ready: true, signedIn: signedIn, revision: this.accountVersion,
+      usageUrl: usageUrl, topUpUrl: topUpUrl };
     this.accountObservers?.forEach((listener: (identity: DesktopAccountSettingsIdentity) => void): void => {
       listener(this.accountIdentity);
     });
@@ -117,6 +118,7 @@ export class DesktopAccountNotices {
       onError: ended,
       onEnd: ended
     });
+    if (this.stopWatch === undefined) { ended(); }
   }
 
   stop(): void {
