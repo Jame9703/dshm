@@ -2,7 +2,7 @@ import { util } from '@kit.ArkTS';
 import {
   commandsListEndpoint, commandsListPayload, filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress,
   followSubagentAddress, imagePart,
-  modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
+  projectSessionPage,
   projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, queueSteerAction,
   SessionPageValue, sessionCancelPayload,
   sessionFollowPayload, sessionUpdateQueuePayload, Speaker, textPart, TrajectoryItem, TrajectoryKind
@@ -11,7 +11,7 @@ import type { FeedbackRow, ModelOption, ModelSelection, PromptContentPart, Queue
 import { Connection, getArray, getBoolean, getNumber, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { RpcResult, StreamSink } from 'connection';
 import {
-  argsFor, COMMANDS_EXECUTE_ENDPOINT, EVENT_TURN_END, mayChangeSessionTitle, MODEL_CATALOG_ENDPOINT, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
+  argsFor, COMMANDS_EXECUTE_ENDPOINT, EVENT_TURN_END, mayChangeSessionTitle, SESSION_CANCEL_ENDPOINT, SESSION_FOLLOW_ENDPOINT,
   SESSION_PAGE_ENDPOINT, SESSION_PROMPT_ENDPOINT, SESSION_SELECT_MODEL_ENDPOINT, SESSION_UPDATE_QUEUE_ENDPOINT
 } from 'dshcompat';
 
@@ -29,6 +29,7 @@ import { DesktopActionCardState, desktopHideActionCardFences } from './DesktopAc
 import type { DesktopActionCard } from './DesktopActionCards';
 import { DesktopTeamState } from './DesktopTeam';
 import type { DesktopTeam } from './DesktopTeam';
+import type { DesktopModelCatalog, DesktopModelCatalogResult } from './DesktopModelCatalog';
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
 import { DesktopWorkflowTimeline } from './DesktopWorkflowTimeline';
 import type { DesktopWorkflowRun } from './DesktopWorkflowTimeline';
@@ -76,9 +77,10 @@ export interface DesktopConversationSnapshot {
   waitingForInput: boolean;
   models: ModelOption[];
   modelsLoading: boolean;
+  modelCatalog?: DesktopModelCatalog;
+  modelError: string;
   permissions: DesktopPermissionOption[];
   permission: string;
-  modelLabel: string;
   planMode?: boolean;
   goal?: DesktopGoal;
   selection?: ModelSelection;
@@ -138,11 +140,13 @@ export class DesktopConversation {
   private readonly team: DesktopTeamState = new DesktopTeamState();
   private inheritedSequence: number = -1;
   readonly feedback: DesktopFeedback;
-  private models: ModelOption[] = [];
+  private modelCatalog?: DesktopModelCatalog;
+  private modelRequest?: Promise<DesktopModelCatalogResult>;
+  private modelError: string = '';
   private modelsLoading: boolean = false;
-  private modelsRequested: boolean = false;
-  private defaultModel?: ModelSelection;
   private model?: ModelSelection;
+  private modelSequence: number = -1;
+  private readonly stopModelCatalogWatch: () => void;
   private error: string = '';
   private loading: boolean = false;
   private pageLoading: boolean = false;
@@ -169,27 +173,25 @@ export class DesktopConversation {
     this.listener = listener;
     this.refreshSessions = refreshSessions;
     this.feedback = new DesktopFeedback(host, (): void => this.publish());
+    this.stopModelCatalogWatch = host.watchModelCatalog((): void => {
+      if (this.sessionId && !this.closed) { this.loadModels(); }
+    });
   }
 
   async loadModels(refresh: boolean = false): Promise<void> {
-    if (this.modelsLoading || (this.modelsRequested && !refresh)) {
-      return;
-    }
-    const empty: Record<string, Object> = {};
-    const args = argsFor(MODEL_CATALOG_ENDPOINT, empty);
-    if (args === undefined) {
-      return;
-    }
-    this.modelsLoading = true;
-    if (refresh) { this.publish(); }
-    const response = await this.connection.call(MODEL_CATALOG_ENDPOINT, args);
-    this.modelsLoading = false;
     if (this.closed) { return; }
-    if (response.ok) {
-      this.modelsRequested = true;
-      this.models = projectModelCatalog(response.value);
-      this.defaultModel = projectDefaultSelection(response.value);
-    }
+    const request = this.host.modelCatalog(refresh);
+    if (request === this.modelRequest) { return; }
+    const notify = refresh || this.modelRequest !== undefined;
+    this.modelRequest = request;
+    this.modelsLoading = true;
+    this.modelError = '';
+    if (notify) { this.publish(); }
+    const response = await request;
+    if (this.closed || this.modelRequest !== request) { return; }
+    this.modelsLoading = false;
+    this.modelError = response.problem;
+    if (response.catalog !== undefined) { this.modelCatalog = response.catalog; }
     this.publish();
   }
 
@@ -225,6 +227,7 @@ export class DesktopConversation {
     this.queue.reset();
     this.imageBytesLimit = undefined;
     this.model = undefined;
+    this.modelSequence = -1;
     this.permission = '';
     this.cursor = -1;
     this.earliest = -1;
@@ -269,6 +272,7 @@ export class DesktopConversation {
 
   close(): void {
     this.closed = true;
+    this.stopModelCatalogWatch();
     this.feedback.select('');
     this.stopWatching();
     this.pendingRequests.clear();
@@ -587,6 +591,9 @@ export class DesktopConversation {
   }
 
   async selectModel(sessionId: string, selection: ModelSelection): Promise<string> {
+    if (!sessionId || this.sessionId !== sessionId || this.closed) { return '当前会话暂不可操作'; }
+    const generation = this.generation;
+    const modelSequence = this.modelSequence;
     const request: Record<string, Object> = {
       'sessionId': sessionId, 'provider': selection.provider, 'model': selection.modelId
     };
@@ -598,7 +605,7 @@ export class DesktopConversation {
     if (!response?.ok) {
       return this.failure(response, '无法切换模型');
     }
-    if (this.sessionId === sessionId && !this.closed) {
+    if (this.current(generation) && this.modelSequence === modelSequence) {
       this.model = this.readModel(getRecord(response.value, 'selected')) ?? selection;
       this.publish();
     }
@@ -796,7 +803,8 @@ export class DesktopConversation {
         const queueChanged = this.readQueue(result.value);
         const cardsChanged = this.actionCards.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
         const teamChanged = this.team.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
-        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged) {
+        const modelChanged = this.observeModel(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
+        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged || modelChanged) {
           this.publish();
         }
       }
@@ -905,12 +913,19 @@ export class DesktopConversation {
     this.team.observe(values, getNumber(projection, 'asOfSeq') ?? 0);
     this.readSubagents(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readImageLimit(values);
-    const model = getRecord(values, 'modelSelection');
-    this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
+    this.observeModel(values, getNumber(projection, 'asOfSeq') ?? 0);
     this.permission = getString(getRecord(values, 'permissions'), 'currentValue') ?? '';
     if (this.permission.length > 0) {
       this.loadPermissions();
     }
+  }
+
+  private observeModel(values: Object | undefined, sequence: number): boolean {
+    const projection = getRecord(values, 'modelSelection');
+    if (projection === undefined || sequence <= this.modelSequence) { return false; }
+    this.modelSequence = sequence;
+    this.model = this.readModel(getRecord(projection, Object.keys(projection).includes('next') ? 'next' : 'lastUsed'));
+    return true;
   }
 
   private readSubagents(values: Object | undefined, sequence: number): boolean {
@@ -972,7 +987,8 @@ export class DesktopConversation {
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);
       const cardsChanged = this.actionCards.observe(changes, getNumber(frame, 'seq') ?? 0);
       const teamChanged = this.team.observe(changes, getNumber(frame, 'seq') ?? 0);
-      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged) { return; }
+      const modelChanged = this.observeModel(changes, getNumber(frame, 'seq') ?? 0);
+      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
@@ -1034,7 +1050,7 @@ export class DesktopConversation {
     if (this.closed) {
       return;
     }
-    const selection = this.model ?? this.defaultModel;
+    const selection = this.model ?? this.modelCatalog?.defaultModel;
     const sending = this.sending.get(this.sessionId);
     const queue = sending !== undefined && !this.queue.rows.some((row: DesktopQueuedPrompt): boolean =>
       row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
@@ -1043,9 +1059,10 @@ export class DesktopConversation {
       preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,
-      models: this.models, modelsLoading: this.modelsLoading, selection: selection, error: this.error,
+      models: this.modelCatalog?.models ?? [], modelsLoading: this.modelsLoading, modelCatalog: this.modelCatalog,
+      modelError: this.modelError, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,
-      modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
+      planMode: this.planMode,
       goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
       feedbackRows: this.feedback.rows, actionCards: this.actionCards.cards, queue: queue, busyEnterSteers: this.busyEnterSteers,

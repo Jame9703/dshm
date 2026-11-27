@@ -504,6 +504,20 @@
       "name": "desktop_chat_model_settings",
       "value": "Model settings"
     },
+    { "name": "desktop_chat_model", "value": "Model" },
+    { "name": "desktop_chat_model_loading", "value": "Loading models…" },
+    { "name": "desktop_chat_model_reload", "value": "Reload" },
+    { "name": "desktop_chat_model_unavailable", "value": "Could not load the model catalog" },
+    { "name": "desktop_chat_model_search", "value": "Search models…" },
+    { "name": "desktop_chat_model_search_clear", "value": "Clear search" },
+    { "name": "desktop_chat_model_search_empty", "value": "No matching models." },
+    { "name": "desktop_chat_model_empty", "value": "No models available" },
+    { "name": "desktop_chat_model_back", "value": "Back to model menu" },
+    { "name": "desktop_chat_model_account_provider", "value": "DeepSeek Account" },
+    {
+      "name": "desktop_chat_effort_default",
+      "value": "Default"
+    },
     {
       "name": "desktop_chat_effort",
       "value": "Reasoning effort"

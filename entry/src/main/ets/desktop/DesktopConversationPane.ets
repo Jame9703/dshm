@@ -25,6 +25,7 @@ import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalett
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopModelPicker } from './DesktopModelPicker';
 import { activeDesktopReference, desktopReferenceChoices, desktopReferenceCrumbs, desktopReferenceText,
   desktopFileReferenceInsertion, desktopSettledReference } from './DesktopReferences';
 import type { DesktopReferenceChoice, DesktopReferenceCrumb, DesktopReferenceToken } from './DesktopReferences';
@@ -90,12 +91,12 @@ export struct DesktopConversationPane {
   onQueueAction: (session: string, id: string, action: QueueActionBody) => Promise<string> =
     (_session: string, _id: string, _action: QueueActionBody): Promise<string> => Promise.resolve('');
   onSteerQueue: () => void = (): void => {};
-  onLoadModels: () => void = () => {};
+  onLoadModels: (refresh: boolean) => void = () => {};
   onModelsSettings: () => void = () => {};
   onPluginDetails: (name: string, title: string, description: string) => void = (): void => {};
   onLoadCommands: () => void = () => {};
   onCommand: (name: string) => Promise<string> = (_name: string): Promise<string> => Promise.resolve('');
-  onSlashModel: (selection: ModelSelection) => Promise<string> =
+  onSelectModel: (selection: ModelSelection) => Promise<string> =
     (_selection: ModelSelection): Promise<string> => Promise.resolve('');
   onSlashPermission: (preset: string) => Promise<string> = (_preset: string): Promise<string> => Promise.resolve('');
   onStop: () => void = () => {};
@@ -110,7 +111,6 @@ export struct DesktopConversationPane {
   onTerminal: () => void = () => {};
   onFiles: () => void = () => {};
   onRightDock: () => void = () => {};
-  onModel: (selection: ModelSelection) => void = () => {};
   onPermission: (preset: string) => void = () => {};
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
@@ -558,7 +558,7 @@ export struct DesktopConversationPane {
     this.riskPreset = '';
     this.agreed = false;
     this.palette = kind;
-    if (kind === 'model') { this.onLoadModels(); }
+    if (kind === 'model') { this.onLoadModels(false); }
   }
 
   private async pickPalette(id: string): Promise<void> {
@@ -601,7 +601,7 @@ export struct DesktopConversationPane {
       const option = this.snapshot?.models.find((row: ModelOption): boolean => this.modelKey(row) === id);
       if (option === undefined) { return; }
       this.closePalette();
-      problem = await this.onSlashModel({ provider: option.provider, modelId: option.modelId,
+      problem = await this.onSelectModel({ provider: option.provider, modelId: option.modelId,
         effort: option.defaultEffort });
     } else if (view === 'permission') {
       const preset = this.riskPreset || id;
@@ -843,20 +843,6 @@ export struct DesktopConversationPane {
     .backgroundColor($r('app.color.workspace_panel')).onClick((): void => { this.onPlanPreview(plan); })
   }
 
-  private modelMenu(): Array<MenuElement> {
-    if ((this.snapshot?.models.length ?? 0) === 0) {
-      return [{ value: $r('app.string.desktop_chat_model_settings'), action: this.onModelsSettings }];
-    }
-    return (this.snapshot?.models ?? []).map((option: ModelOption): MenuElement => {
-      return {
-        value: option.modelName + ' · ' + option.providerName,
-        action: (): void => this.onModel({
-          provider: option.provider, modelId: option.modelId, effort: option.defaultEffort
-        })
-      };
-    });
-  }
-
   private teamAvailable(): boolean {
     const snapshot = this.snapshot;
     return snapshot?.team !== undefined && snapshot.subagent === undefined &&
@@ -954,40 +940,6 @@ export struct DesktopConversationPane {
     if (dialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(dialog); }
   }
 
-  @Builder
-  private TeamModeContents() {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Text('开启智能体团队协作').fontSize(14).layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.snapshot?.team?.enabled === true })
-          .key('desktopTeamModeSwitch').accessibilityText('开启智能体团队协作')
-          .enabled(this.snapshot?.teamModelReady === true && !this.busy && !this.teamSaving)
-          .onChange((enabled: boolean): void => { this.chooseTeamMode(enabled); })
-      }.width('100%')
-      Text('通过共享任务板协调多个智能体的分工与进度，复杂任务表现更佳，token 开销也相应更高。')
-        .fontSize(13).fontColor($r('sys.color.font_secondary'))
-      if (this.teamProblem && !this.teamDialogOwner) { Text(this.teamProblem).fontSize(13).fontColor($r('sys.color.warning')) }
-    }.width(256).padding(12).alignItems(HorizontalAlign.Start)
-  }
-
-  @Builder
-  private TeamModeMenu() {
-    Menu() { MenuItem(this.TeamModeContents) }
-  }
-
-  @Builder
-  private ModelPickerMenu() {
-    Menu() {
-      ForEach(this.modelMenu(), (option: MenuElement): void => {
-        MenuItem({ content: option.value }).onChange((): void => { option.action(); })
-      }, (_: MenuElement, index: number): string => String(index))
-      if (this.teamAvailable()) {
-        MenuItem({ content: '智能体团队协作', labelInfo: this.snapshot?.team?.enabled ? '开启' : '关闭' })
-          .key('desktopTeamModeMenuItem').subMenuBuilder(this.TeamModeMenu)
-      }
-    }
-  }
-
   private sessionMenu(): MenuElement[] {
     return [
       { value: '复制会话为 Markdown', icon: $r('app.media.dsh_session_copy'),
@@ -997,23 +949,6 @@ export struct DesktopConversationPane {
       { value: '反馈', icon: $r('app.media.dsh_feedback_paper_plane_outline'), enabled: !this.choosingFeedback,
         action: (): void => { this.onSessionFeedback(this.snapshot?.sessionId ?? ''); } }
     ];
-  }
-
-  private effortMenu(): Array<MenuElement> {
-    const selection = this.snapshot?.selection;
-    if (selection === undefined) {
-      return [];
-    }
-    const option = this.snapshot?.models.find((item: ModelOption): boolean =>
-      item.provider === selection.provider && item.modelId === selection.modelId);
-    return (option?.efforts ?? []).map((effort: string): MenuElement => {
-      return {
-        value: effort,
-        action: (): void => this.onModel({
-          provider: selection.provider, modelId: selection.modelId, effort: effort
-        })
-      };
-    });
   }
 
   @Builder
@@ -1065,24 +1000,6 @@ export struct DesktopConversationPane {
   }
 
   @Builder
-  private ModelChip(effort: boolean) {
-    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-      Row({ space: 5 }) {
-        Text(effort ? this.snapshot?.selection?.effort || $r('app.string.desktop_chat_effort') :
-          this.snapshot?.modelLabel || $r('app.string.desktop_chat_select_model'))
-          .fontSize(13).fontColor($r('sys.color.font_secondary'))
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10)
-          .fontColor([$r('sys.color.font_tertiary')]).rotate({ angle: 90 })
-      }
-    }
-    .key(effort ? 'desktopEffortMenu' : 'desktopModelMenu').height(32).padding({ left: 8, right: 8 })
-    .constraintSize({ maxWidth: effort ? 95 : 160 })
-    .borderRadius(8).backgroundColor(Color.Transparent).focusOnTouch(false)
-    .enabled(!this.busy).bindMenu(effort ? this.effortMenu() : this.ModelPickerMenu, this.menuOptions)
-  }
-
-  @Builder
   private ComposerControls() {
     Scroll() {
       Row({ space: 4 }) {
@@ -1107,10 +1024,14 @@ export struct DesktopConversationPane {
                 action: (): void => { this.onPermission(row.value); } };
             }) ?? [], this.menuOptions)
         }
-        this.ModelChip(false)
-        if (this.effortMenu().length > 0) {
-          this.ModelChip(true)
-        }
+        DesktopModelPicker({ sessionId: this.snapshot?.sessionId ?? '', catalog: this.snapshot?.modelCatalog,
+          selection: this.snapshot?.selection, loading: this.snapshot?.modelsLoading === true,
+          problem: this.snapshot?.modelError ?? '', busy: this.busy, placement: this.menuOptions?.placement ?? Placement.TopLeft,
+          hasTeam: this.teamAvailable(), teamEnabled: this.snapshot?.team?.enabled === true,
+          teamReady: this.snapshot?.teamModelReady === true, teamUsed: this.snapshot?.teamModelUsed === true,
+          teamSaving: this.teamSaving, teamProblem: this.teamProblem, onLoad: this.onLoadModels,
+          onSettings: this.onModelsSettings, onSelect: this.onSelectModel,
+          onTeamMode: (enabled: boolean): void => { this.chooseTeamMode(enabled); } })
       }
     }
     .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)

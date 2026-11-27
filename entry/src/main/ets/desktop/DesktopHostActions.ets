@@ -1,13 +1,17 @@
 import { Connection, getArray, getRecord, getString, RemoteFailure, rpcFail } from 'connection';
 import type { DuplexStream, RpcResult, StreamSink } from 'connection';
-import { argsFor } from 'dshcompat';
+import { argsFor, MODEL_CATALOG_ENDPOINT } from 'dshcompat';
 import { desktopChangeSummary, DesktopChangeSummary } from './DesktopArtifacts';
+import { desktopModelCatalog } from './DesktopModelCatalog';
+import type { DesktopModelCatalogResult } from './DesktopModelCatalog';
 
 export class DesktopHostActions {
   private readonly connection: Connection;
   private readonly referencePaths: Map<string, Promise<boolean>> = new Map();
   private readonly changes: Map<string, Promise<DesktopChangeSummary | undefined>> = new Map();
   private modelCatalogWatchers?: Set<() => void>;
+  private modelCatalogRequest?: Promise<DesktopModelCatalogResult>;
+  private modelCatalogSettled: boolean = false;
 
   constructor(connection: Connection) {
     this.connection = connection;
@@ -21,7 +25,25 @@ export class DesktopHostActions {
   }
 
   modelCatalogChanged(): void {
+    this.modelCatalogRequest = undefined;
+    this.modelCatalogSettled = false;
     this.modelCatalogWatchers?.forEach((listener: () => void): void => { listener(); });
+  }
+
+  modelCatalog(refresh: boolean = false): Promise<DesktopModelCatalogResult> {
+    const previous = this.modelCatalogRequest;
+    if (previous !== undefined && (!refresh || !this.modelCatalogSettled)) { return previous; }
+    this.modelCatalogSettled = false;
+    const request = this.call(MODEL_CATALOG_ENDPOINT).then((result: RpcResult): DesktopModelCatalogResult => {
+      if (this.modelCatalogRequest === request) {
+        this.modelCatalogSettled = true;
+        if (!result.ok) { this.modelCatalogRequest = undefined; }
+      }
+      return result.ok ? { catalog: desktopModelCatalog(result.value), problem: '' } :
+        { problem: result.error?.message || '无法读取模型目录' };
+    });
+    this.modelCatalogRequest = request;
+    return request;
   }
 
   watch(endpoint: string, body: Record<string, Object>, sink: StreamSink): (() => void) | undefined {

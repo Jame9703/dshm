@@ -222,7 +222,7 @@ export struct DesktopDockChatPane {
           onQueueAction: (session: string, row: string, action: QueueActionBody): Promise<string> =>
             this.run((binding): Promise<string> => binding.conversation.updateQueue(session, row, action)),
           onSteerQueue: (): void => { this.run((binding, id): Promise<string> => binding.conversation.steerQueue(id)); },
-          onLoadModels: (): void => { this.binding?.conversation.loadModels(true); },
+          onLoadModels: (refresh: boolean): void => { this.binding?.conversation.loadModels(refresh); },
           onModelsSettings: (): void => { this.actions?.openModels(); },
           onPluginDetails: (name: string, title: string, description: string): void => {
             this.actions?.openPlugin(name, title, description);
@@ -232,8 +232,7 @@ export struct DesktopDockChatPane {
           onCommand: (command: string): Promise<string> => this.run((binding, id): Promise<string> =>
             binding.conversation.runCommandChoice(id, command, (session: string): Promise<string> =>
               this.actions?.exportLog(session) ?? Promise.resolve('当前会话暂不可导出'))),
-          onModel: (model: ModelSelection): void => { this.run((binding, id): Promise<string> => binding.conversation.selectModel(id, model)); },
-          onSlashModel: (model: ModelSelection): Promise<string> => this.run((binding, id): Promise<string> => binding.conversation.selectModel(id, model)),
+          onSelectModel: (model: ModelSelection): Promise<string> => this.run((binding, id): Promise<string> => binding.conversation.selectModel(id, model)),
           onPermission: (preset: string): void => { this.run((binding, id): Promise<string> => binding.conversation.selectPermission(id, preset)); },
           onSlashPermission: (preset: string): Promise<string> => this.run((binding, id): Promise<string> => binding.conversation.selectPermission(id, preset)),
           onCopyTranscript: (): void => { this.actions?.copy(this.target?.id ?? ''); },

@@ -1812,13 +1812,6 @@ struct DesktopWorkspace {
     }
   }
 
-  private chooseModel(selection: ModelSelection): void {
-    const conversation = this.data?.conversation;
-    if (conversation !== undefined) {
-      this.chatAction((id: string): Promise<string> => conversation.selectModel(id, selection));
-    }
-  }
-
   private workspaceMenu(): Array<MenuElement> {
     return this.groups.map((group: DesktopWorkspaceGroup): MenuElement => {
       return { value: group.title, action: (): void => this.pickWorkspace(group) };
@@ -2875,7 +2868,7 @@ struct DesktopWorkspace {
             const conversation = this.data?.conversation;
             if (conversation !== undefined) { this.chatAction((id: string): Promise<string> => conversation.steerQueue(id)); }
           },
-          onLoadModels: (): void => { this.data?.conversation.loadModels(true); },
+          onLoadModels: (refresh: boolean): void => { this.data?.conversation.loadModels(refresh); },
           onModelsSettings: (): void => { this.openSettings('settings.models'); },
           onPluginDetails: (name: string, title: string, description: string): void => {
             this.openPlugins(name, title, description);
@@ -2887,7 +2880,7 @@ struct DesktopWorkspace {
               (id: string): Promise<string> => conversation.runCommandChoice(id, name,
                 (sessionId: string): Promise<string> => this.exportLog(sessionId)));
           },
-          onSlashModel: (selection: ModelSelection): Promise<string> => {
+          onSelectModel: (selection: ModelSelection): Promise<string> => {
             const conversation = this.data?.conversation;
             return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
               (id: string): Promise<string> => conversation.selectModel(id, selection));
@@ -2920,7 +2913,6 @@ struct DesktopWorkspace {
           onFiles: (): void => this.showWorkspaceFiles(true),
           terminalOpen: this.dockShows(DesktopDockKind.TERMINAL),
           onTerminal: (): void => this.showTerminal(false, true),
-          onModel: (selection: ModelSelection): void => this.chooseModel(selection),
           onPermission: (preset: string): void => {
             const conversation = this.data?.conversation;
             if (conversation !== undefined) {

@@ -1236,6 +1236,10 @@ export interface ModelOption {
   /** 推理强度选项（空 = 不支持） */
   efforts: string[];
   defaultEffort: string;
+  /** 宿主提供的显示文案与附加信息，供支持该形态的选择器读取。 */
+  effortLabels?: string[];
+  supportsReasoning?: boolean;
+  badge?: Object;
 }
 
 /**
@@ -1250,8 +1254,7 @@ export interface ModelOption {
  * 模型 chip 都按这个粒度选择）。provider 名与 id 都保留下来，
  * 以便选择后能构造上游要求的 `{provider, model, reasoningEffort}`。
  *
- * `efforts` 取的是**强度 id 列表**（不是显示名）——下游要把它原样发回上游。
- * 显示名由界面按需查表，不在这里混入。
+ * `efforts` 保留宿主的强度 ID，用于提交选择。`effortLabels` 同顺序保存用于显示的文案。
  */
 export function projectModelCatalog(value: Object | undefined): ModelOption[] {
   const out: ModelOption[] = [];
@@ -1278,6 +1281,7 @@ export function projectModelCatalog(value: Object | undefined): ModelOption[] {
         continue;
       }
       const efforts: string[] = [];
+      const effortLabels: string[] = [];
       let defaultEffort: string = '';
       const reasoning: Object | undefined = getRecord(model, 'reasoning');
       if (reasoning !== undefined) {
@@ -1287,6 +1291,7 @@ export function projectModelCatalog(value: Object | undefined): ModelOption[] {
             const id: string = getString(list[e], 'id') ?? '';
             if (id.length > 0) {
               efforts.push(id);
+            effortLabels.push(getString(list[e], 'name') || id);
             }
           }
         }
@@ -1299,7 +1304,10 @@ export function projectModelCatalog(value: Object | undefined): ModelOption[] {
         modelName: getString(model, 'name') ?? modelId,
         description: getString(model, 'description') ?? '',
         efforts: efforts,
-        defaultEffort: defaultEffort
+        defaultEffort: defaultEffort,
+        effortLabels: effortLabels,
+        supportsReasoning: reasoning !== undefined,
+        badge: getRecord(model, 'badge')
       });
     }
   }
