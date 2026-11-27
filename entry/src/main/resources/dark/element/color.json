@@ -39,6 +39,18 @@
       "value": "#33FFFFFF"
     },
     {
+      "name": "desktop_approval_warning_background",
+      "value": "#372919"
+    },
+    {
+      "name": "desktop_approval_warning_ink",
+      "value": "#F2BF72"
+    },
+    {
+      "name": "desktop_approval_warning_border",
+      "value": "#684D2B"
+    },
+    {
       "name": "desktop_reference_text",
       "value": "#7AAAFF"
     },

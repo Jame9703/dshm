@@ -65,6 +65,8 @@ export interface DesktopInteraction {
   callId: string;
   tool: string;
   reason: string;
+  displayReason?: Object;
+  approvalSubmitting?: boolean;
   kind: string;
   questions: DesktopQuestion[];
   continued: boolean;
@@ -145,6 +147,7 @@ export class DesktopInteractions {
   private readonly owner?: DesktopInteractions;
   private views?: Set<DesktopInteractions>;
   private eventClientId: string = '';
+  private locale: string = 'zh';
   private selected: string = '';
   private stopClaim?: () => void;
   private claimEvent: string = '';
@@ -167,6 +170,14 @@ export class DesktopInteractions {
 
   observeSidebarPending(listener: (pending: Map<string, DesktopSidebarPending>) => void): void {
     this.onSidebarPending = listener;
+  }
+
+  setLocale(locale: string): void {
+    if (locale === this.locale) { return; }
+    this.locale = locale;
+    if (Array.from(this.events.values()).some((row: DesktopInteraction): boolean => row.displayReason !== undefined)) {
+      this.publish();
+    }
   }
 
   createView(onChange: (items: DesktopInteraction[]) => void): DesktopInteractions {
@@ -245,7 +256,8 @@ export class DesktopInteractions {
       callId: getString(wait, 'callId') ?? getString(request, 'callId') ?? '',
       kind: approval ? 'approval' : 'question',
       tool: getString(request, 'toolName') ?? '',
-      reason: getString(displayReason, 'zh') ?? getString(displayReason, 'en') ?? getString(request, 'reason') ?? '',
+      reason: getString(request, 'reason') ?? '',
+      displayReason: displayReason,
       questions: questions,
       continued: false,
       timed: getBoolean(wait, 'timed') === true,
@@ -465,10 +477,13 @@ export class DesktopInteractions {
     if (event === undefined) { return '这项请求已结束'; }
     if (this.settling.has(event)) { return '正在提交这项请求'; }
     this.settling.add(event);
+    if (event.kind === 'approval') { this.publish(); }
     const error = await this.send(id, kind, value);
     this.settling.delete(event);
     if (error.length === 0 && this.events.get(id) === event && this.events.delete(id)) {
       if (clearDraft) { this.questionStates.delete(this.questionKey(event)); }
+      this.publish();
+    } else if (event.kind === 'approval' && this.events.get(id) === event) {
       this.publish();
     }
     return error;
@@ -530,6 +545,14 @@ export class DesktopInteractions {
     const continued = this.answerableQuestions(this.questionProjections.get(this.selected)).filter((row: DesktopInteraction): boolean =>
       !active.some((event: DesktopInteraction): boolean => event.callId === row.callId));
     this.onChange([...active, ...continued].map((row: DesktopInteraction): DesktopInteraction => {
+      if (row.kind === 'approval') {
+        const locale = (this.owner ?? this).locale;
+        const base = locale.split('-')[0].toLowerCase();
+        const reason = getString(row.displayReason, locale) ?? getString(row.displayReason, base) ??
+          getString(row.displayReason, 'en') ?? row.reason;
+        return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: reason,
+          kind: 'approval', questions: [], continued: false, timed: false, approvalSubmitting: this.settling.has(row) };
+      }
       if (row.kind !== 'question' || row.planReview !== undefined) { return row; }
       const state = this.questionStates.get(this.questionKey(row));
       return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: row.reason,

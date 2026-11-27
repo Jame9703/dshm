@@ -1,5 +1,5 @@
 import { makeItem, projectWireRecord, ToolState, TrajectoryItem, TrajectoryKind } from 'appstate';
-import { getArray, getBoolean, getNumber, getRecord, getString, stringifyJson } from 'connection';
+import { getArray, getBoolean, getNumber, getRecord, getString, parseJson, stringifyJson } from 'connection';
 import { desktopCordisAction, desktopCordisCard, desktopCordisRunKey } from './DesktopCordisCards';
 import type { DesktopCordisCard } from './DesktopCordisCards';
 
@@ -49,6 +49,15 @@ export class DesktopToolLog {
   private readonly closed: Set<number> = new Set();
 
   clear(): void { this.entries.clear(); this.closed.clear(); }
+
+  approvalCommand(callId: string): string | undefined {
+    const entry = this.entries.get(callId);
+    const call = entry?.call;
+    if (entry === undefined || entry.parentId || call === undefined) { return undefined; }
+    const argumentsValue = parseJson(call.toolArgs);
+    const command = getString(argumentsValue, call.toolName === 'terminal_send' ? 'text' : 'command');
+    return command || undefined;
+  }
 
   observe(record: Object): boolean {
     const event = getRecord(record, 'event');

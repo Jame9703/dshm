@@ -37,6 +37,8 @@ import { DesktopCompactionTimeline } from './DesktopCompactionModel';
 import type { DesktopCompactionRow } from './DesktopCompactionModel';
 import { DesktopContextMessageTimeline } from './DesktopContextMessageModel';
 import type { DesktopContextMessage } from './DesktopContextMessageModel';
+import { DesktopQuestionHistory } from './DesktopQuestionHistory';
+import type { DesktopQuestionHistoryRow } from './DesktopQuestionHistory';
 import type { DesktopChatTurnUsage, DesktopChatUsageSnapshot } from './DesktopChatUsageModel';
 import { readDesktopTurnOutline } from './DesktopTurnOutlineModel';
 import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
@@ -81,6 +83,7 @@ export interface DesktopTranscriptItem {
   notice?: DesktopTranscriptNotice;
   compaction?: DesktopCompactionRow;
   contextMessage?: DesktopContextMessage;
+  questionReply?: DesktopQuestionHistoryRow;
   attachments?: DesktopMediaAttachment[];
   referenceLabels?: string[];
   plan?: DesktopPlanDocument;
@@ -105,6 +108,8 @@ export interface DesktopConversationSnapshot {
   submissionEchoes: DesktopSubmissionEcho[];
   loadTurnHistory: (sequence: number, requested: () => boolean) => Promise<boolean>;
   readTrajectory: () => DesktopTraceRow[];
+  readApprovalCommand?: (callId: string) => string | undefined;
+  readQuestionHistory?: (callId: string) => DesktopQuestionHistoryRow | undefined;
   trajectoryRevision: number;
   trajectoryHasEarlier: boolean;
   wasPartialHistory: boolean;
@@ -172,6 +177,7 @@ export class DesktopConversation {
   private readonly recallLabels: Map<number, string[]> = new Map();
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private readonly toolLog: DesktopToolLog = new DesktopToolLog();
+  private readApprovalCommand?: (callId: string) => string | undefined;
   private readonly trajectory: DesktopTrajectoryLog = new DesktopTrajectoryLog();
   private readonly chatUsage = new DesktopChatUsageState();
   private compactUsage: boolean = false;
@@ -180,6 +186,8 @@ export class DesktopConversation {
   private readonly transcriptNotices = new DesktopTranscriptNoticeTimeline();
   private readonly compactions = new DesktopCompactionTimeline();
   private readonly contextMessages = new DesktopContextMessageTimeline();
+  private readonly questionHistory = new DesktopQuestionHistory();
+  private readQuestionHistory?: (callId: string) => DesktopQuestionHistoryRow | undefined;
   private turnOutline: DesktopTurnOutlineEntry[] = [];
   private turnOutlineSequence: number = -1;
   private latestTurn: number = 0;
@@ -279,6 +287,12 @@ export class DesktopConversation {
       return;
     }
     const generation = ++this.generation;
+    this.readApprovalCommand = (callId: string): string | undefined =>
+      this.current(generation) ? this.toolLog.approvalCommand(callId) : undefined;
+    this.questionHistory.clear();
+    this.questionHistory.select(sessionId);
+    this.readQuestionHistory = (callId: string): DesktopQuestionHistoryRow | undefined =>
+      this.current(generation) ? this.questionHistory.detail(callId) : undefined;
     this.stopWatching();
     this.sessionId = sessionId;
     this.subagent = subagent;
@@ -869,7 +883,7 @@ export class DesktopConversation {
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
         if (item.artifacts === undefined && item.process === undefined && item.command === undefined && item.notice === undefined &&
-          item.compaction === undefined && item.contextMessage === undefined &&
+          item.compaction === undefined && item.contextMessage === undefined && item.questionReply === undefined &&
           item.replyTail === undefined && item.workflow === undefined && item.cordis === undefined && !item.inheritedHistory) {
           result.set(item.id, item);
         }
@@ -884,6 +898,7 @@ export class DesktopConversation {
       this.transcriptNotices.clear();
       this.compactions.clear();
       this.contextMessages.clear();
+      this.questionHistory.resetRecords();
       this.commandRecords.clear();
       this.replyTimeline.clear();
       this.latestTurn = 0;
@@ -913,7 +928,7 @@ export class DesktopConversation {
       this.transcriptTimeline.observe(record);
       this.transcriptNotices.observe(record);
       this.compactions.observe(record);
-      this.contextMessages.observe(record);
+      if (!this.questionHistory.observe(record)) { this.contextMessages.observe(record); }
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
@@ -994,6 +1009,9 @@ export class DesktopConversation {
       const id = `context:${this.sessionId}:${context.id}`;
       result.set(id, { id: id, sequence: context.sequence, contextMessage: context, turn: context.turn });
     }
+    for (const reply of this.questionHistory.rows()) {
+      result.set(reply.id, { id: reply.id, sequence: reply.sequence, turn: reply.turn, questionReply: reply });
+    }
     const closingMessages: Map<number, number> = new Map();
     for (const replyTail of this.replyTimeline.completed()) {
       const id = `reply:${this.sessionId}:${replyTail.turn}:${replyTail.messageId}`;
@@ -1060,7 +1078,7 @@ export class DesktopConversation {
         const sequence = getNumber(result.value, 'asOfSeq') ?? -1;
         const continuationChanged = this.readContinuation(values, sequence);
         const subagentsChanged = this.readSubagents(values, sequence);
-        this.interactions.observeQuestions(this.sessionId, values, sequence);
+        const questionsChanged = this.readQuestions(values, sequence);
         this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
@@ -1069,7 +1087,7 @@ export class DesktopConversation {
         const modelChanged = this.observeModel(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
         const outlineChanged = this.readTurnOutline(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         const usageChanged = this.chatUsage.readProjection(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
-        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged ||
+        if (this.readPlan(result.value) || goalChanged || queueChanged || questionsChanged || subagentsChanged || cardsChanged || teamChanged ||
           modelChanged || outlineChanged || usageChanged || continuationChanged) {
           this.publish();
         }
@@ -1172,6 +1190,22 @@ export class DesktopConversation {
     return changed;
   }
 
+  private readQuestions(values: Object | undefined, sequence: number): boolean {
+    this.interactions.observeQuestions(this.sessionId, values, sequence);
+    const previous = this.questionHistory.rows();
+    if (!this.questionHistory.observeProjection(values, sequence)) { return false; }
+    const rows = this.questionHistory.rows();
+    if (rows !== previous) {
+      const transcript = this.transcript.filter((item: DesktopTranscriptItem): boolean => item.questionReply === undefined);
+      for (const row of rows) {
+        transcript.push({ id: row.id, sequence: row.sequence, turn: row.turn, questionReply: row });
+      }
+      this.transcript = transcript.sort((a: DesktopTranscriptItem, b: DesktopTranscriptItem): number =>
+        a.sequence - b.sequence);
+    }
+    return true;
+  }
+
   private readTurnOutline(values: Object | undefined, sequence: number): boolean {
     if (this.turnOutlineSequence >= 0 && sequence <= this.turnOutlineSequence) { return false; }
     const outline = readDesktopTurnOutline(values);
@@ -1183,7 +1217,7 @@ export class DesktopConversation {
 
   private readProjection(projection: Object | undefined): void {
     const values = getRecord(projection, 'values');
-    this.interactions.observeQuestions(this.sessionId, values, getNumber(projection, 'asOfSeq') ?? -1);
+    this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.chatUsage.readProjection(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readContinuation(values, getNumber(projection, 'asOfSeq') ?? -1);
@@ -1292,7 +1326,7 @@ export class DesktopConversation {
       const goalChanged = this.goals.observeDelta(frame);
       const changes = getRecord(frame, 'changes');
       const continuationChanged = this.readContinuation(changes, getNumber(frame, 'seq') ?? -1);
-      this.interactions.observeQuestions(this.sessionId, changes, getNumber(frame, 'seq') ?? -1);
+      const questionsChanged = this.readQuestions(changes, getNumber(frame, 'seq') ?? -1);
       this.readImageLimit(changes);
       const queueChanged = this.readInbox(changes, getNumber(frame, 'seq') ?? -1);
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);
@@ -1301,7 +1335,7 @@ export class DesktopConversation {
       const modelChanged = this.observeModel(changes, getNumber(frame, 'seq') ?? 0);
       const outlineChanged = this.readTurnOutline(changes, getNumber(frame, 'seq') ?? -1);
       const usageChanged = this.chatUsage.readProjection(changes, getNumber(frame, 'seq') ?? -1);
-      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged &&
+      if (!goalChanged && !queueChanged && !questionsChanged && !subagentsChanged && !cardsChanged && !teamChanged && !modelChanged &&
         !outlineChanged && !usageChanged && !continuationChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
@@ -1396,6 +1430,8 @@ export class DesktopConversation {
       transcriptPolicy: this.transcriptPolicy, transcriptTurns: transcriptTurns,
       submissionEchoes: this.echoes.forSession(this.sessionId),
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
+      readApprovalCommand: this.readApprovalCommand,
+      readQuestionHistory: this.readQuestionHistory,
       trajectoryHasEarlier: this.hasEarlier, wasPartialHistory: this.wasPartialHistory,
       historyPaging: this.pageLoading && !this.loading, historyError: this.historyError,
       preparingTool: this.preparingTool, loading: this.loading,

@@ -18,6 +18,7 @@ export struct DesktopProcessPane {
   onInspect: (id: string) => void = (_id: string): void => {};
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onQuestionResume: (id: string) => void = (_id: string): void => {};
+  onQuestionReview: (id: string) => boolean = (_id: string): boolean => false;
 
   private runningStep(): DesktopToolStep | undefined {
     return this.group?.steps.find((step: DesktopToolStep): boolean =>
@@ -62,7 +63,7 @@ export struct DesktopProcessPane {
   private inspect(id: string): void {
     const question = this.questionId(id);
     if (question) { this.onQuestionResume(question); }
-    else { this.onInspect(id); }
+    else if (!this.onQuestionReview(id)) { this.onInspect(id); }
   }
 
   @Builder

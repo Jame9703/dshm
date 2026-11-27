@@ -15,6 +15,7 @@ import { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
 import type { DesktopTheme } from './DesktopTheme';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
+import { desktopAccountLocale } from './DesktopAccountClient';
 import type { DesktopAccountNotice } from './DesktopAccountNotices';
 import { DesktopInteractions } from './DesktopInteractions';
 import type { DesktopInteraction } from './DesktopInteractions';
@@ -137,6 +138,7 @@ export class DesktopWorkspaceData {
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices);
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
+    this.interactions.setLocale(desktopAccountLocale());
     this.interactions.observeSidebarPending(onSidebarPending);
     this.connection.onStateChange((status: ConnectionState): void => {
       if (this.active && status !== ConnectionState.CONNECTED) { this.remoteEventsEnded(); }
@@ -271,6 +273,7 @@ export class DesktopWorkspaceData {
     const appearance = getRecord(theme, 'value');
     if (appearance !== undefined) { this.onTheme(desktopThemeFrom(appearance)); }
     const language = getString(getRecord(locale, 'value'), 'preference') ?? 'system';
+    this.interactions.setLocale(desktopAccountLocale(language));
     this.accountNotices.setLocale(language);
     this.connectorAccounts.setLocale(language);
     this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';

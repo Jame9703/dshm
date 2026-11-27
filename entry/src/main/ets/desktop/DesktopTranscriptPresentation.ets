@@ -179,6 +179,10 @@ function assistant(item: DesktopTranscriptItem): boolean {
   return item.message?.speaker === Speaker.ASSISTANT && item.message?.kind !== TrajectoryKind.ERROR;
 }
 
+function userInput(item: DesktopTranscriptItem): boolean {
+  return item.message?.speaker === Speaker.USER || item.questionReply !== undefined;
+}
+
 function reply(item: DesktopTranscriptItem): boolean {
   return assistant(item) && (item.message?.body.trim().length ?? 0) > 0;
 }
@@ -251,13 +255,13 @@ export function desktopTranscriptRows(items: DesktopTranscriptItem[], turns: Des
     const inRange = range !== undefined && (range.endSequence < 0 || item.sequence <= range.endSequence);
     const turn = itemTurn(item) ?? (inRange ? range?.turn : undefined);
     const summary = turn === undefined ? undefined : summaries.get(turn);
-    if (item.message?.speaker === Speaker.USER && item.sequence > lastInputSequence) {
+    if (userInput(item) && item.sequence > lastInputSequence) {
       lastInputSequence = item.sequence;
       lastInputTurn = turn;
     }
     if (summary === undefined) { continue; }
     rowTurns.set(item.id, summary);
-    if (item.message?.speaker === Speaker.USER) {
+    if (userInput(item)) {
       summary.lastInputSequence = Math.max(summary.lastInputSequence, item.sequence);
     }
     if (assistant(item) || item.process !== undefined || item.notice?.kind === 'retry' ||

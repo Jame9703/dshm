@@ -26,6 +26,8 @@ import { DesktopTranscriptNoticeRow } from './DesktopTranscriptNotices';
 import { DesktopCompactionRow } from './DesktopCompactionRow';
 import { DesktopContextMessageRow } from './DesktopContextMessageRow';
 import type { DesktopContextMessage } from './DesktopContextMessageModel';
+import { DesktopQuestionHistoryView } from './DesktopQuestionHistoryView';
+import type { DesktopQuestionHistoryRow } from './DesktopQuestionHistory';
 import { DesktopTurnTriggerRow } from './DesktopTurnTriggerRow';
 import { DesktopChatRunningStatus } from './DesktopChatRunningStatus';
 import type { DesktopCompactionRow as DesktopCompactionInfo } from './DesktopCompactionModel';
@@ -217,6 +219,7 @@ export struct DesktopConversationPane {
   @State private expandedReasoning: string[] = [];
   @State private expandedTeamCommands: string[] = [];
   @State private inspectedTool: string = '';
+  @State private reviewedQuestionCall: string = '';
   private readonly composer = new DesktopDraftEditor();
   private composerReady: boolean = false;
   private composerSession: string = '';
@@ -318,6 +321,7 @@ export struct DesktopConversationPane {
       this.hoveredMessage = '';
       this.expandedTeamCommands = [];
       this.inspectedTool = '';
+      this.reviewedQuestionCall = '';
       this.dismissedDraft = undefined;
       this.closePalette();
     }
@@ -415,7 +419,8 @@ export struct DesktopConversationPane {
       if (row.item !== undefined) {
         visible.push(row.item);
         rowIndices.push(index);
-        if (row.item.notice !== undefined || row.item.compaction !== undefined || row.item.contextMessage !== undefined) {
+        if (row.item.notice !== undefined || row.item.compaction !== undefined || row.item.contextMessage !== undefined ||
+          row.item.questionReply !== undefined) {
           statuses.set(row.item.id, row.item);
         }
       }
@@ -938,7 +943,7 @@ export struct DesktopConversationPane {
     if (this.pendingTranscriptInput) { return false; }
     const last = this.transcriptRows[this.transcriptRows.length - 1];
     return last !== undefined && last.item?.message?.speaker !== Speaker.USER &&
-      last.item?.contextMessage?.kind !== 'turn-trigger';
+      last.item?.contextMessage?.kind !== 'turn-trigger' && last.item?.questionReply === undefined;
   }
 
   private canSteerQueue(): boolean {
@@ -1145,8 +1150,42 @@ export struct DesktopConversationPane {
     return chosen === undefined ? [] : [chosen];
   }
 
+  private liveApproval(id: string): DesktopInteraction | undefined {
+    const session: string | undefined = this.snapshot?.sessionId;
+    return session === undefined ? undefined : this.interactions.find((row: DesktopInteraction): boolean =>
+      row.kind === 'approval' && row.id === id && row.sessionId === session);
+  }
+
+  private approvalCommand(id: string): string {
+    const approval: DesktopInteraction | undefined = this.liveApproval(id);
+    if (approval === undefined || approval.callId.length === 0) { return ''; }
+    return this.snapshot?.readApprovalCommand?.(approval.callId) ?? '';
+  }
+
+  private decideApproval(id: string, allow: boolean): void {
+    const approval: DesktopInteraction | undefined = this.liveApproval(id);
+    if (approval === undefined || approval.approvalSubmitting === true || this.visibleInteraction()[0]?.id !== id) {
+      return;
+    }
+    this.onDecision(id, allow);
+  }
+
   private hiddenQuestions(): DesktopInteraction[] {
     return this.interactions.filter((row: DesktopInteraction): boolean => row.questionHidden === true);
+  }
+
+  private questionReview(): DesktopQuestionHistoryRow | undefined {
+    if (!this.reviewedQuestionCall || this.visibleInteraction()[0]?.planReview !== undefined) { return undefined; }
+    return this.snapshot?.readQuestionHistory?.(this.reviewedQuestionCall);
+  }
+
+  private openQuestionReview(callId: string): boolean {
+    if (this.snapshot?.readQuestionHistory?.(callId) === undefined || this.visibleInteraction()[0]?.planReview !== undefined) {
+      return false;
+    }
+    this.closePalette();
+    this.reviewedQuestionCall = callId;
+    return true;
   }
 
   private pendingInteractionChanged(): void {
@@ -1351,7 +1390,10 @@ export struct DesktopConversationPane {
 
   @Builder
   private TranscriptContent(item: DesktopTranscriptItem, row: DesktopTranscriptRow) {
-    if (item.contextMessage !== undefined) {
+    if (item.questionReply !== undefined) {
+      DesktopQuestionHistoryView({ row: this.transcriptStatusRows.get(item.id)?.questionReply ?? item.questionReply,
+        bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily })
+    } else if (item.contextMessage !== undefined) {
       this.ContextMessage(this.transcriptStatusRows.get(item.id)?.contextMessage ?? item.contextMessage)
     } else if (item.notice !== undefined) {
       DesktopTranscriptNoticeRow({ notice: this.transcriptStatusRows.get(item.id)?.notice ?? item.notice,
@@ -1424,6 +1466,7 @@ export struct DesktopConversationPane {
         codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
         inspected: this.inspectedTool, onFile: this.onArtifactFile,
         hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
+        onQuestionReview: (id: string): boolean => this.openQuestionReview(id),
         onToggle: (): void => {
           this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
             this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
@@ -1687,8 +1730,8 @@ export struct DesktopConversationPane {
       .width('100%').padding({ left: 8, right: 8, bottom: 7 })
     }
     .width('100%').constraintSize({ maxWidth: 712 })
-    .visibility(this.visibleInteraction().length === 0 ? Visibility.Visible : Visibility.None)
-    .enabled(this.visibleInteraction().length === 0)
+    .visibility(this.visibleInteraction().length === 0 && this.questionReview() === undefined ? Visibility.Visible : Visibility.None)
+    .enabled(this.visibleInteraction().length === 0 && this.questionReview() === undefined)
     .border({ width: 1, radius: 20, color: this.attachmentOver ? $r('sys.color.brand') : Color.Transparent })
     .backgroundColor($r('app.color.workspace_panel'))
     .allowDrop(DESKTOP_ATTACHMENT_DROP_TYPES)
@@ -1889,11 +1932,20 @@ export struct DesktopConversationPane {
           loading: this.snapshot?.loading ?? false, codeFamily: this.typography.codeFamily,
           codeSize: this.typography.codeSize, onEarlier: this.onEarlier })
       }
-      if (this.visibleInteraction().length > 0) {
+      if (this.questionReview() !== undefined) {
+        Row() {
+          DesktopQuestionHistoryView({ row: this.questionReview(), review: true,
+            bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily,
+            onClose: (): void => { this.reviewedQuestionCall = ''; } })
+        }.width('100%').padding({ left: 20, right: 20, bottom: 8 }).justifyContent(FlexAlign.Center)
+      } else if (this.visibleInteraction().length > 0) {
         Row() {
           ForEach(this.visibleInteraction(), (row: DesktopInteraction) => {
             DesktopInteractionPane({
-              request: row, busy: this.busy, onDecision: this.onDecision, onAnswer: this.onAnswer,
+              request: row.kind === 'approval' ? this.liveApproval(row.id) : row,
+              approvalCommand: row.kind === 'approval' ? this.approvalCommand(row.id) : '',
+              busy: this.busy, onAnswer: this.onAnswer,
+              onDecision: (id: string, allow: boolean): void => { this.decideApproval(id, allow); },
               typography: this.typography,
               onPlanDecision: this.onPlanDecision, onPlanPreview: this.onPlanPreview, onLink: this.onLink,
               onQuestionProgress: this.onQuestionProgress, onQuestionHold: this.onQuestionHold,

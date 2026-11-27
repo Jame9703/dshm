@@ -27,6 +27,7 @@ export struct DesktopUserMessageActions {
   @Prop revealOnHover: boolean = false;
   @Prop messageHovered: boolean = false;
   @Prop bodySize: number = 14;
+  @Prop clockOnly: boolean = false;
 
   @State private copied: boolean = false;
   @State private actionHovered: boolean = false;
@@ -59,7 +60,7 @@ export struct DesktopUserMessageActions {
   private clock(): ResourceStr {
     const parts = desktopUserMessageClockParts(this.timestamp, this.now);
     if (parts === undefined) { return ''; }
-    if (parts.sameDay) { return parts.hourMinute; }
+    if (this.clockOnly || parts.sameDay) { return parts.hourMinute; }
     if (parts.sameYear) {
       return $r('app.string.desktop_user_message_clock_md', parts.month, parts.day, parts.hourMinute);
     }

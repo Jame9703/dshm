@@ -1,4 +1,5 @@
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
+import { DesktopApprovalCard } from './DesktopApprovalCard';
 import type { DesktopInteraction, DesktopQuestion, DesktopQuestionAnswer, DesktopQuestionDraft,
   DesktopQuestionOption, DesktopQuestionProgress } from './DesktopInteractions';
 import type { DesktopPlanDocument } from './DesktopPlan';
@@ -8,6 +9,7 @@ import type { DesktopTypography } from './DesktopTheme';
 export struct DesktopInteractionPane {
   @Prop request?: DesktopInteraction = undefined;
   @Prop busy: boolean = false;
+  @Prop approvalCommand: string = '';
   @Prop typography: DesktopTypography | undefined = undefined;
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
@@ -149,25 +151,6 @@ export struct DesktopInteractionPane {
     return this.drafts[this.questionIndex]?.selected.includes(label) === true;
   }
 
-  @Builder
-  private Approval() {
-    Row({ space: 7 }) {
-      Circle().width(7).height(7).fill(this.busy ? $r('sys.color.font_tertiary') : $r('sys.color.warning'))
-      Text($r('app.string.desktop_approval_pending')).fontSize(12).fontColor($r('sys.color.font_secondary'))
-    }
-    Scroll() {
-      Text(this.request?.reason || $r('app.string.desktop_approval_tool', this.request?.tool ?? ''))
-        .fontSize(16).fontWeight(FontWeight.Medium).width('100%').copyOption(CopyOptions.InApp)
-    }
-    .width('100%').constraintSize({ maxHeight: 180 }).align(Alignment.TopStart)
-    Row({ space: 8 }) {
-      Blank()
-      Button($r('app.string.desktop_approval_reject'), { buttonStyle: ButtonStyleMode.NORMAL }).enabled(!this.busy)
-        .onClick((): void => { this.onDecision(this.request?.id ?? '', false); })
-      Button($r('app.string.desktop_approval_allow')).enabled(!this.busy)
-        .onClick((): void => { this.onDecision(this.request?.id ?? '', true); })
-    }.width('100%')
-  }
 
   @Builder
   private IconButton(icon: Resource, label: Resource, id: string, enabled: boolean, action: () => void) {
@@ -301,18 +284,25 @@ export struct DesktopInteractionPane {
   }
 
   build() {
-    Column({ space: 10 }) {
+    Column() {
       if (this.request?.kind === 'approval') {
-        this.Approval()
-      } else if (this.request?.planReview !== undefined) {
-        this.PlanReview()
+        DesktopApprovalCard({
+          requestId: this.request.id, tool: this.request.tool, reason: this.request.reason,
+          commandText: this.approvalCommand, codeFamily: this.typography?.codeFamily ?? 'monospace',
+          submitting: this.request.approvalSubmitting === true, onDecision: this.onDecision
+        })
       } else {
-        ForEach(this.request?.questions.slice(this.questionIndex, this.questionIndex + 1) ?? [],
-          (question: DesktopQuestion) => { this.Question(question) }, (question: DesktopQuestion): string => question.id)
+        Column({ space: 10 }) {
+          if (this.request?.planReview !== undefined) {
+            this.PlanReview()
+          } else {
+            ForEach(this.request?.questions.slice(this.questionIndex, this.questionIndex + 1) ?? [],
+              (question: DesktopQuestion) => { this.Question(question) }, (question: DesktopQuestion): string => question.id)
+          }
+        }.padding(14).width('100%').alignItems(HorizontalAlign.Start)
+          .borderRadius(16).backgroundColor($r('app.color.workspace_panel'))
+          .border({ width: 1, color: $r('app.color.workspace_border') })
       }
-    }
-    .padding(14).width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start)
-    .borderRadius(16).backgroundColor($r('app.color.workspace_panel'))
-    .border({ width: 1, color: $r('app.color.workspace_border') })
+    }.width('100%').constraintSize({ maxWidth: 712 })
   }
 }
