@@ -570,6 +570,16 @@
     { "name": "desktop_browser_external", "value": "在系统浏览器中打开" },
     { "name": "desktop_browser_previous", "value": "上次打开" },
     { "name": "desktop_browser_restore", "value": "恢复页面" },
-    { "name": "desktop_account_notice_close", "value": "关闭通知" }
+    { "name": "desktop_account_notice_close", "value": "关闭通知" },
+    { "name": "desktop_workflow_members", "value": "%d 个成员" },
+    { "name": "desktop_workflow_empty_run", "value": "没有启动成员" },
+    { "name": "desktop_workflow_unphased", "value": "未分阶段" },
+    { "name": "desktop_workflow_empty_phase", "value": "空阶段名" },
+    { "name": "desktop_workflow_empty_member", "value": "空成员名" },
+    { "name": "desktop_workflow_running", "value": "运行中" },
+    { "name": "desktop_workflow_completed", "value": "已完成" },
+    { "name": "desktop_workflow_failed", "value": "失败" },
+    { "name": "desktop_workflow_cancelled", "value": "已取消" },
+    { "name": "desktop_workflow_interrupted", "value": "已中断" }
   ]
 }

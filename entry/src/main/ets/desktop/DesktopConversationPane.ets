@@ -33,6 +33,8 @@ import { DesktopReferenceMessage } from './DesktopReferenceMessage';
 import { DesktopReferenceAction } from './DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
 import { DesktopReplyActions } from './DesktopReplyActions';
+import { DesktopWorkflowPane } from './DesktopWorkflowPane';
+import type { DesktopWorkflowView } from './DesktopWorkflowTimeline';
 import { DesktopQueueDock } from './DesktopQueueDock';
 import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
@@ -128,6 +130,8 @@ export struct DesktopConversationPane {
   @State private attachmentOver: boolean = false;
   @State private compactHeader: boolean = true;
   @State private expandedProcesses: string[] = [];
+  @State private workflowViews: Map<string, DesktopWorkflowView> = new Map();
+  private workflowTranscript?: DesktopTranscriptItem[];
   @State private expandedReasoning: string[] = [];
   @State private inspectedTool: string = '';
   private readonly composer = new DesktopDraftEditor();
@@ -183,6 +187,7 @@ export struct DesktopConversationPane {
     const id = this.snapshot?.sessionId ?? '';
     const count = this.snapshot?.transcript.length ?? 0;
     const partial = this.snapshot?.partial ?? '';
+    this.updateWorkflowViews();
     if (id !== this.sessionId) {
       this.sessionId = id;
       this.composerSelectionEnd = -1;
@@ -206,6 +211,20 @@ export struct DesktopConversationPane {
         }
       }, 30);
     }
+  }
+
+  private updateWorkflowViews(): void {
+    const transcript = this.snapshot?.transcript;
+    if (transcript === this.workflowTranscript) { return; }
+    this.workflowTranscript = transcript;
+    const next: Map<string, DesktopWorkflowView> = new Map();
+    let changed = false;
+    for (const item of transcript ?? []) {
+      if (item.workflow === undefined) { continue; }
+      next.set(item.id, item.workflow.view);
+      changed = changed || this.workflowViews.get(item.id) !== item.workflow.view;
+    }
+    if (changed || next.size !== this.workflowViews.size) { this.workflowViews = next; }
   }
 
   private closePalette(): void {
@@ -1093,6 +1112,13 @@ export struct DesktopConversationPane {
                 this.PlanCard(item.plan)
               } else if (item.command !== undefined) {
                 this.CommandCard(item.command)
+              } else if (item.workflow !== undefined) {
+                DesktopWorkflowPane({ runId: item.workflow.id,
+                  view: this.workflowViews.get(item.id) ?? item.workflow.view, sessionId: this.snapshot?.sessionId ?? '',
+                  summaries: this.sessionSummaries, onOpen: (child: DesktopSubagentEntry): void => {
+                    const parent = this.snapshot?.subagent;
+                    this.onSubagent(child, parent === undefined ? [] : [parent]);
+                  } })
               } else if (item.replyTail !== undefined) {
                 DesktopReplyActions({ messageId: item.replyTail.messageId, text: item.replyTail.text,
                   timestamp: item.replyTail.responseTime, feedbackRows: this.snapshot?.feedbackRows ?? [],

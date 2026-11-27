@@ -26,6 +26,8 @@ import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopFeedback } from './DesktopFeedback';
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
+import { DesktopWorkflowTimeline } from './DesktopWorkflowTimeline';
+import type { DesktopWorkflowRun } from './DesktopWorkflowTimeline';
 import { DesktopPromptQueue, DesktopQueuedPrompt } from './DesktopPromptQueue';
 import { desktopImageMime, desktopMediaAttachment, desktopMessageAttachments } from './DesktopAttachments';
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
@@ -53,6 +55,7 @@ export interface DesktopTranscriptItem {
   process?: DesktopProcessGroup;
   command?: DesktopCommandRecord;
   replyTail?: DesktopReplyTail;
+  workflow?: DesktopWorkflowRun;
   inheritedHistory?: boolean;
 }
 
@@ -122,6 +125,7 @@ export class DesktopConversation {
   private busyEnterSteers: boolean = false;
   private imageBytesLimit?: number;
   private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
+  private readonly workflows: DesktopWorkflowTimeline = new DesktopWorkflowTimeline();
   private inheritedSequence: number = -1;
   readonly feedback: DesktopFeedback;
   private models: ModelOption[] = [];
@@ -197,6 +201,7 @@ export class DesktopConversation {
     this.toolLog.clear();
     this.commandRecords.clear();
     this.replyTimeline.clear();
+    this.workflows.clear();
     this.inheritedSequence = -1;
     this.commandVersion++;
     this.commands = undefined;
@@ -641,7 +646,7 @@ export class DesktopConversation {
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
         if (item.artifacts === undefined && item.process === undefined && item.command === undefined &&
-          item.replyTail === undefined && !item.inheritedHistory) {
+          item.replyTail === undefined && item.workflow === undefined && !item.inheritedHistory) {
           result.set(item.id, item);
         }
       });
@@ -651,6 +656,7 @@ export class DesktopConversation {
       this.toolLog.clear();
       this.commandRecords.clear();
       this.replyTimeline.clear();
+      this.workflows.clear();
       this.inheritedSequence = -1;
     }
     for (const record of records) {
@@ -668,6 +674,7 @@ export class DesktopConversation {
       this.toolLog.observe(record);
       observeDesktopCommand(this.commandRecords, event);
       this.replyTimeline.observe(event);
+      this.workflows.observe(event);
       if (getString(event, 'type') === 'session/end-seed' && getBoolean(getRecord(event, 'data'), 'inherited') === true) {
         this.inheritedSequence = Math.max(this.inheritedSequence, seq);
       }
@@ -717,6 +724,10 @@ export class DesktopConversation {
     for (const replyTail of this.replyTimeline.completed()) {
       const id = `reply:${this.sessionId}:${replyTail.turn}:${replyTail.messageId}`;
       result.set(id, { id: id, sequence: replyTail.endSeq, replyTail: replyTail });
+    }
+    for (const workflow of this.workflows.runs()) {
+      const id = 'workflow:' + workflow.id;
+      result.set(id, { id: id, sequence: workflow.sequence, workflow: workflow });
     }
     if (this.inheritedSequence >= 0) {
       result.set('inherited-history', { id: 'inherited-history', sequence: this.inheritedSequence, inheritedHistory: true });
