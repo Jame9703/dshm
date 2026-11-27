@@ -1,4 +1,4 @@
-import { Connection, EVENTS_RESULT_ENDPOINT, getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
+import { Connection, EVENTS_RESULT_ENDPOINT, getArray, getBoolean, getField, getNumber, getRecord, getString } from 'connection';
 import { RemoteEventFrameType, WATERFALL_APPROVAL, WATERFALL_QUESTION } from 'dshcompat';
 import { DesktopSidebarPending } from './DesktopSidebarStatus';
 import { DesktopHostActions } from './DesktopHostActions';
@@ -43,6 +43,20 @@ interface DesktopQuestionState {
   progress?: DesktopQuestionProgress;
   held: boolean;
   hidden: boolean;
+}
+
+interface DesktopContinuedAnswer {
+  sending: boolean;
+  seenInInbox: boolean;
+  inboxSequence: number;
+}
+
+interface DesktopQuestionProjection {
+  sequence: number;
+  inboxSequence: number;
+  continued: DesktopInteraction[];
+  queued: Set<string>;
+  submissions: Map<string, DesktopContinuedAnswer>;
 }
 
 export interface DesktopInteraction {
@@ -126,9 +140,11 @@ export class DesktopInteractions {
   private readonly onChange: (items: DesktopInteraction[]) => void;
   private readonly events: Map<string, DesktopInteraction>;
   private readonly questionStates: Map<string, DesktopQuestionState>;
+  private readonly questionProjections: Map<string, DesktopQuestionProjection>;
+  private readonly settling: Set<DesktopInteraction>;
   private readonly owner?: DesktopInteractions;
   private views?: Set<DesktopInteractions>;
-  private continued: DesktopInteraction[] = [];
+  private eventClientId: string = '';
   private selected: string = '';
   private stopClaim?: () => void;
   private claimEvent: string = '';
@@ -145,6 +161,8 @@ export class DesktopInteractions {
     this.owner = owner;
     this.events = owner?.events ?? new Map<string, DesktopInteraction>();
     this.questionStates = owner?.questionStates ?? new Map<string, DesktopQuestionState>();
+    this.questionProjections = owner?.questionProjections ?? new Map<string, DesktopQuestionProjection>();
+    this.settling = owner?.settling ?? new Set<DesktopInteraction>();
   }
 
   observeSidebarPending(listener: (pending: Map<string, DesktopSidebarPending>) => void): void {
@@ -164,24 +182,30 @@ export class DesktopInteractions {
     this.releaseClaim();
     this.claimEvent = '';
     this.selected = '';
-    this.continued = [];
     if (this.owner?.views?.delete(this)) { this.owner.publish(); }
   }
 
   select(sessionId: string): void {
     if (sessionId !== this.selected) {
       this.selected = sessionId;
-      this.continued = [];
       this.publish();
     }
   }
 
+  startEvents(clientId: string): void {
+    if (this.eventClientId !== clientId) { this.resetEvents(); }
+    this.eventClientId = clientId;
+  }
+
   resetEvents(): void {
+    this.eventClientId = '';
+    if (this.events.size === 0) { return; }
     this.events.clear();
     this.publish();
   }
 
   onEvent(frame: Object): void {
+    if (!this.eventClientId) { return; }
     const type = getString(frame, 'type');
     const id = getString(frame, 'eventId') ?? '';
     if (!id) {
@@ -231,14 +255,36 @@ export class DesktopInteractions {
     this.publish();
   }
 
-  observeQuestions(sessionId: string, projection?: Object): void {
+  observeQuestions(sessionId: string, values: Object | undefined, sequence: number): void {
     if (sessionId !== this.selected) {
       return;
     }
+    const projection = getRecord(values, 'userQuestions');
+    const inbox = getField(values, 'inbox');
+    if (projection === undefined && inbox === undefined) { return; }
+    let state = this.questionProjections.get(sessionId);
+    if (state === undefined) {
+      state = { sequence: -1, inboxSequence: -1, continued: [], queued: new Set<string>(),
+        submissions: new Map<string, DesktopContinuedAnswer>() };
+      this.questionProjections.set(sessionId, state);
+    }
+    const updateQuestions = projection !== undefined && sequence > state.sequence;
+    const updateInbox = (inbox === null || getRecord(values, 'inbox') !== undefined) && sequence > state.inboxSequence;
+    if (!updateQuestions && !updateInbox) { return; }
+    if (updateQuestions) { this.readQuestionRows(sessionId, state, projection, sequence); }
+    if (updateInbox) { this.readQuestionInbox(state, inbox, sequence); }
+    this.publish();
+  }
+
+  private readQuestionRows(sessionId: string, state: DesktopQuestionProjection, projection: Object | undefined,
+    sequence: number): void {
     const rows: DesktopInteraction[] = [];
     for (const settled of getArray(projection, 'settled') ?? []) {
       const callId = getString(settled, 'callId') ?? '';
-      if (callId) { this.questionStates.delete(sessionId + '\u0000' + callId); }
+      if (callId) {
+        this.questionStates.delete(sessionId + '\u0000' + callId);
+        state.submissions.delete(callId);
+      }
     }
     for (const item of getArray(projection, 'active') ?? []) {
       const callId = getString(item, 'callId') ?? '';
@@ -253,8 +299,36 @@ export class DesktopInteractions {
         });
       }
     }
-    this.continued = rows;
-    this.publish();
+    state.sequence = sequence;
+    state.continued = rows;
+    state.submissions.forEach((_submission: DesktopContinuedAnswer, callId: string): void => {
+      if (!rows.some((row: DesktopInteraction): boolean => row.callId === callId)) { state.submissions.delete(callId); }
+    });
+  }
+
+  private readQuestionInbox(state: DesktopQuestionProjection, inbox: Object | undefined, sequence: number): void {
+    const queued = new Set<string>();
+    for (const lane of ['next-step', 'next-turn']) {
+      for (const message of getArray(inbox, lane) ?? []) {
+        const source = getRecord(message, 'source');
+        const callId = getString(source, 'callId');
+        if (callId && getString(source, 'kind') === 'user-question-reply') { queued.add(callId); }
+      }
+    }
+    state.queued = queued;
+    state.inboxSequence = sequence;
+    state.submissions.forEach((submission: DesktopContinuedAnswer, callId: string): void => {
+      if (queued.has(callId)) { submission.seenInInbox = true; }
+      if (!submission.sending && (submission.seenInInbox || sequence > submission.inboxSequence)) {
+        state.submissions.delete(callId);
+      }
+    });
+  }
+
+  private answerableQuestions(state: DesktopQuestionProjection | undefined): DesktopInteraction[] {
+    if (state === undefined) { return []; }
+    return state.continued.filter((row: DesktopInteraction): boolean =>
+      !state.queued.has(row.callId) && state.submissions.get(row.callId)?.sending !== false);
   }
 
   async approve(id: string, allow: boolean): Promise<string> {
@@ -300,7 +374,8 @@ export class DesktopInteractions {
   }
 
   private questionRow(id: string): DesktopInteraction | undefined {
-    const event = this.events.get(id) ?? this.continued.find((row: DesktopInteraction): boolean => row.id === id);
+    const event = this.events.get(id) ?? this.answerableQuestions(this.questionProjections.get(this.selected))
+      .find((row: DesktopInteraction): boolean => row.id === id);
     return event?.kind === 'question' && event.sessionId === this.selected ? event : undefined;
   }
 
@@ -337,9 +412,7 @@ export class DesktopInteractions {
       this.publish();
       return '';
     }
-    const error = await this.rejectQuestion(id, 'ASK_CANCELLED', 'the user cancelled ask_user_question');
-    if (!error) { this.questionStates.delete(this.questionKey(row)); }
-    return error;
+    return this.rejectQuestion(id, 'ASK_CANCELLED', 'the user cancelled ask_user_question', true);
   }
 
   reopenQuestion(id: string): void {
@@ -349,9 +422,9 @@ export class DesktopInteractions {
     this.publish();
   }
 
-  private rejectQuestion(id: string, code: string, message: string): Promise<string> {
+  private rejectQuestion(id: string, code: string, message: string, clearDraft: boolean = false): Promise<string> {
     const error: Record<string, Object> = { 'name': 'UserQuestionError', 'code': code, 'message': message };
-    return this.settle(id, error, 'rejected');
+    return this.settle(id, error, 'rejected', clearDraft);
   }
 
   async answer(id: string, answers: DesktopQuestionAnswer[]): Promise<string> {
@@ -362,32 +435,47 @@ export class DesktopInteractions {
     const encoded: Record<string, Object> = { 'answers': answers };
     if (!event.continued) {
       this.holdQuestion(id);
-      const error = await this.settle(id, encoded);
-      if (!error) { this.questionStates.delete(this.questionKey(event)); }
-      return error;
+      return this.settle(id, encoded, 'result', true);
     }
+    const state = this.questionProjections.get(event.sessionId);
+    if (state === undefined || state.submissions.has(event.callId)) { return '正在提交这项回答'; }
+    const submission: DesktopContinuedAnswer = { sending: true, seenInInbox: false, inboxSequence: state.inboxSequence };
+    state.submissions.set(event.callId, submission);
     const rpc = await this.actions.call('userQuestions/answer', {
       'agentId': event.sessionId, 'callId': event.callId, 'answer': encoded
     });
     if (!rpc.ok || rpc.value !== true) {
+      if (state.submissions.get(event.callId) === submission) { state.submissions.delete(event.callId); }
       return rpc.error?.message ?? '宿主未接受回答，提问可能已由其他客户端处理';
     }
-    this.continued = this.continued.filter((row: DesktopInteraction): boolean => row.id !== id);
-    this.questionStates.delete(this.questionKey(event));
+    if (state.submissions.get(event.callId) === submission) {
+      if (submission.seenInInbox) { state.submissions.delete(event.callId); }
+      else {
+        submission.sending = false;
+        submission.inboxSequence = state.inboxSequence;
+      }
+      this.questionStates.delete(this.questionKey(event));
+    }
     this.publish();
     return '';
   }
 
-  private async settle(id: string, value: Object, kind: string = 'result'): Promise<string> {
+  private async settle(id: string, value: Object, kind: string = 'result', clearDraft: boolean = false): Promise<string> {
+    const event = this.events.get(id);
+    if (event === undefined) { return '这项请求已结束'; }
+    if (this.settling.has(event)) { return '正在提交这项请求'; }
+    this.settling.add(event);
     const error = await this.send(id, kind, value);
-    if (error.length === 0 && this.events.delete(id)) {
+    this.settling.delete(event);
+    if (error.length === 0 && this.events.get(id) === event && this.events.delete(id)) {
+      if (clearDraft) { this.questionStates.delete(this.questionKey(event)); }
       this.publish();
     }
     return error;
   }
 
   private async send(id: string, kind: string, value?: Object): Promise<string> {
-    const clientId = this.connection.getHostFactsClientId() ?? '';
+    const clientId = (this.owner ?? this).eventClientId;
     if (!clientId) {
       return '请求连接已中断，请等待重连';
     }
@@ -418,8 +506,9 @@ export class DesktopInteractions {
       if (kind > (pending.get(item.sessionId) ?? 0)) { pending.set(item.sessionId, kind); }
     };
     items.forEach(record);
-    this.continued.forEach(record);
-    this.views?.forEach((view: DesktopInteractions): void => { view.continued.forEach(record); });
+    this.questionProjections.forEach((state: DesktopQuestionProjection): void => {
+      this.answerableQuestions(state).forEach(record);
+    });
     if (this.sidebarPending.size === pending.size && Array.from(pending.keys()).every((id: string): boolean =>
       this.sidebarPending.get(id) === pending.get(id))) { return; }
     this.sidebarPending = pending;
@@ -438,7 +527,7 @@ export class DesktopInteractions {
       this.clearCountdown();
     }
     const active = all.filter((row: DesktopInteraction): boolean => row.sessionId === this.selected);
-    const continued = this.continued.filter((row: DesktopInteraction): boolean =>
+    const continued = this.answerableQuestions(this.questionProjections.get(this.selected)).filter((row: DesktopInteraction): boolean =>
       !active.some((event: DesktopInteraction): boolean => event.callId === row.callId));
     this.onChange([...active, ...continued].map((row: DesktopInteraction): DesktopInteraction => {
       if (row.kind !== 'question' || row.planReview !== undefined) { return row; }
@@ -474,6 +563,7 @@ export class DesktopInteractions {
         this.clearCountdown();
         this.claimDeadline = Date.now() + remaining;
         this.claimTimer = setTimeout((): void => {
+          if (this.events.get(row.id) !== row || this.claimEvent !== row.id) { return; }
           this.rejectQuestion(row.id, 'ASK_TIMED_OUT', 'ask_user_question timed out before the user answered')
             .then((error: string): void => {
               if (error && this.claimEvent === row.id) {

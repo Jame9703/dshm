@@ -166,6 +166,7 @@ export class DesktopConversation {
   private generation: number = 0;
   private closed: boolean = false;
   private stopFollow?: () => void;
+  private followVersion: number = 0;
   private timer: number = -1;
   private transcript: DesktopTranscriptItem[] = [];
   private readonly recallLabels: Map<number, string[]> = new Map();
@@ -193,7 +194,6 @@ export class DesktopConversation {
   private commandVersion: number = 0;
   private planMode?: boolean;
   private planAsOf: number = -1;
-  private questionsAsOf: number = -1;
   private readonly goals: DesktopGoalState = new DesktopGoalState();
   private readonly queue: DesktopPromptQueue = new DesktopPromptQueue();
   private readonly sending: Map<string, DesktopQueuedPrompt> = new Map<string, DesktopQueuedPrompt>();
@@ -312,7 +312,6 @@ export class DesktopConversation {
     this.commandError = '';
     this.planMode = undefined;
     this.planAsOf = -1;
-    this.questionsAsOf = -1;
     this.goals.reset();
     this.queue.reset();
     this.imageBytesLimit = undefined;
@@ -344,23 +343,35 @@ export class DesktopConversation {
     if (sessionId.length === 0) {
       return;
     }
-    const args = sessionFollowPayload(this.address(), PAGE_MESSAGES, true);
-    if (args !== undefined) {
-      const sink: StreamSink = {
-        onItem: (frame: Object): void => {
-          if (this.current(generation)) {
-            this.onFrame(frame);
-          }
-        },
-        onError: (): void => this.followEnded(generation),
-        onEnd: (): void => this.followEnded(generation)
-      };
-      this.stopFollow = this.connection.openStream(SESSION_FOLLOW_ENDPOINT, args, sink);
-    }
+    this.openFollow(generation);
     this.loadPage(generation, false);
     this.loadSelection(generation);
     this.loadModels();
     this.pollState(generation);
+  }
+
+  reconnect(): void {
+    if (!this.closed && this.sessionId && this.stopFollow === undefined) {
+      this.openFollow(this.generation);
+      this.loadSelection(this.generation);
+    }
+  }
+
+  private openFollow(generation: number): void {
+    const args = sessionFollowPayload(this.address(), PAGE_MESSAGES, true);
+    if (args !== undefined) {
+      const version = ++this.followVersion;
+      const sink: StreamSink = {
+        onItem: (frame: Object): void => {
+          if (version === this.followVersion && this.current(generation)) {
+            this.onFrame(frame);
+          }
+        },
+        onError: (): void => { if (version === this.followVersion) { this.followEnded(generation); } },
+        onEnd: (): void => { if (version === this.followVersion) { this.followEnded(generation); } }
+      };
+      this.stopFollow = this.connection.openStream(SESSION_FOLLOW_ENDPOINT, args, sink);
+    }
   }
 
   private address(): Object {
@@ -1049,7 +1060,7 @@ export class DesktopConversation {
         const sequence = getNumber(result.value, 'asOfSeq') ?? -1;
         const continuationChanged = this.readContinuation(values, sequence);
         const subagentsChanged = this.readSubagents(values, sequence);
-        this.readQuestions(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
+        this.interactions.observeQuestions(this.sessionId, values, sequence);
         this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
@@ -1149,13 +1160,6 @@ export class DesktopConversation {
     this.publish();
   }
 
-  private readQuestions(values: Object | undefined, sequence: number): void {
-    const questions = getRecord(values, 'userQuestions');
-    if (questions === undefined || sequence <= this.questionsAsOf) { return; }
-    this.questionsAsOf = sequence;
-    this.interactions.observeQuestions(this.sessionId, questions);
-  }
-
   private readPlan(projection?: Object): boolean {
     const asOf = getNumber(projection, 'asOfSeq') ?? -1;
     if (asOf < this.planAsOf) {
@@ -1179,7 +1183,7 @@ export class DesktopConversation {
 
   private readProjection(projection: Object | undefined): void {
     const values = getRecord(projection, 'values');
-    this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
+    this.interactions.observeQuestions(this.sessionId, values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.chatUsage.readProjection(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readContinuation(values, getNumber(projection, 'asOfSeq') ?? -1);
@@ -1288,7 +1292,7 @@ export class DesktopConversation {
       const goalChanged = this.goals.observeDelta(frame);
       const changes = getRecord(frame, 'changes');
       const continuationChanged = this.readContinuation(changes, getNumber(frame, 'seq') ?? -1);
-      this.readQuestions(changes, getNumber(frame, 'seq') ?? -1);
+      this.interactions.observeQuestions(this.sessionId, changes, getNumber(frame, 'seq') ?? -1);
       this.readImageLimit(changes);
       const queueChanged = this.readInbox(changes, getNumber(frame, 'seq') ?? -1);
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);

@@ -2,8 +2,8 @@ import { DEFAULT_DESKTOP_TRANSCRIPT_POLICY, readDesktopTranscriptPolicy } from '
 import type { DesktopTranscriptPolicy } from './DesktopTranscriptPresentation';
 import { projectSessionCreate, projectSessionList, sessionCreatePayload, sessionListEndpoint, sessionListPayload } from 'appstate';
 import type { SessionListItem } from 'appstate';
-import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
-import type { EventSink, StreamSink } from 'connection';
+import { Connection, ConnectionState, getArray, getRecord, getString, toStringArray } from 'connection';
+import type { EventSink, HostFacts, StreamSink } from 'connection';
 import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
@@ -138,6 +138,9 @@ export class DesktopWorkspaceData {
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.interactions.observeSidebarPending(onSidebarPending);
+    this.connection.onStateChange((status: ConnectionState): void => {
+      if (this.active && status !== ConnectionState.CONNECTED) { this.remoteEventsEnded(); }
+    });
     this.conversation = new DesktopConversation(this.connection, onConversation,
       (): void => { this.refreshSessions(); }, this.interactions, this.actions, this.cordis, this.onLiveTurnEnd);
   }
@@ -177,15 +180,18 @@ export class DesktopWorkspaceData {
       return;
     }
     const eventSink: EventSink = {
-      onReady: (): void => {
+      onReady: (facts: HostFacts): void => {
+        this.interactions.startEvents(facts.clientId);
         this.terminalRetentions.connect();
         this.terminalRosters.connect();
         this.openWorkspaceStream();
         this.reading.connect();
+        this.conversation.reconnect();
         this.conversation.invalidateCommands();
         this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
         this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
+          binding.conversation.reconnect();
           binding.conversation.invalidateCommands();
           binding.conversation.feedback.resync();
           binding.conversation.readGoalActivation();
@@ -223,13 +229,7 @@ export class DesktopWorkspaceData {
           }
         }
       },
-      onEnd: (): void => {
-        this.interactions.resetEvents();
-        if (this.unlistedRunning.size > 0) {
-          this.unlistedRunning.clear();
-          this.publish();
-        }
-      }
+      onEnd: (): void => this.remoteEventsEnded()
     };
     const opening: Promise<boolean> = this.connection.start(eventSink);
     this.refreshSessions();
@@ -241,6 +241,14 @@ export class DesktopWorkspaceData {
     if (opened) {
       this.openWorkspaceStream();
       this.reading.connect();
+    }
+  }
+
+  private remoteEventsEnded(): void {
+    this.interactions.resetEvents();
+    if (this.unlistedRunning.size > 0) {
+      this.unlistedRunning.clear();
+      this.publish();
     }
   }
 

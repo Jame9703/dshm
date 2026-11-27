@@ -98,7 +98,7 @@ export struct DesktopConversationPane {
   @Prop @Watch('scheduleComposerSync') appearance: string = 'system';
   @Prop @Watch('scheduleComposerSync') typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @Prop @Watch('insertFileReference') referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
-  @Prop interactions: DesktopInteraction[] = [];
+  @Prop @Watch('pendingInteractionChanged') interactions: DesktopInteraction[] = [];
   @Prop attachments: DesktopDraftAttachment[] = [];
   @Prop busy: boolean = false;
   @Prop stopping: boolean = false;
@@ -1135,13 +1135,22 @@ export struct DesktopConversationPane {
   }
 
   private visibleInteraction(): DesktopInteraction[] {
-    const visible = this.interactions.filter((row: DesktopInteraction): boolean => !row.reviewHidden && !row.questionHidden);
-    const row = visible.find((item: DesktopInteraction): boolean => item.planReview !== undefined) ?? visible[0];
-    return row === undefined ? [] : [row];
+    let chosen: DesktopInteraction | undefined;
+    let priority = -1;
+    for (const row of this.interactions) {
+      if (row.reviewHidden || row.questionHidden) { continue; }
+      const rank = row.planReview !== undefined ? 2 : row.kind === 'question' ? 1 : 0;
+      if (rank >= priority) { chosen = row; priority = rank; }
+    }
+    return chosen === undefined ? [] : [chosen];
   }
 
   private hiddenQuestions(): DesktopInteraction[] {
     return this.interactions.filter((row: DesktopInteraction): boolean => row.questionHidden === true);
+  }
+
+  private pendingInteractionChanged(): void {
+    if (this.palette && this.visibleInteraction().length > 0) { this.closePalette(); }
   }
 
   @Builder
@@ -1678,6 +1687,8 @@ export struct DesktopConversationPane {
       .width('100%').padding({ left: 8, right: 8, bottom: 7 })
     }
     .width('100%').constraintSize({ maxWidth: 712 })
+    .visibility(this.visibleInteraction().length === 0 ? Visibility.Visible : Visibility.None)
+    .enabled(this.visibleInteraction().length === 0)
     .border({ width: 1, radius: 20, color: this.attachmentOver ? $r('sys.color.brand') : Color.Transparent })
     .backgroundColor($r('app.color.workspace_panel'))
     .allowDrop(DESKTOP_ATTACHMENT_DROP_TYPES)
