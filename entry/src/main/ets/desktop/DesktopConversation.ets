@@ -22,6 +22,8 @@ import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
 import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
+import { DesktopTrajectoryLog } from './DesktopTrajectoryLog';
+import type { DesktopTraceRow } from './DesktopTrajectoryLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopFeedback } from './DesktopFeedback';
@@ -67,6 +69,8 @@ export interface DesktopTranscriptItem {
 export interface DesktopConversationSnapshot {
   sessionId: string;
   transcript: DesktopTranscriptItem[];
+  readTrajectory: () => DesktopTraceRow[];
+  trajectoryRevision: number;
   partial: string;
   preparingTool: string;
   loading: boolean;
@@ -122,6 +126,8 @@ export class DesktopConversation {
   private readonly recallLabels: Map<number, string[]> = new Map();
   private readonly turnArtifacts: Map<number, DesktopTurnArtifacts> = new Map();
   private readonly toolLog: DesktopToolLog = new DesktopToolLog();
+  private readonly trajectory: DesktopTrajectoryLog = new DesktopTrajectoryLog();
+  private readonly readTrajectory: () => DesktopTraceRow[] = (): DesktopTraceRow[] => this.trajectory.rows();
   private readonly commandRecords: Map<string, DesktopCommandRecord> = new Map();
   private commands?: DesktopCommand[];
   private commandTask?: Promise<DesktopCommand[] | undefined>;
@@ -211,6 +217,7 @@ export class DesktopConversation {
     this.team.clear();
     this.interactions.select(sessionId);
     this.transcript = [];
+    this.trajectory.clear();
     this.recallLabels.clear();
     this.turnArtifacts.clear();
     this.toolLog.clear();
@@ -684,6 +691,7 @@ export class DesktopConversation {
       this.recallLabels.clear();
       this.turnArtifacts.clear();
       this.toolLog.clear();
+      this.trajectory.clear();
       this.commandRecords.clear();
       this.replyTimeline.clear();
       this.workflows.clear();
@@ -696,6 +704,7 @@ export class DesktopConversation {
       }
       const event = getRecord(record, 'event');
       const eventType = getString(event, 'type');
+      this.trajectory.observe(record, eventType, seq);
       if (eventType === EVENT_TURN_END || eventType === 'turn/start') {
         const turn = getNumber(getRecord(event, 'data'), 'turn') ?? 0;
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
@@ -746,7 +755,9 @@ export class DesktopConversation {
         result.set(id, { id: id, sequence: row.closeSequence, artifacts: row });
       }
     });
-    for (const process of this.toolLog.groups()) {
+    const processes = this.toolLog.groups();
+    this.trajectory.setProcesses(processes);
+    for (const process of processes) {
       const id = `process:${this.sessionId}:${process.id}`;
       result.set(id, { id: id, sequence: process.sequence, process: process });
     }
@@ -771,11 +782,12 @@ export class DesktopConversation {
       a.sequence - b.sequence);
     const transcript: DesktopTranscriptItem[] = [];
     for (const current of ordered) {
-      const previous = transcript[transcript.length - 1]?.process;
+      const tail = transcript[transcript.length - 1];
+      const previous = tail?.process;
       const process = current.process;
-      if (previous !== undefined && process !== undefined && previous.turn === process.turn) {
-        previous.steps.push(...process.steps);
-        previous.version += ':' + process.version;
+      if (tail !== undefined && previous !== undefined && process !== undefined && previous.turn === process.turn) {
+        tail.process = { id: previous.id, sequence: previous.sequence, turn: previous.turn,
+          version: previous.version + ':' + process.version, steps: [...previous.steps, ...process.steps] };
       } else {
         current.referenceLabels = current.message?.speaker === Speaker.USER ? this.recallLabels.get(current.sequence) : undefined;
         transcript.push(current);
@@ -1062,6 +1074,7 @@ export class DesktopConversation {
       row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
     this.listener({
       sessionId: this.sessionId, transcript: this.transcript, partial: desktopHideActionCardFences(this.partial),
+      readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
       preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,

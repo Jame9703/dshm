@@ -21,6 +21,7 @@ import { DesktopSubagentsControl } from './DesktopSubagentsControl';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
+import { DesktopTrajectoryPane } from './DesktopTrajectoryPane';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
@@ -142,6 +143,8 @@ export struct DesktopConversationPane {
   private readonly scroller: Scroller = new Scroller();
   private following: boolean = true;
   private sessionId: string = '';
+  @State private showTrajectory: boolean = false;
+  private readonly trajectorySessions: Set<string> = new Set();
   private messageCount: number = 0;
   private partial: string = '';
   private scrollTimer: number = -1;
@@ -224,6 +227,7 @@ export struct DesktopConversationPane {
       this.teamSaving = false;
       this.teamProblem = '';
       this.sessionId = id;
+      this.showTrajectory = this.trajectorySessions.has(id);
       this.composerSelectionEnd = -1;
       this.scheduleComposerSync();
       this.following = true;
@@ -972,6 +976,58 @@ export struct DesktopConversationPane {
   }
 
   @Builder
+  private ViewTab(label: Resource, trajectory: boolean, key: string) {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Column({ space: 5 }) {
+        Text(label).fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.showTrajectory === trajectory ? $r('sys.color.brand') : $r('sys.color.font_tertiary'))
+        Divider().strokeWidth(2).color(this.showTrajectory === trajectory ? $r('sys.color.brand') : Color.Transparent)
+      }.width(trajectory ? 65 : 36)
+    }.key(key).width(trajectory ? 83 : 54).height(32).padding(0).backgroundColor(Color.Transparent)
+      .accessibilityText(label).accessibilitySelected(this.showTrajectory === trajectory).focusOnTouch(false)
+      .onClick((): void => { this.selectView(trajectory); })
+  }
+
+  private selectView(trajectory: boolean): void {
+    this.showTrajectory = trajectory;
+    if (trajectory) { this.trajectorySessions.add(this.snapshot?.sessionId ?? ''); }
+    else { this.trajectorySessions.delete(this.snapshot?.sessionId ?? ''); }
+    this.closePalette();
+  }
+
+  private trajectoryInMenu(): boolean {
+    return !this.embedded && this.onCreatePlugin !== undefined && this.paneWidth > 0 && this.paneWidth < 288;
+  }
+
+  private viewMenu(): MenuElement[] {
+    const items = desktopPluginEntryItems(this.onBrowsePlugins, this.onCreatePlugin ?? (() => {}));
+    if (this.trajectoryInMenu()) {
+      items.unshift({ value: $r('app.string.desktop_trace_tab'), action: (): void => { this.selectView(true); } });
+    }
+    return items;
+  }
+
+  @Builder
+  private ConversationTabs() {
+    Row({ space: 13 }) {
+      this.ViewTab($r('app.string.desktop_trace_chat'), false, 'desktopViewChat')
+      if (!this.trajectoryInMenu()) {
+        this.ViewTab($r('app.string.desktop_trace_tab'), true, 'desktopViewTrajectory')
+      }
+      if (!this.embedded && this.onCreatePlugin !== undefined) {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.dsh_session_ellipsis')).width(13).height(13).supportSvg2(true).draggable(false)
+            .accessibilityLevel('no')
+        }.key('desktopConversationViewsMore').width(29).height(30).padding(0).focusOnTouch(false)
+          .accessibilityText($r('app.string.desktop_plugin_entry_more_views')).enabled(this.snapshot?.loading === false)
+          .accessibilitySelected(this.trajectoryInMenu() && this.showTrajectory)
+          .bindMenu(this.viewMenu(), desktopMenuOptions(Placement.BottomLeft))
+      }
+    }.key('desktopConversationTabs').height(36).width('100%').padding({ left: this.compactHeader ? 8 : 20, right: 8 })
+      .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
+  }
+
+  @Builder
   private Message(item: TrajectoryItem, attachments: DesktopMediaAttachment[], referenceLabels: string[]) {
     Column({ space: 7 }) {
       if (item.speaker === Speaker.USER) {
@@ -1219,15 +1275,6 @@ export struct DesktopConversationPane {
               .key('desktopOpenCompatSession').height(34).focusOnTouch(false).onClick(this.onWeb)
           }
         }
-        if (!this.embedded && this.onCreatePlugin !== undefined) {
-          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            Image($r('app.media.dsh_session_ellipsis')).width(13).height(13).supportSvg2(true).draggable(false)
-              .accessibilityLevel('no')
-          }.key('desktopConversationViewsMore').width(29).height(30).padding(0).focusOnTouch(false)
-          .accessibilityText($r('app.string.desktop_plugin_entry_more_views')).enabled(this.snapshot?.loading === false)
-          .bindMenu(desktopPluginEntryItems(this.onBrowsePlugins, this.onCreatePlugin),
-            desktopMenuOptions(Placement.BottomRight))
-        }
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_session_ellipsis')).width(18).height(18).supportSvg2(true).draggable(false)
             .accessibilityLevel('no')
@@ -1240,10 +1287,11 @@ export struct DesktopConversationPane {
         this.paneWidth = Number(area.width);
         this.compactHeader = this.paneWidth < 500;
       })
+      if (this.snapshot?.sessionId) { this.ConversationTabs() }
       if (this.snapshot?.loading) {
         LoadingProgress().width(22).height(22).color($r('sys.color.brand'))
       }
-      if (this.snapshot?.hasEarlier) {
+      if (this.snapshot?.hasEarlier && !this.showTrajectory) {
         Button($r('app.string.desktop_chat_earlier'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .onClick((): void => {
             this.following = false;
@@ -1336,10 +1384,18 @@ export struct DesktopConversationPane {
         }
       }
       .layoutWeight(1).width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
+      .visibility(this.showTrajectory ? Visibility.None : Visibility.Visible)
       .scrollBar(BarState.Auto)
       .onScrollIndex((_first: number, last: number): void => {
-        this.following = last >= this.messageCount - 1;
+        if (!this.showTrajectory) { this.following = last >= this.messageCount - 1; }
       })
+      if (this.showTrajectory) {
+        DesktopTrajectoryPane({ readRecords: this.snapshot?.readTrajectory,
+          revision: this.snapshot?.trajectoryRevision ?? 0,
+          sessionId: this.snapshot?.sessionId ?? '', hasEarlier: this.snapshot?.hasEarlier ?? false,
+          loading: this.snapshot?.loading ?? false, codeFamily: this.typography.codeFamily,
+          codeSize: this.typography.codeSize, onEarlier: this.onEarlier })
+      }
       if (this.visibleInteraction().length > 0) {
         Row() {
           ForEach(this.visibleInteraction(), (row: DesktopInteraction) => {
