@@ -1,6 +1,7 @@
 import { util } from '@kit.ArkTS';
 import {
   commandsListEndpoint, commandsListPayload, filePart, fileUploadEndpoint, fileUploadPayload, followSessionAddress,
+  followSubagentAddress, imagePart,
   modelSelectionLabel, projectDefaultSelection, projectModelCatalog, projectSessionPage,
   projectFileUpload, projectSessionPrompt, projectWireRecord, promptPayload, PromptMode, queueSteerAction,
   SessionPageValue, sessionCancelPayload,
@@ -15,6 +16,8 @@ import {
 } from 'dshcompat';
 
 import { desktopRecallLabels } from './DesktopReferences';
+import { desktopSubagentCatalog, desktopSubagentMode } from './DesktopSubagents';
+import type { DesktopSubagentEntry } from './DesktopSubagents';
 import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
@@ -79,6 +82,8 @@ export interface DesktopConversationSnapshot {
   feedbackRows: FeedbackRow[];
   queue: DesktopQueuedPrompt[];
   busyEnterSteers: boolean;
+  subagent?: DesktopSubagentEntry;
+  subagents: DesktopSubagentEntry[];
 }
 
 interface DraftRequest {
@@ -88,10 +93,14 @@ interface DraftRequest {
 
 export class DesktopConversation {
   private readonly connection: Connection;
+  private readonly host: DesktopHostActions;
   private readonly interactions: DesktopInteractions;
   private readonly listener: (snapshot: DesktopConversationSnapshot) => void;
   private readonly refreshSessions: () => void;
   private sessionId: string = '';
+  private subagent?: DesktopSubagentEntry;
+  private subagents: DesktopSubagentEntry[] = [];
+  private subagentCatalogSequence: number = -1;
   private generation: number = 0;
   private closed: boolean = false;
   private stopFollow?: () => void;
@@ -141,6 +150,7 @@ export class DesktopConversation {
   constructor(connection: Connection, listener: (snapshot: DesktopConversationSnapshot) => void,
     refreshSessions: () => void, interactions: DesktopInteractions, host: DesktopHostActions) {
     this.connection = connection;
+    this.host = host;
     this.interactions = interactions;
     this.listener = listener;
     this.refreshSessions = refreshSessions;
@@ -169,13 +179,16 @@ export class DesktopConversation {
     this.publish();
   }
 
-  open(sessionId: string): void {
+  open(sessionId: string, subagent?: DesktopSubagentEntry): void {
     if (this.closed || sessionId === this.sessionId) {
       return;
     }
     const generation = ++this.generation;
     this.stopWatching();
     this.sessionId = sessionId;
+    this.subagent = subagent;
+    this.subagents = [];
+    this.subagentCatalogSequence = -1;
     this.feedback.select(sessionId);
     this.interactions.select(sessionId);
     this.transcript = [];
@@ -213,7 +226,7 @@ export class DesktopConversation {
     if (sessionId.length === 0) {
       return;
     }
-    const args = sessionFollowPayload(followSessionAddress(sessionId), PAGE_MESSAGES, true);
+    const args = sessionFollowPayload(this.address(), PAGE_MESSAGES, true);
     if (args !== undefined) {
       const sink: StreamSink = {
         onItem: (frame: Object): void => {
@@ -232,6 +245,11 @@ export class DesktopConversation {
     this.pollState(generation);
   }
 
+  private address(): Object {
+    const child = this.subagent;
+    return child === undefined ? followSessionAddress(this.sessionId) : followSubagentAddress(child.parentId, child.id, child.mode);
+  }
+
   close(): void {
     this.closed = true;
     this.feedback.select('');
@@ -246,7 +264,18 @@ export class DesktopConversation {
   }
 
   async upload(sessionId: string, name: string, data: ArrayBuffer,
-    mediaType: string): Promise<DesktopDraftAttachment | string> {
+    mediaType: string, addressedChild?: DesktopSubagentEntry): Promise<DesktopDraftAttachment | string> {
+    const current = sessionId === this.sessionId;
+    const child = current ? this.subagent : addressedChild;
+    if (child?.id === sessionId) {
+      if (child.mode !== 'continuable' || (current && !this.historyLoaded)) { return '该子智能体会话为只读'; }
+      if (!desktopImageMime(mediaType)) { return '子智能体会话支持图片附件'; }
+      const id = 'child-image-' + randomUuid();
+      const base64 = await new util.Base64Helper().encodeToString(new Uint8Array(data));
+      return { receiptId: id, name: name, bytes: data.byteLength, mediaType: mediaType,
+        picture: { id: id, name: name, bytes: data.byteLength, image: true,
+          draftImageSource: `data:${mediaType};base64,${base64}` } };
+    }
     if (desktopImageMime(mediaType)) {
       const response = await this.connection.uploadSessionImage(sessionId, data, mediaType, name);
       if (!response.ok) { return this.failure(response, '图片上传失败'); }
@@ -287,6 +316,9 @@ export class DesktopConversation {
   async send(sessionId: string, text: string, attachments: DesktopDraftAttachment[],
     onExport: (sessionId: string) => Promise<string>, onFeedback: (sessionId: string) => Promise<string>,
     alternateDelivery: boolean): Promise<string> {
+    if (sessionId !== this.sessionId) { return '当前会话已切换'; }
+    const child = this.subagent;
+    if (child !== undefined && (child.mode !== 'continuable' || !this.historyLoaded)) { return '该子智能体会话为只读'; }
     const invocation = commandInvocation(text);
     if (invocation !== undefined) {
       const commands = await this.loadCommands(sessionId);
@@ -308,7 +340,17 @@ export class DesktopConversation {
     const busy = sessionId === this.sessionId && this.running;
     const mode = busy && (this.busyEnterSteers !== alternateDelivery) ? PromptMode.STEER : PromptMode.QUEUE;
     const signature = JSON.stringify([mode, text, ...ids]);
-    const parts: PromptContentPart[] = ids.map((id: string): PromptContentPart => filePart(id));
+    const parts: PromptContentPart[] = [];
+    for (const file of attachments) {
+      if (child === undefined) {
+        parts.push(filePart(file.receiptId));
+      } else {
+        const prefix = `data:${file.mediaType};base64,`;
+        const source = file.picture?.draftImageSource;
+        if (!source?.startsWith(prefix) || source.length <= prefix.length) { return '无法读取子智能体图片附件'; }
+        parts.push(imagePart(file.mediaType, source.slice(prefix.length), file.name));
+      }
+    }
     if (text.trim().length > 0) {
       parts.unshift(textPart(text));
     }
@@ -319,6 +361,15 @@ export class DesktopConversation {
     }
     const args = promptPayload(request.id, sessionId, mode, parts, '');
     const requestId = request.id;
+    if (child !== undefined) {
+      const result = await this.host.call('subagents/prompt', {
+        'childSessionId': child.id, 'requestId': requestId, 'delivery': mode, 'content': parts
+      });
+      if (!result.ok || !getString(result.value, 'messageId')) { return this.failure(result, '宿主未确认发送'); }
+      this.pendingRequests.delete(sessionId);
+      if (sessionId === this.sessionId && !this.closed) { this.loadSelection(this.generation); }
+      return '';
+    }
     if (args !== undefined && busy && mode === PromptMode.QUEUE) {
       const files = attachments.map((attachment: DesktopDraftAttachment): DesktopMediaAttachment => {
         return attachment.picture ?? { id: attachment.receiptId, name: attachment.name, bytes: attachment.bytes, image: false };
@@ -497,6 +548,12 @@ export class DesktopConversation {
   }
 
   async cancel(sessionId: string): Promise<string> {
+    const child = sessionId === this.sessionId ? this.subagent : undefined;
+    if (child !== undefined) {
+      if (child.mode !== 'continuable' || !this.historyLoaded) { return '该子智能体会话为只读'; }
+      const result = await this.host.call('subagents/interruptByUser', { 'childSessionId': child.id });
+      return result.ok && getBoolean(result.value, 'accepted') === true ? '' : this.failure(result, '宿主未确认停止');
+    }
     const args = sessionCancelPayload(sessionId);
     const response = args === undefined ? undefined : await this.connection.call(SESSION_CANCEL_ENDPOINT, args);
     return response?.ok && getBoolean(response.value, 'accepted') === true ? '' :
@@ -552,7 +609,7 @@ export class DesktopConversation {
   private async loadPage(generation: number, earlier: boolean): Promise<void> {
     this.pageLoading = true;
     const request: Record<string, Object> = {
-      'address': followSessionAddress(this.sessionId), 'maxMessages': PAGE_MESSAGES
+      'address': this.address(), 'maxMessages': PAGE_MESSAGES
     };
     if (earlier && this.earliest >= 0) {
       request['beforeSeq'] = this.earliest;
@@ -695,11 +752,12 @@ export class DesktopConversation {
         this.readProjection(result.value);
         this.publish();
       } else {
+        const subagentsChanged = this.readSubagents(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         this.readQuestions(result.value);
         this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
-        if (this.readPlan(result.value) || goalChanged || queueChanged) {
+        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged) {
           this.publish();
         }
       }
@@ -804,6 +862,7 @@ export class DesktopConversation {
     this.readGoal(projection);
     this.readQueue(projection);
     const values = getRecord(projection, 'values');
+    this.readSubagents(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readImageLimit(values);
     const model = getRecord(values, 'modelSelection');
     this.model = this.readModel(getRecord(model, 'next')) ?? this.readModel(getRecord(model, 'lastUsed'));
@@ -811,6 +870,24 @@ export class DesktopConversation {
     if (this.permission.length > 0) {
       this.loadPermissions();
     }
+  }
+
+  private readSubagents(values: Object | undefined, sequence: number): boolean {
+    let changed = false;
+    const child = this.subagent;
+    const identity = getRecord(values, 'subagent');
+    const mode = desktopSubagentMode(getString(identity, 'mode'));
+    if (child?.mode === 'unknown' && (mode === 'one-shot' || mode === 'continuable')) {
+      this.subagent = { id: child.id, parentId: child.parentId, mode: mode,
+        label: child.label || getString(identity, 'label') || '', name: child.name, createdAt: child.createdAt };
+      changed = true;
+    }
+    if (sequence >= 0 && sequence <= this.subagentCatalogSequence) { return changed; }
+    const catalog = desktopSubagentCatalog(this.sessionId, values);
+    if (catalog === undefined) { return changed; }
+    this.subagentCatalogSequence = sequence;
+    this.subagents = catalog;
+    return true;
   }
 
   private readGoal(projection?: Object): boolean {
@@ -851,7 +928,8 @@ export class DesktopConversation {
       const changes = getRecord(frame, 'changes');
       this.readImageLimit(changes);
       const queueChanged = this.queue.observe(changes, getNumber(frame, 'seq') ?? -1);
-      if (!goalChanged && !queueChanged) { return; }
+      const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);
+      if (!goalChanged && !queueChanged && !subagentsChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
@@ -926,7 +1004,8 @@ export class DesktopConversation {
       modelLabel: selection === undefined ? '' : modelSelectionLabel(selection, this.models), planMode: this.planMode,
       goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
-      feedbackRows: this.feedback.rows, queue: queue, busyEnterSteers: this.busyEnterSteers
+      feedbackRows: this.feedback.rows, queue: queue, busyEnterSteers: this.busyEnterSteers,
+      subagent: this.subagent, subagents: this.subagents
     });
   }
 }

@@ -2,7 +2,8 @@ import { projectSessionCreate, projectSessionList, sessionCreatePayload, session
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { EventSink, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SETTINGS_DOCUMENT_UPDATED,
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
+  EVENT_SETTINGS_DOCUMENT_UPDATED,
   SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -102,6 +103,7 @@ export class DesktopWorkspaceData {
         if (event === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
         if (event === EVENT_GOAL_ACTIVATION_CHANGED) { this.conversation.observeGoalActivation(frame); }
         if (event === EVENT_LLM_ADAPTERS_UPDATED) { this.actions.modelCatalogChanged(); }
+        if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
           if (namespace === 'ui-conversation') { this.readSubmitPreference(); }
@@ -249,6 +251,19 @@ export class DesktopWorkspaceData {
     } else {
       this.sessionError = '无法读取会话列表';
     }
+    this.publish();
+  }
+
+  private observeSessionStatus(frame: Object): void {
+    const args = getArray(frame, 'args');
+    const id = args?.[0];
+    const running = args?.[1];
+    if (typeof id !== 'string' || typeof running !== 'boolean' || !this.active) { return; }
+    const previous = this.sessions.find((row: SessionListItem): boolean => row.id === id);
+    if (previous === undefined || previous.running === running) { return; }
+    const updated: SessionListItem = { id: previous.id, title: previous.title, cwd: previous.cwd, blank: previous.blank,
+      raw: previous.raw, running: running, createdAt: previous.createdAt, updatedAt: previous.updatedAt };
+    this.sessions = this.sessions.map((row: SessionListItem): SessionListItem => row.id === id ? updated : row);
     this.publish();
   }
 

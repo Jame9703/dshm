@@ -19,6 +19,8 @@ import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
 import { DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback';
 import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
+import { desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
+import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome,
   pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
@@ -177,6 +179,9 @@ struct DesktopWorkspace {
   private readonly drafts: Map<string, DesktopComposerDraft> = new Map<string, DesktopComposerDraft>();
 
   @State private groups: DesktopWorkspaceGroup[] = [];
+  @State private sessionSummaries: SessionListItem[] = [];
+  private selectedSubagent?: DesktopSubagentEntry;
+  private readonly subagentAddresses: Map<string, DesktopSubagentEntry> = new Map();
   private data?: DesktopWorkspaceData;
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
@@ -319,6 +324,7 @@ struct DesktopWorkspace {
       this.ready = true;
     }, (snapshot: DesktopConversationSnapshot): void => {
       this.chat = snapshot;
+      if (snapshot.subagent !== undefined) { this.subagentAddresses.set(snapshot.subagent.id, snapshot.subagent); }
       this.syncReading();
     }, (items: DesktopInteraction[]): void => {
       this.interactions = items;
@@ -338,6 +344,7 @@ struct DesktopWorkspace {
   }
 
   private updateGroups(workspaces: DesktopWorkspaceRow[], sessions: SessionListItem[]): void {
+    this.sessionSummaries = sessions;
     const byMember = new Map<string, DesktopWorkspaceGroup>();
     const byPath = new Map<string, DesktopWorkspaceGroup>();
     this.groups = workspaces.map((row: DesktopWorkspaceRow): DesktopWorkspaceGroup => {
@@ -354,7 +361,7 @@ struct DesktopWorkspace {
     for (const session of sessions) {
       const group = byMember.get(session.id) ?? byPath.get(session.cwd) ?? ungrouped;
       group.sessions.push(session);
-      if (session.id === this.sessionId && !this.archivedIds.includes(session.id)) {
+      if (session.id === this.sessionId && this.selectedSubagent === undefined && !this.archivedIds.includes(session.id)) {
         this.selectSession(group, session);
       }
     }
@@ -366,8 +373,8 @@ struct DesktopWorkspace {
     if (ungrouped.sessions.length > 0) {
       this.groups.push(ungrouped);
     }
-    if (this.archivedIds.includes(this.sessionId) || !sessions.some((session: SessionListItem): boolean =>
-      session.id === this.sessionId)) {
+    if (this.archivedIds.includes(this.sessionId) || (this.selectedSubagent === undefined &&
+      !sessions.some((session: SessionListItem): boolean => session.id === this.sessionId))) {
       this.clearSession();
       this.selectedWorkspaceTitle =
         this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
@@ -781,7 +788,8 @@ struct DesktopWorkspace {
     return session.title || $r('app.string.desktop_experiment_unnamed');
   }
 
-  private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem): void {
+  private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem,
+    subagent: DesktopSubagentEntry | undefined = desktopSubagentFromSummary(session)): void {
     if (this.dockSessionId !== session.id) {
       this.dockSessionId = session.id;
       this.clearDockGesture();
@@ -798,11 +806,37 @@ struct DesktopWorkspace {
       this.chatError = '';
     }
     this.sessionId = session.id;
+    this.selectedSubagent = subagent;
     this.workspaceId = group.id;
     this.selectedTitle = this.sessionLabel(session);
     this.selectedSessionDirectory = session.cwd;
     this.selectedWorkspaceTitle = group.title;
-    this.data?.conversation.open(session.id);
+    this.data?.conversation.open(session.id, subagent);
+  }
+
+  private openSubagent(entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void {
+    if (entry.mode === 'external') { return; }
+    for (const parent of parents) { this.subagentAddresses.set(parent.id, parent); }
+    this.subagentAddresses.set(entry.id, entry);
+    this.openRelatedSession(entry.id, entry.label || entry.name, entry);
+  }
+
+  private openSubagentParent(child: DesktopSubagentEntry): void {
+    const parent = this.subagentAddresses.get(child.parentId);
+    this.openRelatedSession(child.parentId, parent?.label || parent?.name || child.parentId, parent);
+  }
+
+  private openRelatedSession(id: string, title: string, subagent?: DesktopSubagentEntry): void {
+    const current = this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId);
+    const group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
+      candidate.sessions.some((session: SessionListItem): boolean => session.id === id)) ?? current;
+    if (group === undefined) { return; }
+    const session = this.sessionSummaries.find((item: SessionListItem): boolean => item.id === id);
+    const target: SessionListItem = session ?? { id: id, title: title, cwd: this.selectedSessionDirectory,
+      createdAt: subagent?.createdAt ?? 0, updatedAt: 0, running: false, blank: false, raw: '' };
+    this.selectSession(group, target, subagent ?? desktopSubagentFromSummary(target));
+    if (subagent?.label) { this.selectedTitle = subagent.label; }
+    this.panel = 'session';
   }
 
   private changeDraft(session: string, value: DesktopComposerDraft): void {
@@ -820,6 +854,7 @@ struct DesktopWorkspace {
     this.closeFeedback();
     this.closeImagePreview();
     this.sessionId = '';
+    this.selectedSubagent = undefined;
     this.terminalCreateSession = '';
     this.dockSessionId = '';
     this.clearDockGesture();
@@ -1015,11 +1050,11 @@ struct DesktopWorkspace {
     mediaType: string): Promise<string> {
     if (this.data !== data) { return ''; }
     try {
-      const uploaded = await data.conversation.upload(id, label, bytes, mediaType);
+      const uploaded = await data.conversation.upload(id, label, bytes, mediaType, this.subagentAddresses.get(id));
       if (typeof uploaded === 'string') { return `${label}：${uploaded}`; }
-      if (mediaType === 'image/gif' && uploaded.picture !== undefined && this.data === data) {
+      if (mediaType === 'image/gif' && uploaded.picture !== undefined && !uploaded.picture.draftImageSource && this.data === data) {
         const animation = await desktopDraftGif(bytes).catch((): string => '');
-        if (animation) { uploaded.picture.draftAnimation = animation; }
+        if (animation) { uploaded.picture.draftImageSource = animation; }
       }
       if (this.data === data) {
         this.setAttachments(id, [...(this.attachmentsBySession.get(id) ?? []), uploaded]);
@@ -2038,6 +2073,11 @@ struct DesktopWorkspace {
         DesktopConversationPane({
           host: this.data?.actions,
           snapshot: this.chat,
+          sessionSummaries: this.sessionSummaries,
+          onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {
+            this.openSubagent(entry, parents);
+          },
+          onSubagentParent: (child: DesktopSubagentEntry): void => { this.openSubagentParent(child); },
           interactions: this.interactions,
           onDecision: (id: string, allow: boolean): void => {
             const interactions = this.data?.interactions;

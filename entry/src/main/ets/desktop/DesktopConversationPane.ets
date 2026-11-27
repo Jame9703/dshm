@@ -15,6 +15,9 @@ import { DesktopArtifactsPane } from './DesktopArtifactsPane';
 import { DesktopChangeTarget } from './DesktopArtifacts';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopJobsControl } from './DesktopJobsControl';
+import { DesktopSubagentsControl } from './DesktopSubagentsControl';
+import type { DesktopSubagentEntry } from './DesktopSubagents';
+import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
@@ -43,6 +46,9 @@ import type { DesktopComposerDraft, DesktopDraftReference } from './DesktopDraft
 export struct DesktopConversationPane {
   host?: DesktopHostActions;
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
+  @Prop sessionSummaries: SessionListItem[] = [];
+  onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
+  onSubagentParent: (child: DesktopSubagentEntry) => void = (): void => {};
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
   @Prop sessionDirectory: string = '';
@@ -147,6 +153,16 @@ export struct DesktopConversationPane {
   @State private riskPreset: string = '';
   @State private agreed: boolean = false;
   @State private paletteNotice: string = '';
+
+  private subagentCanSend(): boolean {
+    return this.snapshot?.subagent === undefined ||
+      (this.snapshot.subagent.mode === 'continuable' && this.snapshot.historyLoaded);
+  }
+
+  private subagentParentTitle(): string {
+    const id = this.snapshot?.subagent?.parentId;
+    return this.sessionSummaries.find((row: SessionListItem): boolean => row.id === id)?.title || '父会话';
+  }
 
   aboutToDisappear(): void {
     this.composerReady = false;
@@ -984,6 +1000,20 @@ export struct DesktopConversationPane {
   build() {
     Column() {
       Row({ space: this.compactHeader ? 4 : 8 }) {
+        if (this.snapshot?.subagent !== undefined) {
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Row({ space: 4 }) {
+              SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(12).accessibilityLevel('no')
+              if (!this.compactHeader) {
+                Text(this.subagentParentTitle()).fontSize(13).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }
+          }.key('desktopSubagentParent').height(34).constraintSize({ maxWidth: 140 }).focusOnTouch(false)
+            .accessibilityText('返回父会话 ' + this.subagentParentTitle()).onClick((): void => {
+              const child = this.snapshot?.subagent;
+              if (child !== undefined) { this.onSubagentParent(child); }
+            })
+        }
         Column({ space: 2 }) {
           Text(this.title).fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -993,6 +1023,11 @@ export struct DesktopConversationPane {
           }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if ((this.snapshot?.subagents.length ?? 0) > 0 || this.snapshot?.subagent !== undefined) {
+          DesktopSubagentsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+            child: this.snapshot?.subagent, entries: this.snapshot?.subagents ?? [],
+            summaries: this.sessionSummaries, onOpen: this.onSubagent })
+        }
         if (this.snapshot?.sessionId) {
           DesktopJobsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '' })
         }
@@ -1138,15 +1173,25 @@ export struct DesktopConversationPane {
           .padding({ left: 16, right: 16, bottom: 6 })
       }
       Column({ space: 6 }) {
-        if ((this.snapshot?.queue.length ?? 0) > 0) {
-          DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
-            running: this.snapshot?.running === true, busy: this.busy, host: this.host,
-            onAction: this.onQueueAction, onOpenImage: this.onOpenImage })
+        if (this.subagentCanSend()) {
+          if ((this.snapshot?.queue.length ?? 0) > 0) {
+            DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
+              running: this.snapshot?.running === true, busy: this.busy, host: this.host,
+              onAction: this.onQueueAction, onOpenImage: this.onOpenImage })
+          }
+          if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
+            DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })
+          }
+          this.Composer()
+        } else {
+          Column({ space: 4 }) {
+            Text(this.snapshot?.subagent?.mode === 'one-shot' ? '一次性子智能体会话' : '子智能体会话为只读')
+              .fontSize(14).fontWeight(FontWeight.Medium)
+            Text(this.snapshot?.subagent?.mode === 'one-shot' ? '可以阅读此会话的记录。一次性子智能体无法继续对话。' :
+              '读取子会话记录后可确定是否能继续对话。').fontSize(12).fontColor($r('sys.color.font_secondary'))
+          }.key('desktopSubagentReadOnly').width('100%').constraintSize({ maxWidth: 712 }).padding(12)
+            .alignItems(HorizontalAlign.Start).borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
         }
-        if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
-          DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })
-        }
-        this.Composer()
       }.width('100%').padding({ left: 20, right: 20, bottom: 16 }).alignItems(HorizontalAlign.Center)
     }
     .width('100%').height('100%')
