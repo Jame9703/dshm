@@ -6,7 +6,7 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
-import type { DesktopShell, DesktopTerminalRow, DesktopTerminalState } from './DesktopTerminalClient';
+import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRow, DesktopTerminalState } from './DesktopTerminalClient';
 import type { TerminalCellPaint, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
 const INSET: number = 10;
@@ -20,15 +20,18 @@ const FUNCTION_KEYS: string[] = ['OP', 'OQ', 'OR', 'OS', '[15~', '[17~',
 export struct DesktopTerminalPane {
   host?: DesktopHostActions;
   @Prop @Watch('reloadSession') sessionId: string = '';
+  @Prop @Watch('visibilityChanged') shown: boolean = true;
   @Prop @Watch('draw') appearance: string = 'system';
   @Prop @Watch('applyFont') cellFontSize: number = 13;
   @Prop @Watch('applyFontFamily') cellFontFamily: string = 'monospace';
   @Prop @Watch('createFromShortcut') createSession: string = '';
   preferredTerminal: string = '';
+  observeRetention?: DesktopTerminalRetentionObserver;
+  openInNewTab?: (row: DesktopTerminalRow) => boolean;
   onHidePanel: () => void = (): void => {};
   onCreateShortcut: () => void = () => {};
-  onTerminalSelected: (sessionId: string, terminalId: string) => void =
-    (_sessionId: string, _terminalId: string): void => {};
+  onTerminalSelected: (sessionId: string, terminalId: string, title: string) => void =
+    (_sessionId: string, _terminalId: string, _title: string): void => {};
   onShortcut: (event: KeyEvent) => boolean = (_event: KeyEvent): boolean => false;
 
   @State private state?: DesktopTerminalState = undefined;
@@ -75,7 +78,7 @@ export struct DesktopTerminalPane {
     this.visibleScreen = '';
     this.renameOpen = false;
     this.draw();
-    if (this.host === undefined || !this.active || this.sessionId.length === 0) {
+    if (this.host === undefined || !this.active || !this.shown || this.sessionId.length === 0) {
       return;
     }
     const id = this.sessionId;
@@ -83,9 +86,12 @@ export struct DesktopTerminalPane {
       if (!this.active || this.sessionId !== id) {
         return;
       }
+      const previous = this.state?.selected ?? '';
+      const previousTitle = this.selected()?.title ?? '';
       this.state = state;
-      if (state.selected) {
-        this.onTerminalSelected(id, state.selected);
+      const title = this.selected()?.title ?? '';
+      if (state.selected !== previous || title !== previousTitle) {
+        this.onTerminalSelected(id, state.selected, title);
       }
       this.createFromShortcut();
     }, (frame: TerminalPaintFrame | undefined): void => {
@@ -95,14 +101,20 @@ export struct DesktopTerminalPane {
       this.frame = frame;
       this.visibleScreen = this.client?.visibleText() ?? '';
       this.draw();
-    });
+    }, this.observeRetention, this.openInNewTab);
     this.fit();
     this.client.start(this.preferredTerminal);
   }
 
+  private visibilityChanged(): void {
+    if (!this.active) { return; }
+    if (this.shown && this.client === undefined) { this.reloadSession(); }
+    else { this.client?.setShown(this.shown); }
+  }
+
   private createFromShortcut(): void {
     if (this.createSession.length === 0) { this.createIssued = false; return; }
-    if (!this.active || this.createIssued || this.createSession !== this.sessionId || this.client === undefined ||
+    if (!this.active || !this.shown || this.createIssued || this.createSession !== this.sessionId || this.client === undefined ||
       this.state?.canCreate !== true) { return; }
     this.createIssued = true;
     this.onCreateShortcut();
@@ -143,7 +155,9 @@ export struct DesktopTerminalPane {
     for (const row of this.state?.terminals ?? []) {
       items.push({
         value: (row.id === this.state?.selected ? '✓ ' : '') + row.title,
-        action: (): void => { this.client?.select(row.id); }
+        action: (): void => {
+          if (this.openInNewTab?.(row) !== true) { this.client?.select(row.id); }
+        }
       });
     }
     return items;

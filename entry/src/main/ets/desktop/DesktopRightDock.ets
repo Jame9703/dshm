@@ -26,6 +26,7 @@ export interface DesktopDockTab {
   browserAddress?: string;
   restoreBrowser?: boolean;
   compactionMarkdown?: string;
+  terminalId?: string;
 }
 
 export function desktopDockChatTab(target: DesktopDockChatTarget, title: string): DesktopDockTab {
@@ -34,6 +35,11 @@ export function desktopDockChatTab(target: DesktopDockChatTarget, title: string)
 
 export function desktopDockResourceId(kind: string, resource: string, sourceSessionId?: string): string {
   return kind + ':' + (sourceSessionId ? JSON.stringify([sourceSessionId, resource]) : resource);
+}
+
+export function desktopDockTerminalTab(terminalId: string, title: string): DesktopDockTab {
+  return { id: desktopDockResourceId(DesktopDockKind.TERMINAL, terminalId), kind: DesktopDockKind.TERMINAL,
+    title: title, terminalId: terminalId };
 }
 
 export interface DesktopDockPane {
@@ -94,6 +100,36 @@ export function desktopDockSplitFraction(fraction: number): number {
 export function desktopDockTab(layout: DesktopDockLayout, index: number = layout.focus): DesktopDockTab | undefined {
   const pane = layout.panes[index];
   return pane?.tabs.find((tab: DesktopDockTab): boolean => tab.id === pane.active);
+}
+
+export function desktopDockTerminalIds(layout: DesktopDockLayout): string[] {
+  const ids: string[] = [];
+  const remember = (tab: DesktopDockTab): void => {
+    if (tab.kind === DesktopDockKind.TERMINAL && tab.terminalId) { ids.push(tab.terminalId); }
+  };
+  layout.panes.forEach((pane: DesktopDockPane): void => pane.tabs.forEach(remember));
+  layout.floats.forEach((panel: DesktopDockFloat): void => remember(panel.tab));
+  return ids;
+}
+
+export function desktopDockBindTerminal(layout: DesktopDockLayout, tabId: string, terminalId: string,
+  title: string = ''): DesktopDockLayout {
+  const match = (tab: DesktopDockTab): boolean => tab.kind === DesktopDockKind.TERMINAL && tab.id === tabId;
+  const current = layout.panes.flatMap((pane: DesktopDockPane): DesktopDockTab[] => pane.tabs).find(match) ??
+    layout.floats.find((panel: DesktopDockFloat): boolean => match(panel.tab))?.tab;
+  if (current === undefined) { return layout; }
+  const nextTitle = terminalId ? title || current.title : '终端';
+  if ((current.terminalId ?? '') === terminalId && current.title === nextTitle) { return layout; }
+  const next = copyDock(layout);
+  const updated: DesktopDockTab = { id: current.id, kind: current.kind, title: nextTitle,
+    terminalId: terminalId || undefined };
+  next.panes.forEach((pane: DesktopDockPane): void => {
+    const index = pane.tabs.findIndex(match);
+    if (index >= 0) { pane.tabs[index] = updated; }
+  });
+  const index = next.floats.findIndex((panel: DesktopDockFloat): boolean => match(panel.tab));
+  if (index >= 0) { next.floats[index] = { tab: updated, rect: next.floats[index].rect }; }
+  return next;
 }
 
 export function desktopDockOpen(layout: DesktopDockLayout, tab: DesktopDockTab, update: boolean = true,

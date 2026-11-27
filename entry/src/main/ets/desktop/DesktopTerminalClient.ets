@@ -49,6 +49,8 @@ interface TerminalInput {
   rows: number;
 }
 
+export type DesktopTerminalRetentionObserver = (id: string, listener: (problem: string) => void) => () => void;
+
 const MAX_INPUT_QUEUE: number = 32768;
 const ACK_TIMEOUT_MS: number = 10000;
 const DEFAULT_COLS: number = 80;
@@ -73,7 +75,10 @@ export class DesktopTerminalClient {
   private readonly sessionId: string;
   private readonly onState: (view: DesktopTerminalState) => void;
   private readonly onDraw: (frame: TerminalPaintFrame | undefined) => void;
+  private readonly observeRetention?: DesktopTerminalRetentionObserver;
+  private readonly openInNewTab?: (row: DesktopTerminalRow) => boolean;
   private live: boolean = true;
+  private shown: boolean = true;
   private terminals: DesktopTerminalRow[] = [];
   private shells: DesktopShell[] = [];
   private selected: string = '';
@@ -108,16 +113,20 @@ export class DesktopTerminalClient {
   private queueBytes: number = 0;
   private queue: TerminalInput[] = [];
   private stopWatch?: () => void;
+  private stopRetentionObservation?: () => void;
   private stream?: DuplexStream;
   private emulator?: TerminalEmulator;
   private createEmulator?: TerminalEmulatorFactory;
 
   constructor(host: DesktopHostActions, sessionId: string,
-    onState: (view: DesktopTerminalState) => void, onDraw: (frame: TerminalPaintFrame | undefined) => void) {
+    onState: (view: DesktopTerminalState) => void, onDraw: (frame: TerminalPaintFrame | undefined) => void,
+    observeRetention?: DesktopTerminalRetentionObserver, openInNewTab?: (row: DesktopTerminalRow) => boolean) {
     this.host = host;
     this.sessionId = sessionId;
     this.onState = onState;
     this.onDraw = onDraw;
+    this.observeRetention = observeRetention;
+    this.openInNewTab = openInNewTab;
   }
 
   async start(preferredId: string): Promise<void> {
@@ -165,21 +174,41 @@ export class DesktopTerminalClient {
     const preferred = this.terminals.find((row: DesktopTerminalRow): boolean => row.id === preferredId);
     if (preferred !== undefined) {
       this.select(preferred.id);
-    } else if (this.terminals.length > 0) {
+    } else if (this.terminals.length > 0 && (!preferredId || this.openInNewTab === undefined)) {
       this.select(this.terminals[0].id);
     }
-    this.stopWatch = this.host.watch('terminal/watch', session, {
+    this.openWatch();
+    this.publish();
+  }
+
+  private openWatch(): void {
+    if (!this.live || !this.shown || !this.discovered || this.stopWatch !== undefined) { return; }
+    this.stopWatch = this.host.watch('terminal/watch', { 'sessionId': this.sessionId }, {
       onItem: (value: Object): void => {
         const wrapped: Record<string, Object> = { 'items': value };
         this.setTerminals(getArray(wrapped, 'items') ?? []);
       },
       onError: (_code: string, message: string): void => {
+        this.stopWatch = undefined;
         this.error = message;
         this.publish();
       },
-      onEnd: (): void => {}
+      onEnd: (): void => { this.stopWatch = undefined; }
     });
-    this.publish();
+  }
+
+  setShown(shown: boolean): void {
+    if (this.shown === shown) { return; }
+    this.shown = shown;
+    if (shown) {
+      this.openWatch();
+      if (this.selected) { this.select(this.selected); }
+    } else {
+      this.stopWatch?.();
+      this.stopWatch = undefined;
+      this.stopObservingRetention();
+      this.detach();
+    }
   }
 
   async create(shellPath: string = ''): Promise<void> {
@@ -259,6 +288,7 @@ export class DesktopTerminalClient {
     if (!this.terminals.some((item: DesktopTerminalRow): boolean => item.id === row.id)) {
       this.terminals = [...this.terminals, row];
     }
+    if (this.openInNewTab?.(row) === true) { this.publish(); return; }
     if (row.id === this.selected && this.stream !== undefined) { this.publish(); }
     else { this.select(row.id); }
   }
@@ -302,8 +332,23 @@ export class DesktopTerminalClient {
     if (!this.live || !id || (id === this.selected && this.stream !== undefined)) {
       return;
     }
+    this.stopObservingRetention();
     this.detach();
     this.selected = id;
+    this.error = '';
+    this.issue = 'none';
+    this.publish();
+    if (!this.shown) { return; }
+    if (this.observeRetention === undefined) { this.attachSelected(id); return; }
+    this.stopRetentionObservation = this.observeRetention(id, (problem: string): void => {
+      if (!this.live || this.selected !== id) { return; }
+      if (problem) { this.ended(this.generation, problem); }
+      else if (this.stream === undefined) { this.attachSelected(id); }
+    });
+  }
+
+  private attachSelected(id: string): void {
+    this.openWatch();
     this.error = '';
     this.issue = 'none';
     const generation = this.generation;
@@ -322,6 +367,11 @@ export class DesktopTerminalClient {
       this.issue = 'attach';
     }
     this.publish();
+  }
+
+  private stopObservingRetention(): void {
+    this.stopRetentionObservation?.();
+    this.stopRetentionObservation = undefined;
   }
 
   resize(cols: number, rows: number): void {
@@ -383,6 +433,7 @@ export class DesktopTerminalClient {
 
   dispose(): void {
     this.live = false;
+    this.stopObservingRetention();
     this.stopWatch?.();
     this.detach();
   }
@@ -436,9 +487,10 @@ export class DesktopTerminalClient {
 
   private chooseRemaining(): void {
     if (this.selected.length > 0 && !this.terminals.some((row: DesktopTerminalRow): boolean => row.id === this.selected)) {
+      this.stopObservingRetention();
       this.selected = '';
       this.detach();
-      if (this.terminals.length > 0) {
+      if (this.terminals.length > 0 && this.openInNewTab === undefined) {
         this.select(this.terminals[0].id);
       }
     }

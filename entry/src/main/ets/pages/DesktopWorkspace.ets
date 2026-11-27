@@ -9,6 +9,7 @@ import { getString, parseTarget } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
+import type { DesktopTerminalRow } from '../desktop/DesktopTerminalClient';
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
 import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
@@ -59,9 +60,11 @@ import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDockFloatPosition, desktopDockFloatRect,
   desktopDockFocusFloat, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSeatFloat, desktopDockSelect,
   desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
-  desktopDockBrowserAddress, desktopDockChatTab, desktopDockResourceId, DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
+  desktopDockBindTerminal, desktopDockBrowserAddress, desktopDockChatTab, desktopDockResourceId, desktopDockTerminalIds,
+  desktopDockTerminalTab,
+  DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
-import { readDesktopDock, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
+import { readDesktopDock, readDesktopDockTerminalIds, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
 import { desktopReferenceText } from '../desktop/DesktopReferences';
@@ -179,7 +182,6 @@ struct DesktopWorkspace {
   @State private floatPreview: DesktopDockRect | undefined = undefined;
   @State private floatGestureTab: string = '';
   private floatOrigin?: DesktopDockRect;
-  private readonly terminalSelections = new Map<string, string>();
   private dockBounds?: Area;
   private workbenchBounds?: Area;
   private sessionContentBounds?: Area;
@@ -284,6 +286,7 @@ struct DesktopWorkspace {
   private data?: DesktopWorkspaceData;
   private fileSearchBook?: DesktopFileSearchPreferenceBook;
   private readonly documentViews = new Map<string, DesktopDocumentViewState>();
+  private readonly closingDockTerminals = new Set<string>();
   private readonly replyMedia = new DesktopReplyMedia();
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
@@ -407,7 +410,9 @@ struct DesktopWorkspace {
     if (this.quotaDialogToken >= 0) { this.data?.dismissQuota(this.quotaDialogToken); return true; }
     if (this.settingsOpen) { this.closeSettings(); return true; }
     if (this.panel === 'session' && this.rightDock.focusedFloat) {
-      this.closeDockTab(-1, this.rightDock.focusedFloat);
+      const id = this.rightDock.focusedFloat;
+      if (this.floatingPanel(id)?.tab.kind === DesktopDockKind.TERMINAL) { this.collapseFloatingTerminal(id); }
+      else { this.closeDockTab(-1, id); }
       return true;
     }
     if (this.rightDock.expanded && this.sessionId && this.panel === 'session') {
@@ -453,7 +458,7 @@ struct DesktopWorkspace {
     this.shownPlanReviews.clear();
     this.docks.clear();
     this.documentViews.clear();
-    this.terminalSelections.clear();
+    this.closingDockTerminals.clear();
     this.dockSessionId = '';
     this.rightDock = emptyDesktopDock();
     this.clearDockGesture();
@@ -517,7 +522,17 @@ struct DesktopWorkspace {
     }, (notice?: DesktopQuotaNotice): void => {
       if (this.pageActive) { this.presentQuota(notice); }
     });
-    this.data.start(this.hostUrl);
+    const data = this.data;
+    data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
+  }
+
+  private async restoreTerminalHolds(data: DesktopWorkspaceData): Promise<void> {
+    if (!this.pageActive || this.data !== data) { return; }
+    const holds = await readDesktopDockTerminalIds(this.getUIContext().getHostContext());
+    if (!this.pageActive || this.data !== data) { return; }
+    holds.forEach((ids: string[], sessionId: string): void => {
+      if (!this.docks.has(sessionId)) { data.terminalRetentions.setTabs(sessionId, ids); }
+    });
   }
 
   private applyHostTheme(theme: DesktopTheme): void {
@@ -1152,6 +1167,7 @@ struct DesktopWorkspace {
       this.clearDockGesture();
       this.rightDock = this.docks.get(session.id) ?? readDesktopDock(this.getUIContext().getHostContext(), session.id);
       this.docks.set(session.id, this.rightDock);
+      this.data?.terminalRetentions.setTabs(session.id, desktopDockTerminalIds(this.rightDock));
     }
     const changing = this.sessionId !== session.id;
     if (changing) {
@@ -1741,6 +1757,7 @@ struct DesktopWorkspace {
     if (!this.sessionId || layout === this.rightDock) { return; }
     this.rightDock = layout;
     this.docks.set(this.sessionId, layout);
+    this.data?.terminalRetentions.setTabs(this.sessionId, desktopDockTerminalIds(layout));
     saveDesktopDock(this.getUIContext().getHostContext(), this.sessionId, layout);
   }
 
@@ -1837,16 +1854,53 @@ struct DesktopWorkspace {
   }
 
   private closeDockTab(index: number, id: string): void {
+    const terminalId = this.dockStoredTab(index, id)?.terminalId;
+    if (terminalId) { this.closeDockTerminal(this.sessionId, id, terminalId); }
+    else { this.removeDockTab(index, id); }
+  }
+
+  private async closeDockTerminal(sessionId: string, tabId: string, terminalId: string): Promise<void> {
+    const host = this.data?.actions;
+    const key = JSON.stringify([sessionId, terminalId]);
+    if (host === undefined || this.closingDockTerminals.has(key)) { return; }
+    this.closingDockTerminals.add(key);
+    const result = await host.call('terminal/close', { 'agentId': sessionId, 'id': terminalId });
+    if (!this.pageActive || this.data?.actions !== host) { return; }
+    this.closingDockTerminals.delete(key);
+    if (!result.ok && result.error?.code !== 'terminal/unavailable') {
+      this.getUIContext().getPromptAction().showToast({ message: desktopHostProblem(result) });
+      return;
+    }
+    const layout = this.docks.get(sessionId);
+    if (layout === undefined) { return; }
+    const index = layout.panes.findIndex((pane: DesktopDockPane): boolean => pane.tabs.some(
+      (tab: DesktopDockTab): boolean => tab.id === tabId && tab.terminalId === terminalId));
+    if (index < 0 && !layout.floats.some((panel: DesktopDockFloat): boolean =>
+      panel.tab.id === tabId && panel.tab.terminalId === terminalId)) { return; }
+    if (sessionId === this.sessionId) { this.removeDockTab(index, tabId); return; }
+    const next = index < 0 ? desktopDockCloseFloat(layout, tabId) : desktopDockCloseTab(layout, index, tabId);
+    this.docks.set(sessionId, next);
+    this.data?.terminalRetentions.setTabs(sessionId, desktopDockTerminalIds(next));
+    saveDesktopDock(this.getUIContext().getHostContext(), sessionId, next);
+  }
+
+  private removeDockTab(index: number, id: string): void {
     this.documentViews.delete(this.documentViewKey(id));
-    if (id === DesktopDockKind.TERMINAL) { this.terminalCreateSession = ''; }
+    if (id === DesktopDockKind.TERMINAL || id.startsWith(DesktopDockKind.TERMINAL + ':')) { this.terminalCreateSession = ''; }
     this.dockTabBounds.delete(id);
     this.setDock(index < 0 ? desktopDockCloseFloat(this.rightDock, id) : desktopDockCloseTab(this.rightDock, index, id));
   }
 
   private hideDockTool(kind: DesktopDockKind): void {
     const panel = this.rightDock.floats.find((item: DesktopDockFloat): boolean => item.tab.kind === kind);
-    if (panel !== undefined) { this.closeDockTab(-1, panel.tab.id); }
+    if (panel !== undefined && kind === DesktopDockKind.TERMINAL) { this.collapseFloatingTerminal(panel.tab.id); }
+    else if (panel !== undefined) { this.closeDockTab(-1, panel.tab.id); }
     else { this.toggleRightDock(); }
+  }
+
+  private collapseFloatingTerminal(id: string): void {
+    const layout = desktopDockSeatFloat(this.rightDock, id);
+    this.setDock(desktopDockPresentation(layout, layout.focus, false, false));
   }
 
   private showPlan(document: DesktopPlanDocument, sessionId: string = this.sessionId): void {
@@ -1884,9 +1938,25 @@ struct DesktopWorkspace {
 
   private showTerminal(create: boolean = false, toggle: boolean = false): void {
     if (toggle && this.dockShows(DesktopDockKind.TERMINAL)) { this.hideDockTool(DesktopDockKind.TERMINAL); return; }
-    const tab: DesktopDockTab = { id: DesktopDockKind.TERMINAL, kind: DesktopDockKind.TERMINAL, title: '终端' };
+    const active = desktopDockTab(this.rightDock);
+    const tab: DesktopDockTab = (active?.kind === DesktopDockKind.TERMINAL ? active :
+      this.rightDock.floats.find((panel: DesktopDockFloat): boolean => panel.tab.kind === DesktopDockKind.TERMINAL)?.tab ??
+      this.rightDock.panes.flatMap((pane: DesktopDockPane): DesktopDockTab[] => pane.tabs).find(
+        (item: DesktopDockTab): boolean => item.kind === DesktopDockKind.TERMINAL)) ??
+      { id: DesktopDockKind.TERMINAL, kind: DesktopDockKind.TERMINAL, title: '终端' };
     this.setDock(desktopDockOpen(this.rightDock, tab, false));
     if (create) { this.terminalCreateSession = this.sessionId; }
+  }
+
+  private openDockTerminal(index: number, tabId: string, row: DesktopTerminalRow): boolean {
+    const current = this.dockStoredTab(index, tabId);
+    if (!current?.terminalId || current.terminalId === row.id) { return false; }
+    const prior = this.rightDock.panes.flatMap((pane: DesktopDockPane): DesktopDockTab[] => pane.tabs).find(
+      (tab: DesktopDockTab): boolean => tab.kind === DesktopDockKind.TERMINAL && tab.terminalId === row.id) ??
+      this.rightDock.floats.find((panel: DesktopDockFloat): boolean => panel.tab.kind === DesktopDockKind.TERMINAL &&
+        panel.tab.terminalId === row.id)?.tab;
+    this.setDock(desktopDockOpen(this.rightDock, prior ?? desktopDockTerminalTab(row.id, row.title), false));
+    return true;
   }
 
   private showArtifact(path: string, name: string, sessionId: string = this.sessionId): void {
@@ -3740,17 +3810,30 @@ struct DesktopWorkspace {
         } })
     } else if (tab.kind === DesktopDockKind.TERMINAL) {
       DesktopTerminalPane({ host: this.data?.actions, sessionId: this.sessionId, appearance: this.appearance,
+        shown: this.dockTabShown(index, tab.id),
         cellFontSize: this.typography.terminalSize, cellFontFamily: this.typography.terminalFamily,
-        preferredTerminal: this.terminalSelections.get(this.sessionId) ?? '',
-        createSession: this.terminalCreateSession, onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
-        onTerminalSelected: (sessionId: string, id: string): void => { this.terminalSelections.set(sessionId, id); },
+        preferredTerminal: tab.terminalId ?? '',
+        observeRetention: (id: string, listener: (problem: string) => void): (() => void) => {
+          return this.data?.terminalRetentions.observe(this.sessionId, id, listener) ?? (() => {});
+        },
+        createSession: (this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id :
+          index === this.rightDock.focus && this.dockTabShown(index, tab.id)) ? this.terminalCreateSession : '',
+        onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
+        openInNewTab: (row: DesktopTerminalRow): boolean => this.openDockTerminal(index, tab.id, row),
+        onTerminalSelected: (sessionId: string, id: string, title: string): void => {
+          if (sessionId !== this.sessionId) { return; }
+          if (!id && tab.id !== DesktopDockKind.TERMINAL) { this.removeDockTab(index, tab.id); }
+          else if (id || !this.closingDockTerminals.has(JSON.stringify([sessionId, this.dockStoredTab(index, tab.id)?.terminalId]))) {
+            this.setDock(desktopDockBindTerminal(this.rightDock, tab.id, id, title));
+          }
+        },
         onShortcut: (event: KeyEvent): boolean => {
           if (event.type === KeyType.Down) {
             if (index < 0) { this.focusFloat(tab.id); } else { this.focusDockPane(index); }
           }
           return this.terminalShortcut(event);
         }, onHidePanel: (): void => {
-          if (index < 0) { this.closeDockTab(index, tab.id); } else { this.toggleRightDock(); }
+          if (index < 0) { this.collapseFloatingTerminal(tab.id); } else { this.toggleRightDock(); }
         } })
     } else if (tab.kind === DesktopDockKind.PLAN) {
       DesktopPlanPreviewPane({ host: this.data?.actions, sessionId: tab.sourceSessionId ?? this.sessionId,
@@ -3793,6 +3876,8 @@ struct DesktopWorkspace {
             Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
           } else if (tab.kind === DesktopDockKind.COMPACTION) {
             Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+          } else if (tab.kind === DesktopDockKind.TERMINAL) {
+            Image($r('app.media.dsh_compaction_api_outline')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
           }
           Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontColor($r('sys.color.font_primary'))
@@ -3918,6 +4003,10 @@ struct DesktopWorkspace {
     Stack({ alignContent: Alignment.BottomEnd }) {
       Column() {
         Row({ space: 3 }) {
+          if (panel.tab.kind === DesktopDockKind.TERMINAL) {
+            Image($r('app.media.dsh_compaction_api_outline')).width(16).height(16).supportSvg2(true)
+              .margin({ left: 9 }).accessibilityLevel('no')
+          }
           Text(panel.tab.title).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
             .layoutWeight(1).height(36).padding({ left: 11 }).align(Alignment.Start)

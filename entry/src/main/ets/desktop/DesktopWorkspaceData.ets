@@ -27,6 +27,7 @@ import { desktopInsertWorkspaceBefore } from './DesktopSessionOrder';
 import type { DesktopSidebarPending } from './DesktopSidebarStatus';
 import { DesktopQuotaNoticeModel } from './DesktopQuotaNoticeModel';
 import type { DesktopQuotaNotice } from './DesktopQuotaNoticeModel';
+import { DesktopTerminalRetentions } from './DesktopTerminalRetentions';
 
 export interface DesktopForkResult {
   id: string;
@@ -81,6 +82,7 @@ export class DesktopWorkspaceData {
   readonly conversation: DesktopConversation;
   readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
+  readonly terminalRetentions: DesktopTerminalRetentions = new DesktopTerminalRetentions(this.actions);
   readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
   readonly cordis: DesktopCordisRuntime = new DesktopCordisRuntime(this.actions);
   readonly connectorAccounts: DesktopConnectorAccounts;
@@ -174,6 +176,7 @@ export class DesktopWorkspaceData {
     }
     const eventSink: EventSink = {
       onReady: (): void => {
+        this.terminalRetentions.connect();
         this.openWorkspaceStream();
         this.reading.connect();
         this.conversation.invalidateCommands();
@@ -416,6 +419,7 @@ export class DesktopWorkspaceData {
 
   stop(): void {
     this.active = false;
+    this.terminalRetentions.dispose();
     this.quota.clear();
     this.pluginInstall.dispose();
     this.connectorAccounts.dispose();

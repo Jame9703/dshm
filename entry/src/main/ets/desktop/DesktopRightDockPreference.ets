@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { getArray, getBoolean, getNumber, getRecord, getString, parseJson } from 'connection';
-import { desktopDockChatTab, desktopDockResourceId, desktopDockSplitFraction, DesktopDockKind, emptyDesktopDock } from './DesktopRightDock';
+import { desktopDockChatTab, desktopDockResourceId, desktopDockSplitFraction, desktopDockTerminalIds, desktopDockTerminalTab,
+  DesktopDockKind, emptyDesktopDock } from './DesktopRightDock';
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from './DesktopRightDock';
 import { desktopBrowserAddress } from './DesktopBrowserAddress';
 
@@ -21,6 +22,8 @@ interface SavedDockTab {
   browserId?: string;
   browserAddress?: string;
   compactionId?: string;
+  terminalId?: string;
+  terminalTabId?: string;
 }
 
 interface SavedDockPane {
@@ -57,7 +60,8 @@ function saveTab(tab: DesktopDockTab): SavedDockTab {
     index: tab.changeLocation?.index, split: tab.changeLocation?.split, wrap: tab.changeLocation?.wrap, chat: tab.chat,
     sourceSessionId: tab.sourceSessionId,
     browserId: tab.kind === DesktopDockKind.BROWSER ? tab.id : undefined, browserAddress: tab.browserAddress,
-    compactionId: tab.kind === DesktopDockKind.COMPACTION ? tab.id : undefined };
+    compactionId: tab.kind === DesktopDockKind.COMPACTION ? tab.id : undefined, terminalId: tab.terminalId,
+    terminalTabId: tab.kind === DesktopDockKind.TERMINAL && tab.id !== DesktopDockKind.TERMINAL ? tab.id : undefined };
 }
 
 export function encodeDesktopDock(layout: DesktopDockLayout): string {
@@ -82,7 +86,11 @@ export function encodeDesktopDock(layout: DesktopDockLayout): string {
 function restoreTab(row: Object | undefined): DesktopDockTab | undefined {
   const kind = getString(row, 'kind');
   if (kind === DesktopDockKind.FILES) { return { id: kind, kind: kind, title: '工作区文件' }; }
-  if (kind === DesktopDockKind.TERMINAL) { return { id: kind, kind: kind, title: '终端' }; }
+  if (kind === DesktopDockKind.TERMINAL) {
+    const id = getString(row, 'terminalId');
+    if (id && getString(row, 'terminalTabId')) { return desktopDockTerminalTab(id, getString(row, 'title') || '终端'); }
+    return { id: kind, kind: kind, title: id ? getString(row, 'title') || '终端' : '终端', terminalId: id };
+  }
   if (kind === DesktopDockKind.COMPACTION) {
     const id = getString(row, 'compactionId') ?? '';
     return id.startsWith('compaction:') ? { id: id, kind: kind, title: getString(row, 'title') ?? '' } : undefined;
@@ -196,6 +204,23 @@ export function readDesktopDock(context: common.Context | undefined, session: st
     } catch (_) {}
   }
   return emptyDesktopDock();
+}
+
+export async function readDesktopDockTerminalIds(context: common.Context | undefined): Promise<Map<string, string[]>> {
+  const retained = new Map<string, string[]>();
+  if (context !== undefined) {
+    try {
+      const prefs = await preferences.getPreferences(context, { name: PREFS });
+      const all = await prefs.getAll();
+      for (const session of Object.keys(all)) {
+        const raw = getString(all, session);
+        if (!raw?.includes('"terminalId"')) { continue; }
+        const ids = desktopDockTerminalIds(decodeDesktopDock(raw));
+        if (ids.length > 0) { retained.set(session, ids); }
+      }
+    } catch (_) {}
+  }
+  return retained;
 }
 
 export async function saveDesktopDock(context: common.Context | undefined, session: string,
