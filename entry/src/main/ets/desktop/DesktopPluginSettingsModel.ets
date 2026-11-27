@@ -9,6 +9,8 @@ export const WEB_LEGACY_SETTINGS: string = 'web-search-deepseek';
 export const AGENT_LOOP_SETTINGS: string = 'agent-loop';
 export const BASH_SETTINGS: string = 'bash-sandbox';
 export const PWSH_SETTINGS: string = 'pwsh-sandbox';
+export const WORKTREE_SETTINGS: string = 'worktree';
+export const DESKTOP_FORGE_BUNDLE: string = '@deepseek-ai/dsh-experimental-forge-bundle';
 export const SUBAGENT_SETTINGS: string = 'subagent';
 export const SUBAGENT_MODEL_SETTINGS: string = 'subagent-model-selection-settings';
 export const WEB_SEARCH_API: string = 'deepseek-search-api';
@@ -79,6 +81,7 @@ function desktopPluginConfigurationNamespaces(scope: string): string[] {
     case WEB_PLUGIN_SETTINGS: return [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS];
     case AGENT_LOOP_SETTINGS: return [AGENT_LOOP_SETTINGS];
     case SHELL_PLUGIN_SETTINGS: return [BASH_SETTINGS, PWSH_SETTINGS];
+    case WORKTREE_SETTINGS: return [WORKTREE_SETTINGS];
     case SUBAGENT_SETTINGS: return [SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];
     case '': return [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS, AGENT_LOOP_SETTINGS, BASH_SETTINGS, PWSH_SETTINGS,
       SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];

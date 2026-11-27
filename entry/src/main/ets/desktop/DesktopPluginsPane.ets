@@ -5,8 +5,8 @@ import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
-import { desktopPluginConfigurationScopes, readDesktopPluginConfiguration, SHELL_PLUGIN_SETTINGS,
-  SUBAGENT_SETTINGS, WEB_PLUGIN_SETTINGS } from './DesktopPluginSettingsModel';
+import { DESKTOP_FORGE_BUNDLE, desktopPluginConfigurationScopes, readDesktopPluginConfiguration, SHELL_PLUGIN_SETTINGS,
+  SUBAGENT_SETTINGS, WEB_PLUGIN_SETTINGS, WORKTREE_SETTINGS } from './DesktopPluginSettingsModel';
 import { DesktopPluginBundleComponents, desktopPluginComponents } from './DesktopPluginBundleComponents';
 import type { DesktopPluginComponent, DesktopPluginComponentView } from './DesktopPluginBundleComponents';
 import { DESKTOP_VOICE_BUNDLE, DesktopVoiceSettings } from './DesktopVoiceSettings';
@@ -17,6 +17,8 @@ import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
 import { DesktopPluginMaintenance } from './DesktopPluginMaintenance';
 import { DesktopPluginMaintenanceDialog } from './DesktopPluginMaintenanceDialog';
 import { DesktopPluginMarketDetail } from './DesktopPluginMarketDetail';
+import { DesktopTimelineSettings } from './DesktopTimelineSettings';
+import { DESKTOP_TIMELINE_BUNDLE, DESKTOP_TIMELINE_NS } from './DesktopTimelineSettingsModel';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
 import type { DesktopConnectorAccount, DesktopConnectorAction, DesktopConnectorPrompt } from './DesktopConnectorAccounts';
 import { DesktopConnectorAccountView, DesktopConnectorBadge, DesktopConnectorDialog } from './DesktopConnectorAccountView';
@@ -104,6 +106,9 @@ export struct DesktopPluginsPane {
   @State private tab: string = 'bundles';
   @State private settingsVisited: boolean = false;
   @State private basicScopes: string[] = [];
+  @State private optionalNamespaces: string[] = [];
+  @State private componentDetail: boolean = false;
+  @State private worktreeVisited: boolean = false;
   @State private settingsDetail: string = '';
   @State private bundles: DesktopPluginRow[] = [];
   @State private plugins: DesktopPluginRow[] = [];
@@ -175,6 +180,8 @@ export struct DesktopPluginsPane {
   private closeBundle(): void {
     this.detailRead++;
     this.detailName = '';
+    this.componentDetail = false;
+    this.worktreeVisited = false;
     this.resetVersions();
   }
 
@@ -184,6 +191,8 @@ export struct DesktopPluginsPane {
     this.marketDetail = undefined;
     this.resetVersions();
     this.detailName = name;
+    this.componentDetail = false;
+    this.worktreeVisited = false;
     this.detailText = '';
     this.detailError = '';
     this.detailLoading = true;
@@ -212,6 +221,9 @@ export struct DesktopPluginsPane {
     const result = await host.call(SETTINGS_DESCRIBE_ENDPOINT);
     if (this.active && read === this.basicRead && result.ok) {
       this.basicScopes = desktopPluginConfigurationScopes(readDesktopPluginConfiguration(result.value).documents);
+      this.optionalNamespaces = (getArray(result.value, 'namespaces') ?? [])
+        .map((entry: Object): string => getString(entry, 'ns') ?? '')
+        .filter((id: string): boolean => id === WORKTREE_SETTINGS || id === DESKTOP_TIMELINE_NS);
     }
   }
 
@@ -789,6 +801,9 @@ export struct DesktopPluginsPane {
       const live = component.entryId ? this.plugins.find((row: DesktopPluginRow): boolean => row.id === component.entryId) :
         undefined;
       return { component: component, toggle: bundle.enabled && live?.toggle === true,
+        settings: bundle.enabled && bundle.id === DESKTOP_FORGE_BUNDLE && component.rowId === WORKTREE_SETTINGS &&
+          component.module === '@deepseek-ai/dsh-experimental-worktree' &&
+          this.optionalNamespaces.includes(WORKTREE_SETTINGS),
         enabled: bundle.enabled && live?.enabled === true,
         phase: bundle.enabled ? live?.phase ?? '' : '', diagnostic: bundle.enabled ? live?.diagnostic ?? '' : '' };
     });
@@ -806,7 +821,27 @@ export struct DesktopPluginsPane {
   }
 
   @Builder
+  private WorktreeDetail() {
+    Column({ space: 12 }) {
+      Button($r('app.string.desktop_plugin_component_back'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .key('desktopPluginComponentBack').onClick((): void => { this.componentDetail = false; })
+      Text($r('app.string.desktop_worktree_configuration')).fontSize(22).fontWeight(FontWeight.Medium)
+      Text('@deepseek-ai/dsh-experimental-worktree').fontSize(13).fontColor($r('sys.color.font_secondary'))
+      DesktopPluginSettings({ host: this.host, scope: WORKTREE_SETTINGS })
+    }.key('desktopPluginComponentDetail').width('100%').alignItems(HorizontalAlign.Start)
+      .visibility(this.componentDetail ? Visibility.Visible : Visibility.None)
+  }
+
+  @Builder
   private BundleDetail() {
+    Column({ space: 12 }) {
+      if (!this.componentDetail) { this.BundleOverview() }
+      if (this.worktreeVisited && this.detailName === DESKTOP_FORGE_BUNDLE) { this.WorktreeDetail() }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private BundleOverview() {
     Column({ space: 12 }) {
       Button('返回插件包', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
         .onClick((): void => { this.closeBundle(); })
@@ -830,6 +865,7 @@ export struct DesktopPluginsPane {
           if (row.components.length > 0) {
             DesktopPluginBundleComponents({ rows: this.bundleComponentState(row),
               busy: this.busy || this.catalogBusy || this.installer.busy() || this.maintenance.phase === 'running',
+              onSettings: (_rowId: string): void => { this.worktreeVisited = true; this.componentDetail = true; },
               onToggle: (entryId: string, enabled: boolean): void => { this.toggleBundleComponent(row.id, entryId, enabled); } })
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
@@ -843,6 +879,10 @@ export struct DesktopPluginsPane {
       if (this.detailName === DESKTOP_VOICE_BUNDLE &&
         this.bundles.some((row: DesktopPluginRow): boolean => row.id === this.detailName && row.enabled)) {
         DesktopVoiceSettings({ host: this.host })
+      }
+      if (this.detailName === DESKTOP_TIMELINE_BUNDLE && this.optionalNamespaces.includes(DESKTOP_TIMELINE_NS) &&
+        this.bundles.some((bundle: DesktopPluginRow): boolean => bundle.id === this.detailName && bundle.enabled)) {
+        DesktopTimelineSettings({ host: this.host })
       }
       if (this.detailLoading) {
         LoadingProgress().width(22).height(22)

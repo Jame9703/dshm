@@ -9,7 +9,7 @@ import { AGENT_LOOP_SETTINGS, BASH_SETTINGS, desktopPluginBillingLocked, desktop
   desktopPluginInteger, desktopSubagentAuthorization, desktopSubagentModelGroups, desktopSubagentRouteKey, desktopWebProviders,
   PWSH_SETTINGS, readDesktopPluginConfiguration, readDesktopPluginDocument, sameDesktopSubagentAuthorization,
   SUBAGENT_MODEL_SETTINGS, SUBAGENT_SETTINGS, WEB_API_SETTINGS,
-  WEB_FETCH_API, WEB_LEGACY_SETTINGS, WEB_SEARCH_API, WEB_SEARCH_LEGACY, WEB_SETTINGS } from './DesktopPluginSettingsModel';
+  WEB_FETCH_API, WEB_LEGACY_SETTINGS, WEB_SEARCH_API, WEB_SEARCH_LEGACY, WEB_SETTINGS, WORKTREE_SETTINGS } from './DesktopPluginSettingsModel';
 import type { DesktopPluginConfiguration, DesktopPluginDocument, DesktopPluginEdit, DesktopSubagentAuthorization,
   DesktopSubagentModel, DesktopSubagentModelGroup, DesktopSubagentRoute, DesktopWebProvider } from './DesktopPluginSettingsModel';
 
@@ -224,7 +224,8 @@ export struct DesktopPluginSettings {
 
   private normalized(edit: DesktopPluginEdit): DesktopPluginEdit | undefined {
     const raw = edit.value;
-    if (raw === undefined || edit.namespace === WEB_SETTINGS || edit.field.endsWith('Billing')) { return edit; }
+    if (raw === undefined || edit.namespace === WEB_SETTINGS || edit.field.endsWith('Billing') ||
+      (edit.namespace === WORKTREE_SETTINGS && typeof raw === 'boolean')) { return edit; }
     const text = String(raw).trim();
     if (edit.field === 'baseURL') {
       return text && !new RegExp('^https?://[^\\s/]+(?:/[^\\s]*)?$', 'i').test(text) ? undefined :
@@ -562,6 +563,43 @@ export struct DesktopPluginSettings {
       .backgroundColor($r('app.color.workspace_panel'))
   }
 
+  private retainOnArchive(): boolean {
+    const edit = this.foundEdit(WORKTREE_SETTINGS, 'retainOnArchive');
+    return edit === undefined ? getBoolean(this.document(WORKTREE_SETTINGS)?.value, 'retainOnArchive') === true :
+      edit.value === true;
+  }
+
+  private changeRetainOnArchive(enabled: boolean): void {
+    if (!this.canEdit() || enabled === this.retainOnArchive()) { return; }
+    this.edits = enabled === (getBoolean(this.document(WORKTREE_SETTINGS)?.value, 'retainOnArchive') === true) ? [] :
+      [{ namespace: WORKTREE_SETTINGS, field: 'retainOnArchive', value: enabled }];
+    this.problem = '';
+  }
+
+  @Builder
+  private WorktreeCard() {
+    Column({ space: 10 }) {
+      Row({ space: 10 }) {
+        Text($r('app.string.desktop_worktree_retain_on_archive')).fontSize(15).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.retainOnArchive() }).key('pluginSetting-retainOnArchive')
+          .enabled(this.canEdit()).accessibilityText($r('app.string.desktop_worktree_retain_on_archive'))
+          .onChange((enabled: boolean): void => { this.changeRetainOnArchive(enabled); })
+      }.width('100%')
+      Text($r('app.string.desktop_worktree_retain_description')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+      Row({ space: 8 }) {
+        Blank()
+        if (this.hasDraft([WORKTREE_SETTINGS])) {
+          Button($r('app.string.desktop_timeline_discard'), { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.saving)
+            .key('pluginSettingsDiscard-worktree').onClick((): void => { this.edits = []; this.problem = ''; })
+        }
+        Button(this.saving ? $r('app.string.desktop_timeline_saving') : $r('app.string.desktop_timeline_save'))
+          .key('pluginSettingsSave-worktree').enabled(this.canEdit() && this.hasDraft([WORKTREE_SETTINGS]))
+          .onClick((): void => { this.save([WORKTREE_SETTINGS]); })
+      }.width('100%')
+    }.width('100%').padding(16).borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
+      .alignItems(HorizontalAlign.Start)
+  }
+
   build() {
     Column({ space: 12 }) {
       Row({ space: 8 }) {
@@ -576,6 +614,7 @@ export struct DesktopPluginSettings {
         Text(this.problem || '本部署的设置为只读。').fontSize(13).fontColor($r('sys.color.font_secondary'))
           .key('pluginSettingsStatus').width('100%')
       }
+      if (this.document(WORKTREE_SETTINGS) !== undefined) { this.WorktreeCard() }
       if (this.document(WEB_SETTINGS) !== undefined) { this.WebCard() }
       if (this.document(AGENT_LOOP_SETTINGS) !== undefined) {
         Column({ space: 12 }) {

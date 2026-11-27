@@ -12,6 +12,7 @@ export interface DesktopPluginComponent {
 export interface DesktopPluginComponentView {
   component: DesktopPluginComponent;
   toggle: boolean;
+  settings: boolean;
   enabled: boolean;
   phase: string;
   diagnostic: string;
@@ -35,6 +36,7 @@ export function desktopPluginComponents(value: Object): DesktopPluginComponent[]
 export struct DesktopPluginBundleComponents {
   @Prop rows: DesktopPluginComponentView[] = [];
   @Prop busy: boolean = false;
+  onSettings: (rowId: string) => void = (_rowId: string): void => {};
   onToggle: (entryId: string, enabled: boolean) => void = (_entryId: string, _enabled: boolean): void => {};
   @State private query: string = '';
 
@@ -73,6 +75,11 @@ export struct DesktopPluginBundleComponents {
                 Text(row.diagnostic).fontSize(12).fontColor($r('app.color.workspace_status_error'))
               }
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            if (row.settings) {
+              Button($r('app.string.desktop_plugin_component_configure'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+                .key('desktopPluginComponentSettings-' + row.component.rowId).enabled(!this.busy)
+                .onClick((): void => { this.onSettings(row.component.rowId); })
+            }
             if (row.toggle) {
               Toggle({ type: ToggleType.Switch, isOn: row.enabled }).enabled(!this.busy)
                 .key('desktopPluginEntryToggle-' + row.component.entryId).accessibilityText(row.component.title)
