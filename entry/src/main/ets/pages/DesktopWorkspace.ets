@@ -6,7 +6,7 @@ import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getString, parseTarget } from 'connection';
 import { WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
-import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
 import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
@@ -2813,6 +2813,15 @@ struct DesktopWorkspace {
               this.chatAction((): Promise<string> => interactions.answer(id, answers));
             }
           },
+          onQuestionProgress: (id: string, progress: DesktopQuestionProgress, engage: boolean): void => {
+            this.data?.interactions.saveQuestion(id, progress, engage);
+          },
+          onQuestionHold: (id: string): void => { this.data?.interactions.holdQuestion(id); },
+          onQuestionClose: (id: string): void => {
+            const interactions = this.data?.interactions;
+            if (interactions !== undefined) { this.chatAction((): Promise<string> => interactions.closeQuestion(id)); }
+          },
+          onQuestionResume: (id: string): void => { this.data?.interactions.reopenQuestion(id); },
           onPlanDecision: (id: string, approve: boolean): void => {
             const interactions = this.data?.interactions;
             if (interactions !== undefined) {

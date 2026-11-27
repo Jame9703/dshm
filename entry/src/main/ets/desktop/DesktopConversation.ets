@@ -129,6 +129,7 @@ export class DesktopConversation {
   private commandVersion: number = 0;
   private planMode?: boolean;
   private planAsOf: number = -1;
+  private questionsAsOf: number = -1;
   private readonly goals: DesktopGoalState = new DesktopGoalState();
   private readonly queue: DesktopPromptQueue = new DesktopPromptQueue();
   private readonly sending: Map<string, DesktopQueuedPrompt> = new Map<string, DesktopQueuedPrompt>();
@@ -223,6 +224,7 @@ export class DesktopConversation {
     this.commandError = '';
     this.planMode = undefined;
     this.planAsOf = -1;
+    this.questionsAsOf = -1;
     this.goals.reset();
     this.queue.reset();
     this.imageBytesLimit = undefined;
@@ -797,7 +799,7 @@ export class DesktopConversation {
         this.publish();
       } else {
         const subagentsChanged = this.readSubagents(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
-        this.readQuestions(result.value);
+        this.readQuestions(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         this.readImageLimit(getRecord(result.value, 'values'));
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
@@ -887,8 +889,11 @@ export class DesktopConversation {
     this.publish();
   }
 
-  private readQuestions(projection?: Object): void {
-    this.interactions.observeQuestions(this.sessionId, getRecord(getRecord(projection, 'values'), 'userQuestions'));
+  private readQuestions(values: Object | undefined, sequence: number): void {
+    const questions = getRecord(values, 'userQuestions');
+    if (questions === undefined || sequence <= this.questionsAsOf) { return; }
+    this.questionsAsOf = sequence;
+    this.interactions.observeQuestions(this.sessionId, questions);
   }
 
   private readPlan(projection?: Object): boolean {
@@ -904,11 +909,11 @@ export class DesktopConversation {
   }
 
   private readProjection(projection: Object | undefined): void {
-    this.readQuestions(projection);
+    const values = getRecord(projection, 'values');
+    this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readPlan(projection);
     this.readGoal(projection);
     this.readQueue(projection);
-    const values = getRecord(projection, 'values');
     this.actionCards.observe(values, getNumber(projection, 'asOfSeq') ?? 0);
     this.team.observe(values, getNumber(projection, 'asOfSeq') ?? 0);
     this.readSubagents(values, getNumber(projection, 'asOfSeq') ?? -1);
@@ -982,6 +987,7 @@ export class DesktopConversation {
     } else if (type === 'projection') {
       const goalChanged = this.goals.observeDelta(frame);
       const changes = getRecord(frame, 'changes');
+      this.readQuestions(changes, getNumber(frame, 'seq') ?? -1);
       this.readImageLimit(changes);
       const queueChanged = this.queue.observe(changes, getNumber(frame, 'seq') ?? -1);
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);

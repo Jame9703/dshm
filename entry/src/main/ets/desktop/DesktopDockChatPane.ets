@@ -12,7 +12,7 @@ import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAt
 import type { DesktopComposerDraft } from './DesktopDraftReferences';
 import type { DesktopDockChatTarget } from './DesktopRightDock';
 import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
-import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from './DesktopInteractions';
 import type { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { DesktopPlanDocument } from './DesktopPlan';
@@ -209,6 +209,14 @@ export struct DesktopDockChatPane {
           onAnswer: (request: string, answers: DesktopQuestionAnswer[]): void => {
             this.run((binding): Promise<string> => binding.interactions.answer(request, answers));
           },
+          onQuestionProgress: (request: string, progress: DesktopQuestionProgress, engage: boolean): void => {
+            this.binding?.interactions.saveQuestion(request, progress, engage);
+          },
+          onQuestionHold: (request: string): void => { this.binding?.interactions.holdQuestion(request); },
+          onQuestionClose: (request: string): void => {
+            this.run((binding): Promise<string> => binding.interactions.closeQuestion(request));
+          },
+          onQuestionResume: (request: string): void => { this.binding?.interactions.reopenQuestion(request); },
           onPlanDecision: (request: string, accept: boolean): void => { this.run((binding): Promise<string> =>
             accept ? binding.interactions.approvePlanReview(request) : binding.interactions.dismissPlanReview(request)); },
           onPlanResume: (request: string): void => { this.binding?.interactions.reopenPlanReview(request); },

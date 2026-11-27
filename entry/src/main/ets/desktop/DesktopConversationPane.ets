@@ -10,7 +10,7 @@ import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
 import type { ModelOption, ModelSelection } from 'appstate';
 import type { DesktopConversationSnapshot, DesktopPermissionOption, DesktopTranscriptItem } from './DesktopConversation';
 import { DesktopInteractionPane } from './DesktopInteractionPane';
-import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from './DesktopInteractions';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopArtifactsPane } from './DesktopArtifactsPane';
@@ -115,6 +115,11 @@ export struct DesktopConversationPane {
   onDecision: (id: string, allow: boolean) => void = (_id: string, _allow: boolean): void => {};
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
     (_id: string, _answers: DesktopQuestionAnswer[]): void => {};
+  onQuestionProgress: (id: string, progress: DesktopQuestionProgress, engage: boolean) => void =
+    (_id: string, _progress: DesktopQuestionProgress, _engage: boolean): void => {};
+  onQuestionHold: (id: string) => void = (_id: string): void => {};
+  onQuestionClose: (id: string) => void = (_id: string): void => {};
+  onQuestionResume: (id: string) => void = (_id: string): void => {};
   onPlanMode: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onTeamMode: (id: string, enabled: boolean) => Promise<string> = (): Promise<string> => Promise.resolve('');
   onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string) => Promise<string> =
@@ -820,9 +825,13 @@ export struct DesktopConversationPane {
   }
 
   private visibleInteraction(): DesktopInteraction[] {
-    const visible = this.interactions.filter((row: DesktopInteraction): boolean => !row.reviewHidden);
+    const visible = this.interactions.filter((row: DesktopInteraction): boolean => !row.reviewHidden && !row.questionHidden);
     const row = visible.find((item: DesktopInteraction): boolean => item.planReview !== undefined) ?? visible[0];
     return row === undefined ? [] : [row];
+  }
+
+  private hiddenQuestions(): DesktopInteraction[] {
+    return this.interactions.filter((row: DesktopInteraction): boolean => row.questionHidden === true);
   }
 
   @Builder
@@ -1270,6 +1279,7 @@ export struct DesktopConversationPane {
               } else if (item.process !== undefined) {
                 DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
                   inspected: this.inspectedTool, onFile: this.onArtifactFile,
+                  hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
                   onToggle: (): void => {
                     this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
                       this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];
@@ -1310,9 +1320,11 @@ export struct DesktopConversationPane {
           ForEach(this.visibleInteraction(), (row: DesktopInteraction) => {
             DesktopInteractionPane({
               request: row, busy: this.busy, onDecision: this.onDecision, onAnswer: this.onAnswer,
-              onPlanDecision: this.onPlanDecision, onPlanPreview: this.onPlanPreview
+              onPlanDecision: this.onPlanDecision, onPlanPreview: this.onPlanPreview, onLink: this.onLink,
+              onQuestionProgress: this.onQuestionProgress, onQuestionHold: this.onQuestionHold,
+              onQuestionClose: this.onQuestionClose
             })
-          }, (row: DesktopInteraction): string => row.id)
+          }, (row: DesktopInteraction): string => `${row.id}:${row.waitDeadline ?? 0}:${row.questionHeld === true}`)
         }
         .width('100%').padding({ left: 20, right: 20, bottom: 8 }).justifyContent(FlexAlign.Center)
       } else if (this.interactions.some((row: DesktopInteraction): boolean => row.reviewHidden === true)) {
@@ -1322,6 +1334,11 @@ export struct DesktopConversationPane {
             this.onPlanResume(review.id);
           }
         })
+      } else if (this.hiddenQuestions().length > 0) {
+        ForEach(this.hiddenQuestions(), (row: DesktopInteraction) => {
+          Button($r('app.string.desktop_question_resume'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopQuestionResume-' + row.callId).onClick((): void => { this.onQuestionResume(row.id); })
+        }, (row: DesktopInteraction): string => row.id)
       } else if (this.snapshot?.waitingForInput) {
         Text('正在读取待处理请求…').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(8)
       }

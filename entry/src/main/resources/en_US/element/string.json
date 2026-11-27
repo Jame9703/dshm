@@ -553,6 +553,28 @@
     {
       "name": "desktop_chat_create_failed",
       "value": "Couldn't create the session. Try again."
-    }
+    },
+    { "name": "desktop_approval_pending", "value": "Waiting for approval" },
+    { "name": "desktop_approval_tool", "value": "Tool %s requests privileged execution" },
+    { "name": "desktop_approval_reject", "value": "Reject" },
+    { "name": "desktop_approval_allow", "value": "Allow once" },
+    { "name": "desktop_question_continued", "value": "Work continued — you can still answer" },
+    { "name": "desktop_question_held", "value": "Waiting until you answer" },
+    { "name": "desktop_question_countdown", "value": "Continuing in %ds" },
+    { "name": "desktop_question_hold", "value": "Take time" },
+    { "name": "desktop_question_expand_card", "value": "Expand the question card" },
+    { "name": "desktop_question_collapse_card", "value": "Collapse the question card" },
+    { "name": "desktop_question_hide", "value": "Close the panel — reopen it from the tool call" },
+    { "name": "desktop_question_cancel", "value": "Dismiss all questions" },
+    { "name": "desktop_question_recommended", "value": "Recommended" },
+    { "name": "desktop_question_expand", "value": "Expand" },
+    { "name": "desktop_question_collapse", "value": "Collapse" },
+    { "name": "desktop_question_input", "value": "Type your answer" },
+    { "name": "desktop_question_incomplete", "value": "Please complete this question first." },
+    { "name": "desktop_question_previous", "value": "Previous question" },
+    { "name": "desktop_question_next", "value": "Next" },
+    { "name": "desktop_question_skip", "value": "Skip" },
+    { "name": "desktop_question_submit", "value": "Submit answers" },
+    { "name": "desktop_question_resume", "value": "Resume answering" }
   ]
 }

@@ -2,15 +2,18 @@ import { presentTool, ToolKind, ToolState, toolStateLabel, toolSummaryOf } from 
 import { getString, parseJson } from 'connection';
 import { DesktopProcessGroup, DesktopToolStep } from './DesktopToolLog';
 import { desktopFileName } from './DesktopArtifacts';
+import type { DesktopInteraction } from './DesktopInteractions';
 
 @Component
 export struct DesktopProcessPane {
   @Prop group: DesktopProcessGroup | undefined = undefined;
   @Prop expanded: boolean = false;
   @Prop inspected: string = '';
+  @Prop hiddenQuestions: DesktopInteraction[] = [];
   onToggle: () => void = (): void => {};
   onInspect: (id: string) => void = (_id: string): void => {};
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
+  onQuestionResume: (id: string) => void = (_id: string): void => {};
 
   private busy(): boolean {
     return this.group?.steps.some((step: DesktopToolStep): boolean =>
@@ -41,6 +44,16 @@ export struct DesktopProcessPane {
   private open(row: DesktopToolStep): void {
     const path = this.filePath(row);
     if (path) { this.onFile(path, desktopFileName(path)); }
+  }
+
+  private questionId(callId: string): string {
+    return this.hiddenQuestions.find((row: DesktopInteraction): boolean => row.callId === callId)?.id ?? '';
+  }
+
+  private inspect(id: string): void {
+    const question = this.questionId(id);
+    if (question) { this.onQuestionResume(question); }
+    else { this.onInspect(id); }
   }
 
   @Builder
@@ -81,7 +94,7 @@ export struct DesktopProcessPane {
             .rotate({ angle: this.inspected === row.id ? 90 : 0 }).fontColor([$r('sys.color.font_tertiary')])
         }.width('100%')
       }.padding({ left: 6, right: 6 }).width('100%').height(34).borderRadius(7)
-      .onClick((): void => { this.onInspect(row.id); })
+      .onClick((): void => { this.inspect(row.id); })
       if (this.inspected === row.id) {
         this.Details(row)
       }

@@ -1,4 +1,4 @@
-import { Connection, EVENTS_RESULT_ENDPOINT, getArray, getBoolean, getRecord, getString } from 'connection';
+import { Connection, EVENTS_RESULT_ENDPOINT, getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
 import { RemoteEventFrameType, WATERFALL_APPROVAL, WATERFALL_QUESTION } from 'dshcompat';
 import { DesktopSidebarPending } from './DesktopSidebarStatus';
 import { DesktopHostActions } from './DesktopHostActions';
@@ -6,6 +6,8 @@ import { desktopPlanTitle, DesktopPlanReview } from './DesktopPlan';
 
 export interface DesktopQuestionOption {
   label: string;
+  caption: string;
+  recommended: boolean;
   detail: string;
 }
 
@@ -25,6 +27,24 @@ export interface DesktopQuestionAnswer {
   custom?: string;
 }
 
+export interface DesktopQuestionDraft {
+  id: string;
+  selected: string[];
+  custom: string;
+  skipped: boolean;
+}
+
+export interface DesktopQuestionProgress {
+  index: number;
+  drafts: DesktopQuestionDraft[];
+}
+
+interface DesktopQuestionState {
+  progress?: DesktopQuestionProgress;
+  held: boolean;
+  hidden: boolean;
+}
+
 export interface DesktopInteraction {
   id: string;
   sessionId: string;
@@ -37,7 +57,13 @@ export interface DesktopInteraction {
   timed: boolean;
   planReview?: DesktopPlanReview;
   reviewHidden?: boolean;
+  questionProgress?: DesktopQuestionProgress;
+  questionHidden?: boolean;
+  questionHeld?: boolean;
+  waitDeadline?: number;
 }
+
+const RECOMMENDED = new RegExp('\\s*(?:\\((?:recommended|推荐)\\)|（(?:recommended|推荐)）)\\s*$', 'i');
 
 function planReviewOf(raw: Object, questions: DesktopQuestion[]): DesktopPlanReview | undefined {
   const entry = getArray(raw, 'questions')?.[0];
@@ -73,7 +99,8 @@ function questionsOf(value: Object): DesktopQuestion[] {
     for (const option of getArray(item, 'options') ?? []) {
       const label = getString(option, 'label') ?? '';
       if (label) {
-        options.push({ label: label, detail: getString(option, 'description') ?? '' });
+        options.push({ label: label, caption: label.replace(RECOMMENDED, '') || label,
+          recommended: RECOMMENDED.test(label), detail: getString(option, 'description') ?? '' });
       }
     }
     const intent = getRecord(item, 'intent');
@@ -87,7 +114,7 @@ function questionsOf(value: Object): DesktopQuestion[] {
       header: getString(item, 'header') ?? '',
       options: options,
       multi: getBoolean(item, 'multiSelect') === true,
-      custom: intent === undefined
+      custom: getString(intent, 'kind') !== 'plan-review'
     });
   }
   return result;
@@ -98,12 +125,15 @@ export class DesktopInteractions {
   private readonly actions: DesktopHostActions;
   private readonly onChange: (items: DesktopInteraction[]) => void;
   private readonly events: Map<string, DesktopInteraction>;
+  private readonly questionStates: Map<string, DesktopQuestionState>;
   private readonly owner?: DesktopInteractions;
   private views?: Set<DesktopInteractions>;
   private continued: DesktopInteraction[] = [];
   private selected: string = '';
   private stopClaim?: () => void;
   private claimEvent: string = '';
+  private claimDeadline: number = 0;
+  private claimTimer: number = -1;
   private onSidebarPending?: (pending: Map<string, DesktopSidebarPending>) => void;
   private sidebarPending: Map<string, DesktopSidebarPending> = new Map<string, DesktopSidebarPending>();
 
@@ -114,6 +144,7 @@ export class DesktopInteractions {
     this.onChange = onChange;
     this.owner = owner;
     this.events = owner?.events ?? new Map<string, DesktopInteraction>();
+    this.questionStates = owner?.questionStates ?? new Map<string, DesktopQuestionState>();
   }
 
   observeSidebarPending(listener: (pending: Map<string, DesktopSidebarPending>) => void): void {
@@ -130,8 +161,7 @@ export class DesktopInteractions {
   }
 
   closeView(): void {
-    this.stopClaim?.();
-    this.stopClaim = undefined;
+    this.releaseClaim();
     this.claimEvent = '';
     this.selected = '';
     this.continued = [];
@@ -158,6 +188,10 @@ export class DesktopInteractions {
       return;
     }
     if (type === RemoteEventFrameType.CANCEL) {
+      const row = this.events.get(id);
+      if (row?.kind === 'question' && (!row.timed || !row.callId)) {
+        this.questionStates.delete(this.questionKey(row));
+      }
       if (this.events.delete(id)) {
         this.publish();
       }
@@ -202,6 +236,10 @@ export class DesktopInteractions {
       return;
     }
     const rows: DesktopInteraction[] = [];
+    for (const settled of getArray(projection, 'settled') ?? []) {
+      const callId = getString(settled, 'callId') ?? '';
+      if (callId) { this.questionStates.delete(sessionId + '\u0000' + callId); }
+    }
     for (const item of getArray(projection, 'active') ?? []) {
       const callId = getString(item, 'callId') ?? '';
       if (!callId || getString(item, 'state') !== 'continued') {
@@ -246,10 +284,7 @@ export class DesktopInteractions {
       this.publish();
       return '';
     }
-    const error: Record<string, Object> = {
-      'name': 'UserQuestionError', 'code': 'ASK_CANCELLED', 'message': 'the user cancelled ask_user_question'
-    };
-    return this.settle(id, error, 'rejected');
+    return this.rejectQuestion(id, 'ASK_CANCELLED', 'the user cancelled ask_user_question');
   }
 
   reopenPlanReview(id: string): void {
@@ -260,14 +295,76 @@ export class DesktopInteractions {
     }
   }
 
-  async answer(id: string, answers: DesktopQuestionAnswer[]): Promise<string> {
+  private questionKey(row: DesktopInteraction): string {
+    return row.sessionId + '\u0000' + (row.callId || row.id);
+  }
+
+  private questionRow(id: string): DesktopInteraction | undefined {
     const event = this.events.get(id) ?? this.continued.find((row: DesktopInteraction): boolean => row.id === id);
-    if (event?.kind !== 'question' || event.sessionId !== this.selected) {
+    return event?.kind === 'question' && event.sessionId === this.selected ? event : undefined;
+  }
+
+  private questionState(row: DesktopInteraction): DesktopQuestionState {
+    const key = this.questionKey(row);
+    const existing = this.questionStates.get(key);
+    if (existing !== undefined) { return existing; }
+    const state: DesktopQuestionState = { held: false, hidden: false };
+    this.questionStates.set(key, state);
+    return state;
+  }
+
+  saveQuestion(id: string, progress: DesktopQuestionProgress, engage: boolean): void {
+    const row = this.questionRow(id);
+    if (row === undefined) { return; }
+    this.questionState(row).progress = progress;
+    if (engage) { this.holdQuestion(id); }
+  }
+
+  holdQuestion(id: string): void {
+    const row = this.questionRow(id);
+    if (row?.timed !== true) { return; }
+    const state = this.questionState(row);
+    if (state.held) { return; }
+    state.held = true;
+    this.publish();
+  }
+
+  async closeQuestion(id: string): Promise<string> {
+    const row = this.questionRow(id);
+    if (row === undefined) { return '这项提问已结束'; }
+    if (row.callId) {
+      this.questionState(row).hidden = true;
+      this.publish();
+      return '';
+    }
+    const error = await this.rejectQuestion(id, 'ASK_CANCELLED', 'the user cancelled ask_user_question');
+    if (!error) { this.questionStates.delete(this.questionKey(row)); }
+    return error;
+  }
+
+  reopenQuestion(id: string): void {
+    const row = this.questionRow(id);
+    if (row === undefined) { return; }
+    this.questionState(row).hidden = false;
+    this.publish();
+  }
+
+  private rejectQuestion(id: string, code: string, message: string): Promise<string> {
+    const error: Record<string, Object> = { 'name': 'UserQuestionError', 'code': code, 'message': message };
+    return this.settle(id, error, 'rejected');
+  }
+
+  async answer(id: string, answers: DesktopQuestionAnswer[]): Promise<string> {
+    const event = this.questionRow(id);
+    if (event === undefined) {
       return '这项提问已结束';
     }
     const encoded: Record<string, Object> = { 'answers': answers };
     if (!event.continued) {
-      return this.settle(id, encoded);
+      this.holdQuestion(id);
+      const error = await this.settle(id, encoded);
+      if (!error) { this.questionStates.delete(this.questionKey(event)); }
+      return error;
     }
     const rpc = await this.actions.call('userQuestions/answer', {
       'agentId': event.sessionId, 'callId': event.callId, 'answer': encoded
@@ -276,6 +373,7 @@ export class DesktopInteractions {
       return rpc.error?.message ?? '宿主未接受回答，提问可能已由其他客户端处理';
     }
     this.continued = this.continued.filter((row: DesktopInteraction): boolean => row.id !== id);
+    this.questionStates.delete(this.questionKey(event));
     this.publish();
     return '';
   }
@@ -333,15 +431,69 @@ export class DesktopInteractions {
       row.sessionId === this.selected && row.timed && row.callId.length > 0 && !claimed.has(row.id));
     if (claim !== undefined) { claimed.add(claim.id); }
     if ((claim?.id ?? '') !== this.claimEvent) {
-      this.stopClaim?.();
-      this.claimEvent = claim?.id ?? '';
-      this.stopClaim = claim === undefined ? undefined : this.actions.watch('userQuestions/attachWait', {
-        'agentId': claim.sessionId, 'callId': claim.callId
-      }, { onItem: (): void => {}, onError: (): void => {}, onEnd: (): void => {} });
+      this.releaseClaim();
+      if (claim !== undefined) { this.attachClaim(claim); }
+    }
+    if (claim !== undefined && this.questionStates.get(this.questionKey(claim))?.held === true) {
+      this.clearCountdown();
     }
     const active = all.filter((row: DesktopInteraction): boolean => row.sessionId === this.selected);
     const continued = this.continued.filter((row: DesktopInteraction): boolean =>
       !active.some((event: DesktopInteraction): boolean => event.callId === row.callId));
-    this.onChange([...active, ...continued]);
+    this.onChange([...active, ...continued].map((row: DesktopInteraction): DesktopInteraction => {
+      if (row.kind !== 'question' || row.planReview !== undefined) { return row; }
+      const state = this.questionStates.get(this.questionKey(row));
+      return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: row.reason,
+        kind: row.kind, questions: row.questions, continued: row.continued, timed: row.timed,
+        questionProgress: state?.progress, questionHidden: state?.hidden, questionHeld: state?.held,
+        waitDeadline: row.id === this.claimEvent ? this.claimDeadline : undefined };
+    }));
+  }
+
+  private clearCountdown(): void {
+    clearTimeout(this.claimTimer);
+    this.claimTimer = -1;
+    this.claimDeadline = 0;
+  }
+
+  private releaseClaim(): void {
+    this.clearCountdown();
+    const stop = this.stopClaim;
+    this.stopClaim = undefined;
+    this.claimEvent = '';
+    stop?.();
+  }
+
+  private attachClaim(row: DesktopInteraction): void {
+    this.claimEvent = row.id;
+    this.stopClaim = this.actions.watch('userQuestions/attachWait', { 'agentId': row.sessionId, 'callId': row.callId }, {
+      onItem: (frame: Object): void => {
+        const remaining = getNumber(frame, 'remainingMs');
+        if (this.claimEvent !== row.id || remaining === undefined ||
+          this.questionStates.get(this.questionKey(row))?.held === true) { return; }
+        this.clearCountdown();
+        this.claimDeadline = Date.now() + remaining;
+        this.claimTimer = setTimeout((): void => {
+          this.rejectQuestion(row.id, 'ASK_TIMED_OUT', 'ask_user_question timed out before the user answered')
+            .then((error: string): void => {
+              if (error && this.claimEvent === row.id) {
+                this.clearCountdown();
+                this.stopClaim?.();
+                this.stopClaim = undefined;
+                this.publish();
+              }
+            });
+        }, Math.max(0, remaining));
+        this.publish();
+      },
+      onError: (): void => { this.endCountdown(row.id); },
+      onEnd: (): void => { this.endCountdown(row.id); }
+    });
+  }
+
+  private endCountdown(id: string): void {
+    if (this.claimEvent !== id || this.claimDeadline === 0) { return; }
+    this.clearCountdown();
+    this.publish();
   }
 }
