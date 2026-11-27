@@ -62,7 +62,7 @@ export class HttpClient {
    * @param collectCookies 是否解析并合并 Set-Cookie
    */
   async send(url: string, authority: string, post: boolean, body: string | ArrayBuffer | undefined,
-    timeoutMs: number, collectCookies: boolean, responseLimit?: number): Promise<HttpOutcome> {
+    timeoutMs: number, collectCookies: boolean, responseLimit?: number, sensitiveBody?: boolean): Promise<HttpOutcome> {
     const request: http.HttpRequest = http.createHttp();
     const header: Record<string, string> = {};
     header['accept'] = 'application/json, text/plain, */*';
@@ -101,7 +101,7 @@ export class HttpClient {
         + ` content-type=${header['content-type'] ?? '(none)'}`
         + ` cookie=${cookie === undefined ? '(none)' : `${cookie.length}B`}`
         + ` bodyLen=${body === undefined ? 0 : body.length}`
-        + (body === undefined ? '' : ` body=${body.substring(0, 120)}`));
+        + (body === undefined || sensitiveBody ? '' : ` body=${body.substring(0, 120)}`));
     }
     try {
       const options: http.HttpRequestOptions = {

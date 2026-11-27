@@ -1944,6 +1944,7 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
     this.decorForeground = true;
     this.refreshDecorCaps(this.mainWindow);
     if (this.launchParams.kind === WindowKind.MAIN) {
+      AppStorage.setOrCreate<boolean>('dshDesktopVoiceForeground', true);
       writeAppLifecycle(this.context.filesDir, true, 'onForeground');
     }
 
@@ -2423,6 +2424,7 @@ const dataDir: string = resolveHostDataDir(ctx.filesDir, !isHandheldForm());
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
     this.appBackgrounded = true;
     if (this.launchParams.kind === WindowKind.MAIN) {
+      AppStorage.setOrCreate<boolean>('dshDesktopVoiceForeground', false);
       writeAppLifecycle(this.context.filesDir, false, 'onBackground');
     }
     // 任务卡片取的是"切后台那一刻"的窗口快照 ⇒ 先按当前外观把三件套收敛一次（见方法注释）

@@ -61,6 +61,7 @@ import { isLoopbackOrigin, shouldGrantWebPermission } from 'appstate';
 import { HMS_SAMPLE_RATE, HMS_CHUNK_BYTES, makeTonePcm16, slicePcmChunks, resamplePcm16, pcmDurationMs, mergeTranscript, isNearSilence } from 'appstate';
 // HMS 系统语音识别（路线 A）。@kit.CoreSpeechKit 同时导出 speechRecognizer 与 textToSpeech
 import { speechRecognizer, textToSpeech } from '@kit.CoreSpeechKit';
+import { VOICE_WAV_HEADER_BYTES, voiceWavHeader } from '../speech/VoiceWave';
 // 音频采集（路线 A 端到端自检：以 16000 Hz 直接采麦克风喂给 HMS）
 import { audio } from '@kit.AudioKit';
 import { util } from '@kit.ArkTS';
@@ -137,27 +138,9 @@ let natStartedAt: number = 0;
 
 /** 把裸 PCM 包成 canonical 16k 单声道 PCM16 WAV（官方 Recording.stop 直接用）。 */
 function natPcmToWav(pcm: Uint8Array): Uint8Array {
-  const out: Uint8Array = new Uint8Array(44 + pcm.length);
-  const v: DataView = new DataView(out.buffer);
-  const put = (at: number, s: string): void => {
-    for (let k = 0; k < s.length; k++) {
-      out[at + k] = s.charCodeAt(k);
-    }
-  };
-  put(0, 'RIFF');
-  v.setUint32(4, out.length - 8, true);
-  put(8, 'WAVE');
-  put(12, 'fmt ');
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true);
-  v.setUint32(24, HMS_SAMPLE_RATE, true);
-  v.setUint32(28, HMS_SAMPLE_RATE * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  put(36, 'data');
-  v.setUint32(40, pcm.length, true);
-  out.set(pcm, 44);
+  const out = new Uint8Array(VOICE_WAV_HEADER_BYTES + pcm.length);
+  out.set(voiceWavHeader(pcm.length));
+  out.set(pcm, VOICE_WAV_HEADER_BYTES);
   return out;
 }
 

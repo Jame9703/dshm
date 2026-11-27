@@ -506,7 +506,7 @@ export class Connection {
     }
 
     const timeoutMs: number = options?.timeoutMs ?? this.options.defaultTimeoutMs;
-    const first: RpcResult = await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit);
+    const first: RpcResult = await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit, options?.sensitiveBody);
     if (first.ok) {
       return first;
     }
@@ -515,7 +515,7 @@ export class Connection {
     if (shouldRetryAuth && failure !== undefined && isAuthFailureStatus(failure.httpStatus ?? 0)) {
       const rebind: AuthOutcome = await this.rebind();
       if (rebind.ok) {
-        return await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit);
+        return await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit, options?.sensitiveBody);
       }
       return rpcFail(new RemoteFailure('auth/rebind-failed',
         rebind.reason ?? '重新授权失败', rebind.advice ?? ''));
@@ -524,7 +524,7 @@ export class Connection {
   }
 
   private async callOnce(address: HostAddress, endpoint: string, args: Object,
-    timeoutMs: number, responseLimit?: number): Promise<RpcResult> {
+    timeoutMs: number, responseLimit?: number, sensitiveBody?: boolean): Promise<RpcResult> {
     const rpcId: string = randomUuid();
     const body: string | undefined = buildBody(rpcId, endpoint, args);
     if (body === undefined) {
@@ -532,7 +532,7 @@ export class Connection {
     }
     const outcome: HttpOutcome = await this.http.send(
       `${address.baseUrl}${this.surface.apiChannel}/${endpoint}`,
-      address.authority, true, body, timeoutMs, true, responseLimit);
+      address.authority, true, body, timeoutMs, true, responseLimit, sensitiveBody);
 
     if (!outcome.responded) {
       return rpcFail(RemoteFailure.carrier(

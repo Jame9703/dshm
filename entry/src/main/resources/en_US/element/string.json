@@ -737,6 +737,24 @@
     { "name": "desktop_theme_terminal_size", "value": "Terminal font size" },
     { "name": "desktop_theme_terminal_size_hint", "value": "Used for the sidebar terminal." },
     { "name": "desktop_theme_terminal_up", "value": "Increase terminal font size" },
-    { "name": "desktop_theme_terminal_down", "value": "Decrease terminal font size" }
+    { "name": "desktop_theme_terminal_down", "value": "Decrease terminal font size" },
+    { "name": "desktop_voice_start", "value": "Voice input" },
+    { "name": "desktop_voice_setup", "value": "Set up voice input" },
+    { "name": "desktop_voice_setup_detail", "value": "Configure an available speech recognition provider in the voice input plugin." },
+    { "name": "desktop_voice_settings", "value": "Open plugin" },
+    { "name": "desktop_voice_preparing", "value": "Checking recognition provider…" },
+    { "name": "desktop_voice_requesting", "value": "Requesting microphone access…" },
+    { "name": "desktop_voice_permission", "value": "Allow microphone access and try again." },
+    { "name": "desktop_voice_busy", "value": "A recording is already in progress." },
+    { "name": "desktop_voice_recording", "value": "Recording" },
+    { "name": "desktop_voice_transcribing", "value": "Transcribing…" },
+    { "name": "desktop_voice_short", "value": "The recording was too short. Try again." },
+    { "name": "desktop_voice_empty", "value": "No speech was recognized." },
+    { "name": "desktop_voice_conflict", "value": "The draft changed. Insert the transcript manually." },
+    { "name": "desktop_voice_failed", "value": "Voice input failed. Try again." },
+    { "name": "desktop_voice_cancel", "value": "Cancel" },
+    { "name": "desktop_voice_finish", "value": "Stop recording and transcribe" },
+    { "name": "desktop_voice_retry", "value": "Record again" },
+    { "name": "desktop_voice_insert", "value": "Insert" }
   ]
 }

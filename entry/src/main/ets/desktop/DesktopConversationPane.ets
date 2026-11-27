@@ -40,6 +40,8 @@ import { DesktopReferenceMessage } from './DesktopReferenceMessage';
 import { DesktopReferenceAction } from './DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
 import { DesktopReplyActions } from './DesktopReplyActions';
+import { DesktopVoiceInput } from './DesktopVoiceInput';
+import type { DesktopVoiceInsertion } from './DesktopVoiceInput';
 import { DesktopWorkflowPane } from './DesktopWorkflowPane';
 import { DesktopActionCardPane } from './DesktopActionCardPane';
 import { desktopHideActionCardFences } from './DesktopActionCards';
@@ -501,6 +503,27 @@ export struct DesktopConversationPane {
         this.composer.controller.setCaretOffset(caret);
       }
     }, 0);
+  }
+
+  private voiceInsertion(): DesktopVoiceInsertion | undefined {
+    if (!this.composerReady || this.composerSession !== this.sessionId) { return undefined; }
+    const range = this.composer.controller.getSelection();
+    if (range?.start === undefined || range.end === undefined || range.start === range.end) {
+      const caret = this.composerCaret();
+      return { draft: this.composerDraft, start: caret, end: caret };
+    }
+    return { draft: this.composerDraft,
+      start: desktopDraftWireOffset(this.composerDraft, Math.min(range.start, range.end)),
+      end: desktopDraftWireOffset(this.composerDraft, Math.max(range.start, range.end)) };
+  }
+
+  private insertVoice(text: string, insertion?: DesktopVoiceInsertion): boolean {
+    const span = insertion ?? this.voiceInsertion();
+    if (!this.composerReady || this.composerSession !== this.sessionId || span === undefined ||
+      !sameDesktopDraft(span.draft, this.composerDraft)) { return false; }
+    this.closePalette();
+    this.replaceComposerRange(span.draft.text, span.start, span.end, text, true);
+    return true;
   }
 
   private composerCaret(): number {
@@ -1185,6 +1208,14 @@ export struct DesktopConversationPane {
           } })
       Row({ space: 4 }) {
         this.ComposerControls()
+        DesktopVoiceInput({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+          locked: this.busy || this.snapshot?.loading !== false,
+          onAnchor: (): DesktopVoiceInsertion | undefined => this.voiceInsertion(),
+          onInsert: (text: string, insertion?: DesktopVoiceInsertion): boolean => this.insertVoice(text, insertion),
+          onSettings: (): void => {
+            this.onPluginDetails('@deepseek-ai/dsh-experimental-voice-input-bundle',
+              this.getUIContext().getHostContext()?.resourceManager.getStringSync($r('app.string.desktop_voice_start').id) ?? '', '');
+          } })
         if (this.snapshot?.running && !this.primaryStops()) {
           Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             SymbolGlyph($r('sys.symbol.xmark')).fontSize(15)

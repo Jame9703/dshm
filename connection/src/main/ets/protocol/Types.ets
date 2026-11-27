@@ -117,4 +117,6 @@ export interface CallOptions {
   allowAuthRetry?: boolean;
   /** 最大响应字节数，用于有界的大型宿主资源。 */
   responseLimit?: number;
+  /** Omit the request body from diagnostic logs. */
+  sensitiveBody?: boolean;
 }

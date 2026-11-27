@@ -778,6 +778,24 @@
     { "name": "desktop_theme_terminal_size", "value": "终端字号" },
     { "name": "desktop_theme_terminal_size_hint", "value": "用于侧栏终端" },
     { "name": "desktop_theme_terminal_up", "value": "增大终端字号" },
-    { "name": "desktop_theme_terminal_down", "value": "减小终端字号" }
+    { "name": "desktop_theme_terminal_down", "value": "减小终端字号" },
+    { "name": "desktop_voice_start", "value": "语音输入" },
+    { "name": "desktop_voice_setup", "value": "设置语音输入" },
+    { "name": "desktop_voice_setup_detail", "value": "请在语音输入插件中配置可用的语音识别服务。" },
+    { "name": "desktop_voice_settings", "value": "打开插件" },
+    { "name": "desktop_voice_preparing", "value": "检查语音识别服务…" },
+    { "name": "desktop_voice_requesting", "value": "正在请求麦克风权限…" },
+    { "name": "desktop_voice_permission", "value": "请允许访问麦克风后重试。" },
+    { "name": "desktop_voice_busy", "value": "另一处正在录音。" },
+    { "name": "desktop_voice_recording", "value": "录音中" },
+    { "name": "desktop_voice_transcribing", "value": "正在转写…" },
+    { "name": "desktop_voice_short", "value": "录音太短，请重试。" },
+    { "name": "desktop_voice_empty", "value": "未识别到语音。" },
+    { "name": "desktop_voice_conflict", "value": "草稿已更改，可手动插入转写。" },
+    { "name": "desktop_voice_failed", "value": "语音输入失败，请重试。" },
+    { "name": "desktop_voice_cancel", "value": "取消" },
+    { "name": "desktop_voice_finish", "value": "停止录音并转写" },
+    { "name": "desktop_voice_retry", "value": "重新录音" },
+    { "name": "desktop_voice_insert", "value": "插入" }
   ]
 }
