@@ -25,6 +25,10 @@
       "value": "#43454A"
     },
     {
+      "name": "workspace_status_error",
+      "value": "#FF9794"
+    },
+    {
       "name": "workspace_border",
       "value": "#33FFFFFF"
     },

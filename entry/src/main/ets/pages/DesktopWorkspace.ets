@@ -61,6 +61,8 @@ import { DesktopSessionGrouping, DesktopSessionOrdering, desktopReorderSessions,
   desktopWorkspaceMove, desktopWorkspaceParents } from '../desktop/DesktopSessionOrder';
 import type { DesktopSessionInsertion, DesktopSidebarSection, DesktopWorkspaceGroup } from '../desktop/DesktopSessionOrder';
 import { readDesktopSidebarView, saveDesktopSidebarView } from '../desktop/DesktopSidebarPreference';
+import { desktopRunningSidebarChildren, desktopSidebarAge, DesktopSidebarAgeUnit, DesktopSidebarPending,
+  desktopSidebarRequired, desktopSidebarRevealDepth, desktopSidebarRows, SIDEBAR_SESSION_PAGE } from '../desktop/DesktopSidebarStatus';
 
 const DOMAIN: number = 0xD000;
 const TAG: string = 'DshDesktopWorkspace';
@@ -78,6 +80,12 @@ interface DesktopSessionDrag {
   owner: string;
   groupId: string;
   session: SessionListItem;
+}
+
+interface DesktopSidebarDisplaySection extends DesktopSidebarSection {
+  rows: SessionListItem[];
+  hidden: number;
+  hasOverflow: boolean;
 }
 
 interface DesktopWorkspaceDropBand {
@@ -183,7 +191,12 @@ struct DesktopWorkspace {
   private archiveDialogVersion: number = 0;
   private archiveNoticeTimer: number = -1;
   @State private pinned: string[] = [];
-  @State private unreadSessions: DesktopUnreadSession[] = [];
+  @State private unreadSessions: Map<string, DesktopUnreadSession> = new Map<string, DesktopUnreadSession>();
+  @State private runningSidebarChildren: Map<string, number> = new Map<string, number>();
+  @State private sidebarPending: Map<string, DesktopSidebarPending> = new Map<string, DesktopSidebarPending>();
+  @State private sidebarAttention: Set<string> = new Set<string>();
+  @State private sidebarWatermarks: Map<string, number> = new Map<string, number>();
+  private readonly sidebarOverflowBounds: Map<string, Area> = new Map<string, Area>();
   @State private readingReady: boolean = false;
   @State private renameOpen: boolean = false;
   @State private renameDraft: string = '';
@@ -341,7 +354,11 @@ struct DesktopWorkspace {
     this.error = '';
     this.chat = undefined;
     this.interactions = [];
-    this.unreadSessions = [];
+    this.unreadSessions = new Map<string, DesktopUnreadSession>();
+    this.runningSidebarChildren = new Map<string, number>();
+    this.sidebarPending = new Map<string, DesktopSidebarPending>();
+    this.sidebarAttention = new Set<string>();
+    this.sidebarWatermarks = new Map<string, number>();
     this.readingReady = false;
     this.archivedIds = [];
     this.shownPlanReviews.clear();
@@ -368,6 +385,8 @@ struct DesktopWorkspace {
       const newPins = this.ready ? snapshot.pinned.filter((id: string): boolean => !priorPins.has(id)) : [];
       this.archivedIds = snapshot.archivedIds;
       this.pinned = snapshot.pinned;
+      this.runningSidebarChildren = desktopRunningSidebarChildren(snapshot.sessions, snapshot.unlistedRunning);
+      this.collectSidebarAttention();
       this.updateGroups(snapshot.workspaces, snapshot.sessions, newPins);
       this.ready = true;
     }, (snapshot: DesktopConversationSnapshot): void => {
@@ -383,10 +402,18 @@ struct DesktopWorkspace {
         this.showPlan(review.planReview.document);
       }
     }, (items: DesktopUnreadSession[], ready: boolean): void => {
-      this.unreadSessions = items;
+      const unread = new Map<string, DesktopUnreadSession>();
+      items.forEach((item: DesktopUnreadSession): void => { unread.set(item.id, item); });
+      this.unreadSessions = unread;
       this.readingReady = ready;
+      this.collectSidebarAttention();
+      this.raiseSidebarWatermarks();
     }, (run: () => void): void => {
       this.getUIContext().postFrameCallback(new StartupFrameCallback(run));
+    }, (pending: Map<string, DesktopSidebarPending>): void => {
+      this.sidebarPending = pending;
+      this.collectSidebarAttention();
+      this.raiseSidebarWatermarks();
     });
     this.data.start(this.hostUrl);
   }
@@ -658,6 +685,7 @@ struct DesktopWorkspace {
     this.clearSessionDrag();
     this.clearWorkspaceDrag();
     this.sidebarGrouping = grouping;
+    this.sidebarWatermarks = new Map<string, number>();
     this.filterGroups(this.query);
     this.saveSidebarView();
   }
@@ -717,7 +745,7 @@ struct DesktopWorkspace {
   }
 
   private unreadSession(sessionId: string): DesktopUnreadSession | undefined {
-    return this.unreadSessions.find((item: DesktopUnreadSession): boolean => item.id === sessionId);
+    return this.unreadSessions.get(sessionId);
   }
 
   private async markReading(sessionId: string): Promise<void> {
@@ -872,6 +900,90 @@ struct DesktopWorkspace {
       }
     }
     this.visibleGroups = matches;
+    this.raiseSidebarWatermarks();
+  }
+
+  private collectSidebarAttention(): void {
+    const attention = new Set<string>();
+    this.sidebarPending.forEach((_, id: string): void => { attention.add(id); });
+    this.runningSidebarChildren.forEach((_, id: string): void => { attention.add(id); });
+    this.unreadSessions.forEach((_, id: string): void => { attention.add(id); });
+    if (attention.size !== this.sidebarAttention.size || Array.from(attention).some((id: string): boolean =>
+      !this.sidebarAttention.has(id))) { this.sidebarAttention = attention; }
+  }
+
+  private sidebarHasOverflow(): boolean {
+    return this.sidebarGrouping !== DesktopSessionGrouping.FLAT && !this.query.trim();
+  }
+
+  private sidebarRequired(group: DesktopWorkspaceGroup): number {
+    return desktopSidebarRequired(group.sessions, this.panel === 'session' ? this.sessionId : '', this.sidebarAttention);
+  }
+
+  private raiseSidebarWatermarks(): void {
+    if (!this.sidebarHasOverflow()) { return; }
+    let raised: Map<string, number> | undefined;
+    for (const section of this.sidebarSections()) {
+      if (section.header) { continue; }
+      const group = section.group;
+      const needed = this.sidebarRequired(group);
+      if (needed <= (this.sidebarWatermarks.get(group.id) ?? SIDEBAR_SESSION_PAGE)) { continue; }
+      raised = raised ?? new Map<string, number>(this.sidebarWatermarks);
+      raised.set(group.id, needed);
+    }
+    if (raised !== undefined) { this.sidebarWatermarks = raised; }
+  }
+
+  private sidebarLimit(group: DesktopWorkspaceGroup): number {
+    return Math.max(this.sidebarRequired(group), this.sidebarWatermarks.get(group.id) ?? SIDEBAR_SESSION_PAGE);
+  }
+
+  private visibleSidebarSessions(group: DesktopWorkspaceGroup): SessionListItem[] {
+    return this.sidebarHasOverflow() ? desktopSidebarRows(group.sessions, this.sidebarLimit(group)) : group.sessions;
+  }
+
+  private sidebarHiddenCount(group: DesktopWorkspaceGroup): number {
+    return group.sessions.length - this.visibleSidebarSessions(group).length;
+  }
+
+  private showSidebarOverflow(group: DesktopWorkspaceGroup): boolean {
+    return this.sidebarHasOverflow() &&
+      desktopSidebarRows(group.sessions, this.sidebarRequired(group)).length < group.sessions.length;
+  }
+
+  private toggleSidebarOverflow(group: DesktopWorkspaceGroup): void {
+    const marks = new Map<string, number>(this.sidebarWatermarks);
+    const hidden = this.sidebarHiddenCount(group);
+    if (hidden === 0) { marks.delete(group.id); }
+    else { marks.set(group.id, this.sidebarLimit(group) + SIDEBAR_SESSION_PAGE); }
+    this.sidebarWatermarks = marks;
+  }
+
+  private revealSidebarSession(groupId: string, sessionId: string): void {
+    if (!this.sidebarHasOverflow()) { return; }
+    const group = this.visibleGroups.find((row: DesktopWorkspaceGroup): boolean => row.id === groupId);
+    if (group === undefined) { return; }
+    const needed = desktopSidebarRevealDepth(group.sessions, sessionId);
+    if (needed > this.sidebarLimit(group)) {
+      const marks = new Map<string, number>(this.sidebarWatermarks);
+      marks.set(groupId, needed);
+      this.sidebarWatermarks = marks;
+    }
+    this.raiseSidebarWatermarks();
+  }
+
+  private forgetSidebarWatermarks(id: string): void {
+    const marks = new Map<string, number>(this.sidebarWatermarks);
+    const parents = this.sidebarGrouping === DesktopSessionGrouping.TREE ? desktopWorkspaceParents(this.groups) : undefined;
+    for (const key of this.sidebarWatermarks.keys()) {
+      for (let owner: string | undefined = key; owner !== undefined; owner = parents?.get(owner)) {
+        if (owner === id) {
+          marks.delete(key);
+          break;
+        }
+      }
+    }
+    if (marks.size !== this.sidebarWatermarks.size) { this.sidebarWatermarks = marks; }
   }
 
   private sidebarSections(): DesktopSidebarSection[] {
@@ -892,8 +1004,13 @@ struct DesktopWorkspace {
   }
 
   private toggleWorkspace(id: string): void {
-    this.expandedIds = this.expandedIds.includes(id) ? this.expandedIds.filter((item: string): boolean => item !== id) :
-      [...this.expandedIds, id];
+    if (this.expandedIds.includes(id)) {
+      this.expandedIds = this.expandedIds.filter((item: string): boolean => item !== id);
+      this.forgetSidebarWatermarks(id);
+    } else {
+      this.expandedIds = [...this.expandedIds, id];
+      this.raiseSidebarWatermarks();
+    }
     this.saveSidebarView();
   }
 
@@ -1798,6 +1915,7 @@ struct DesktopWorkspace {
         this.selectSession(group, row);
         this.panel = 'session';
         this.revealWorkspace(group.id);
+        this.revealSidebarSession(group.id, id);
         return true;
       }
     }
@@ -1872,12 +1990,22 @@ struct DesktopWorkspace {
     ];
   }
 
-  private groupKey(group: DesktopWorkspaceGroup): string {
+  private displaySidebarSections(): DesktopSidebarDisplaySection[] {
+    return this.sidebarSections().map((section: DesktopSidebarSection): DesktopSidebarDisplaySection => {
+      const rows = section.header ? [] : this.visibleSidebarSessions(section.group);
+      return { group: section.group, depth: section.depth, header: section.header, rows: rows,
+        hidden: section.group.sessions.length - rows.length,
+        hasOverflow: !section.header && this.showSidebarOverflow(section.group) };
+    });
+  }
+
+  private sidebarSectionKey(section: DesktopSidebarDisplaySection): string {
+    const group = section.group;
     const title = typeof group.title === 'string' ? group.title : '';
-    const rows = group.sessions.map((session: SessionListItem): string =>
-      JSON.stringify([session.id, session.title, session.running,
+    const rows = section.rows.map((session: SessionListItem): string =>
+      JSON.stringify([session.id, session.title, session.running, session.updatedAt, session.blank,
         this.pinned.includes(session.id), this.archivedIds.includes(session.id)]));
-    return JSON.stringify([group.id, title, ...rows]);
+    return JSON.stringify([section.depth, section.header, group.id, title, section.hidden, section.hasOverflow, ...rows]);
   }
 
   private markSidebarVisible(ready: boolean): void {
@@ -2025,9 +2153,10 @@ struct DesktopWorkspace {
       if (section.header) {
         this.extendWorkspaceBand(groupBand, this.workspaceHeaderBounds.get(section.group.id));
       } else {
-        section.group.sessions.forEach((session: SessionListItem): void => {
+        this.visibleSidebarSessions(section.group).forEach((session: SessionListItem): void => {
           this.extendWorkspaceBand(groupBand, this.sessionRowBounds.get(session.id));
         });
+        this.extendWorkspaceBand(groupBand, this.sidebarOverflowBounds.get(section.group.id));
       }
     }
     return Array.from(bands.values());
@@ -2200,7 +2329,7 @@ struct DesktopWorkspace {
     const group = this.visibleGroups.find((item: DesktopWorkspaceGroup): boolean => item.id === drag.groupId);
     if (group === undefined) { return undefined; }
     const pinned = this.pinned.includes(drag.session.id);
-    for (const target of group.sessions) {
+    for (const target of this.visibleSidebarSessions(group)) {
       const bounds = this.sessionRowBounds.get(target.id);
       const targetPinned = this.pinned.includes(target.id) && !this.archivedIds.includes(target.id);
       if (target.id === drag.session.id || targetPinned !== pinned || bounds === undefined ||
@@ -2241,7 +2370,8 @@ struct DesktopWorkspace {
     const archived = new Set<string>(this.archivedIds);
     const account = desktopSessionAccount(this.sidebarGrouping, drag.groupId);
     const order = this.orderedSidebarSessions(this.eligibleSidebarSessions(members), account, archived);
-    const next = desktopReorderSessions(order, group.sessions, drag.session.id, insert, new Set<string>(this.pinned), archived);
+    const next = desktopReorderSessions(order, this.visibleSidebarSessions(group), drag.session.id, insert,
+      new Set<string>(this.pinned), archived);
     if (next === undefined) { return; }
     if (this.sidebarOrdering !== DesktopSessionOrdering.MANUAL) { this.manualOrders = this.snapshotSessionOrders(); }
     this.manualOrders.set(account, next);
@@ -2285,23 +2415,82 @@ struct DesktopWorkspace {
     }
   }
 
+  private sidebarSessionTime(session: SessionListItem): ResourceStr {
+    const age = desktopSidebarAge(session.updatedAt || session.createdAt || Date.now(), Date.now());
+    switch (age.unit) {
+      case DesktopSidebarAgeUnit.MINUTES: return $r('app.string.desktop_sidebar_time_minutes', age.count);
+      case DesktopSidebarAgeUnit.HOURS: return $r('app.string.desktop_sidebar_time_hours', age.count);
+      case DesktopSidebarAgeUnit.DAYS: return $r('app.string.desktop_sidebar_time_days', age.count);
+      case DesktopSidebarAgeUnit.MONTHS: return $r('app.string.desktop_sidebar_time_months', age.count);
+      case DesktopSidebarAgeUnit.YEARS: return $r('app.string.desktop_sidebar_time_years', age.count);
+      default: return $r('app.string.desktop_sidebar_time_now');
+    }
+  }
+
+  private sidebarSessionLabel(session: SessionListItem, archived: boolean): ResourceStr {
+    if (!archived) {
+      switch (this.sidebarPending.get(session.id)) {
+        case DesktopSidebarPending.APPROVAL: return $r('app.string.desktop_sidebar_pending_approval');
+        case DesktopSidebarPending.QUESTION: return $r('app.string.desktop_sidebar_pending_question');
+        case DesktopSidebarPending.PLAN_REVIEW: return $r('app.string.desktop_sidebar_pending_plan');
+      }
+    }
+    return this.sidebarSessionTime(session);
+  }
+
+  private sidebarSessionDescription(session: SessionListItem, archived: boolean): string {
+    if (archived) { return this.accessibilityLabel($r('app.string.desktop_sidebar_session_archived')); }
+    if (session.blank) { return ''; }
+    const parts: string[] = [];
+    if (this.sidebarPending.has(session.id)) {
+      parts.push(this.accessibilityLabel(this.sidebarSessionLabel(session, false)));
+    }
+    if (session.running) { parts.push(this.accessibilityLabel($r('app.string.desktop_sidebar_session_running'))); }
+    const children = this.runningSidebarChildren.get(session.id) ?? 0;
+    if (children > 0) {
+      const title = this.getUIContext().getHostContext()?.resourceManager.getStringSync(
+        $r('app.string.desktop_sidebar_children_running'), children);
+      if (title !== undefined) { parts.push(title); }
+    }
+    const unread = this.unreadSession(session.id);
+    if (unread !== undefined) {
+      parts.push(this.accessibilityLabel(unread.failed ? $r('app.string.desktop_sidebar_session_failed') :
+        $r('app.string.desktop_sidebar_session_unread')));
+    }
+    return parts.join(' · ');
+  }
+
+  @Builder
+  private SidebarSessionDot(session: SessionListItem, archived: boolean) {
+    Stack() {
+      if (!archived && !session.blank) {
+        if (this.sidebarPending.has(session.id)) {
+          Circle().width(7).height(7).fill($r('sys.color.warning')).key('desktopSessionPending-' + session.id)
+        } else if (session.running || this.runningSidebarChildren.has(session.id)) {
+          LoadingProgress().width(13).height(13).color($r('sys.color.brand')).key('desktopSessionRunning-' + session.id)
+        } else if (this.unreadSession(session.id) !== undefined) {
+          Circle().width(7).height(7).fill(this.unreadSession(session.id)?.failed === true ?
+            $r('app.color.workspace_status_error') : $r('sys.color.brand')).key('desktopSessionUnread-' + session.id)
+        }
+      }
+    }.width(14).accessibilityLevel('no')
+  }
+
   @Builder
   private SessionRow(groupId: string, depth: number, session: SessionListItem, archived: boolean) {
     Row() {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 6 }) {
-          Stack() {
-            if (session.running && !archived) {
-              LoadingProgress().width(13).height(13).color($r('sys.color.brand'))
-            } else if (!archived && !session.blank && this.unreadSession(session.id) !== undefined) {
-              Circle().width(7).height(7).fill(this.unreadSession(session.id)?.failed === true ?
-                $r('sys.color.warning') : $r('sys.color.brand')).key('desktopSessionUnread-' + session.id)
-                .accessibilityText(this.unreadSession(session.id)?.failed === true ? '失败' : '未读')
-            }
-          }.width(14)
+          this.SidebarSessionDot(session, archived)
           Text(this.sessionLabel(session)).fontSize(14).fontColor(archived ?
             $r('sys.color.font_tertiary') : $r('sys.color.font_primary'))
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (!session.blank) {
+            Text(this.sidebarSessionLabel(session, archived)).key('desktopSessionTrailing-' + session.id)
+              .fontSize(11).fontColor(!archived && this.sidebarPending.has(session.id) ?
+                $r('sys.color.font_secondary') : $r('sys.color.font_tertiary')).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 76 }).accessibilityLevel('no')
+          }
           if (!archived && this.pinned.includes(session.id)) {
             Image($r('app.media.dsh_session_pin_fill')).width(14).height(14).supportSvg2(true)
               .draggable(false).accessibilityText('已置顶')
@@ -2312,7 +2501,7 @@ struct DesktopWorkspace {
       .layoutWeight(1).height(32).padding({ left: 10, right: 4 }).borderRadius(8)
       .backgroundColor(Color.Transparent).focusOnTouch(false)
       .accessibilityText(this.accessibilityLabel(this.sessionLabel(session)))
-      .accessibilityDescription(archived ? '已归档' : '')
+      .accessibilityDescription(this.sidebarSessionDescription(session, archived))
       .accessibilitySelected(this.sessionId === session.id)
       .priorityGesture(GestureGroup(GestureMode.Exclusive,
         PanGesture({ direction: PanDirection.All, distance: 8 }).allowedTypes([SourceTool.MOUSE, SourceTool.TOUCHPAD])
@@ -2336,12 +2525,9 @@ struct DesktopWorkspace {
           .enabled(!this.workspaceBusy).focusOnTouch(false).accessibilityText('取消归档')
           .onClick((): void => { this.restoreSession(session.id); })
       }
-      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        this.MenuDots()
+      if (!session.blank) {
+        this.RowMenu('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)), this.sessionActions(session))
       }
-      .width(32).height(32).borderRadius(7).backgroundColor(Color.Transparent)
-      .focusOnTouch(false).accessibilityText('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)))
-      .enabled(!this.workspaceBusy).bindMenu(this.sessionActions(session), desktopMenuOptions(Placement.BottomRight))
     }
     .width('100%').borderRadius(8).padding({ left: Math.min(7, depth) * 12 })
     .border({ width: { top: this.sessionInsertion?.id === session.id && !this.sessionInsertion?.after ? 2 : 0,
@@ -2446,18 +2632,29 @@ struct DesktopWorkspace {
     }
     if (this.ready) {
       List({ space: 2 }) {
-        ForEach(this.sidebarSections(), (section: DesktopSidebarSection): void => {
+        ForEach(this.displaySidebarSections(), (section: DesktopSidebarDisplaySection): void => {
           if (section.header) {
             ListItem() { this.WorkspaceRow(section.group, section.depth) }
           } else {
-            ForEach(section.group.sessions, (session: SessionListItem): void => {
+            ForEach(section.rows, (session: SessionListItem): void => {
               ListItem() {
                 this.SessionRow(section.group.id, section.depth, session, this.archivedIds.includes(session.id))
               }
             }, (session: SessionListItem): string => session.id)
+            if (section.hasOverflow) {
+              ListItem() {
+                Button(section.hidden > 0 ? $r('app.string.desktop_sidebar_show_more', section.hidden) :
+                  $r('app.string.desktop_sidebar_show_less'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+                  .key('desktopSidebarOverflow-' + section.group.id).width('100%').height(30)
+                  .padding({ left: 24 + Math.min(7, section.depth) * 12, right: 8 }).align(Alignment.Start)
+                  .fontSize(12).fontColor($r('sys.color.font_secondary')).focusOnTouch(false)
+                  .onClick((): void => { this.toggleSidebarOverflow(section.group); })
+                  .onAreaChange((_, area: Area): void => { this.sidebarOverflowBounds.set(section.group.id, area); })
+                  .onDisAppear((): void => { this.sidebarOverflowBounds.delete(section.group.id); })
+              }
+            }
           }
-        }, (section: DesktopSidebarSection): string =>
-          JSON.stringify([section.depth, section.header, this.groupKey(section.group)]))
+        }, (section: DesktopSidebarDisplaySection): string => this.sidebarSectionKey(section))
         if (this.visibleGroups.length === 0) {
           ListItem() {
             Column({ space: 8 }) {

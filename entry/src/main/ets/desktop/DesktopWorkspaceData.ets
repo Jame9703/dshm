@@ -14,6 +14,7 @@ import { desktopForkTitle } from './DesktopReplyTimeline';
 import { DesktopSessionReading } from './DesktopSessionReading';
 import type { DesktopUnreadSession } from './DesktopSessionReading';
 import { desktopInsertWorkspaceBefore } from './DesktopSessionOrder';
+import type { DesktopSidebarPending } from './DesktopSidebarStatus';
 
 export interface DesktopForkResult {
   id: string;
@@ -30,6 +31,7 @@ export interface DesktopWorkspaceRow {
 export interface DesktopWorkspaceSnapshot {
   workspaces: DesktopWorkspaceRow[];
   sessions: SessionListItem[];
+  unlistedRunning: string[];
   archivedIds: string[];
   pinned: string[];
   ready: boolean;
@@ -71,6 +73,7 @@ export class DesktopWorkspaceData {
   private workspaces: DesktopWorkspaceRow[] = [];
   private workspaceOrderRevision: number = 0;
   private sessions: SessionListItem[] = [];
+  private readonly unlistedRunning: Set<string> = new Set<string>();
   private archivedIds: Set<string> = new Set<string>();
   private pinnedIds: string[] = [];
   private stopWorkspace?: () => void;
@@ -80,10 +83,12 @@ export class DesktopWorkspaceData {
   constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
     onConversation: (snapshot: DesktopConversationSnapshot) => void,
     onInteractions: (items: DesktopInteraction[]) => void,
-    onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void) {
+    onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void,
+    onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void) {
     this.listener = listener;
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
+    this.interactions.observeSidebarPending(onSidebarPending);
     this.conversation = new DesktopConversation(this.connection, onConversation,
       (): void => { this.refreshSessions(); }, this.interactions, this.actions);
   }
@@ -152,7 +157,13 @@ export class DesktopWorkspaceData {
           }
         }
       },
-      onEnd: (): void => { this.interactions.resetEvents(); }
+      onEnd: (): void => {
+        this.interactions.resetEvents();
+        if (this.unlistedRunning.size > 0) {
+          this.unlistedRunning.clear();
+          this.publish();
+        }
+      }
     };
     const opening: Promise<boolean> = this.connection.start(eventSink);
     this.refreshSessions();
@@ -320,6 +331,7 @@ export class DesktopWorkspaceData {
     }
     if (result.ok) {
       this.sessions = projectSessionList(result.value).items;
+      this.sessions.forEach((row: SessionListItem): void => { this.unlistedRunning.delete(row.id); });
       this.sessionsReady = true;
       this.sessionError = '';
     } else {
@@ -334,7 +346,14 @@ export class DesktopWorkspaceData {
     const running = args?.[1];
     if (typeof id !== 'string' || typeof running !== 'boolean' || !this.active) { return; }
     const previous = this.sessions.find((row: SessionListItem): boolean => row.id === id);
-    if (previous === undefined || previous.running === running) { return; }
+    if (previous === undefined) {
+      if (this.unlistedRunning.has(id) === running) { return; }
+      if (running) { this.unlistedRunning.add(id); }
+      else { this.unlistedRunning.delete(id); }
+      this.publish();
+      return;
+    }
+    if (previous.running === running) { return; }
     const updated: SessionListItem = { id: previous.id, title: previous.title, cwd: previous.cwd, blank: previous.blank,
       raw: previous.raw, running: running, createdAt: previous.createdAt, updatedAt: previous.updatedAt };
     this.sessions = this.sessions.map((row: SessionListItem): SessionListItem => row.id === id ? updated : row);
@@ -404,6 +423,7 @@ export class DesktopWorkspaceData {
       this.listener({
         workspaces: this.workspaces,
         sessions: this.sessions,
+        unlistedRunning: Array.from(this.unlistedRunning),
         archivedIds: Array.from(this.archivedIds),
         pinned: this.pinnedIds,
         ready: this.workspaceReady && this.sessionsReady,

@@ -313,6 +313,70 @@
       "value": "在 %s 中新建会话"
     },
     {
+      "name": "desktop_sidebar_pending_approval",
+      "value": "待审批"
+    },
+    {
+      "name": "desktop_sidebar_pending_question",
+      "value": "待回答"
+    },
+    {
+      "name": "desktop_sidebar_pending_plan",
+      "value": "计划待审"
+    },
+    {
+      "name": "desktop_sidebar_session_archived",
+      "value": "已归档"
+    },
+    {
+      "name": "desktop_sidebar_session_running",
+      "value": "进行中"
+    },
+    {
+      "name": "desktop_sidebar_children_running",
+      "value": "%d 个子智能体运行中"
+    },
+    {
+      "name": "desktop_sidebar_session_failed",
+      "value": "运行出错"
+    },
+    {
+      "name": "desktop_sidebar_session_unread",
+      "value": "未读"
+    },
+    {
+      "name": "desktop_sidebar_show_more",
+      "value": "展开其余 %d 个会话"
+    },
+    {
+      "name": "desktop_sidebar_show_less",
+      "value": "收起"
+    },
+    {
+      "name": "desktop_sidebar_time_now",
+      "value": "刚刚"
+    },
+    {
+      "name": "desktop_sidebar_time_minutes",
+      "value": "%d分钟"
+    },
+    {
+      "name": "desktop_sidebar_time_hours",
+      "value": "%d小时"
+    },
+    {
+      "name": "desktop_sidebar_time_days",
+      "value": "%d天"
+    },
+    {
+      "name": "desktop_sidebar_time_months",
+      "value": "%d个月"
+    },
+    {
+      "name": "desktop_sidebar_time_years",
+      "value": "%d年"
+    },
+    {
       "name": "desktop_sidebar_sessions",
       "value": "会话"
     },

@@ -1,5 +1,6 @@
 import { Connection, EVENTS_RESULT_ENDPOINT, getArray, getBoolean, getRecord, getString } from 'connection';
 import { RemoteEventFrameType, WATERFALL_APPROVAL, WATERFALL_QUESTION } from 'dshcompat';
+import { DesktopSidebarPending } from './DesktopSidebarStatus';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopPlanTitle, DesktopPlanReview } from './DesktopPlan';
 
@@ -103,6 +104,8 @@ export class DesktopInteractions {
   private selected: string = '';
   private stopClaim?: () => void;
   private claimEvent: string = '';
+  private onSidebarPending?: (pending: Map<string, DesktopSidebarPending>) => void;
+  private sidebarPending: Map<string, DesktopSidebarPending> = new Map<string, DesktopSidebarPending>();
 
   constructor(connection: Connection, actions: DesktopHostActions, onChange: (items: DesktopInteraction[]) => void,
     owner?: DesktopInteractions) {
@@ -111,6 +114,10 @@ export class DesktopInteractions {
     this.onChange = onChange;
     this.owner = owner;
     this.events = owner?.events ?? new Map<string, DesktopInteraction>();
+  }
+
+  observeSidebarPending(listener: (pending: Map<string, DesktopSidebarPending>) => void): void {
+    this.onSidebarPending = listener;
   }
 
   createView(onChange: (items: DesktopInteraction[]) => void): DesktopInteractions {
@@ -301,6 +308,24 @@ export class DesktopInteractions {
     const claimed = new Set<string>();
     this.publishView(all, claimed);
     this.views?.forEach((view: DesktopInteractions): void => { view.publishView(all, claimed); });
+    this.publishSidebarPending(all);
+  }
+
+  private publishSidebarPending(items: DesktopInteraction[]): void {
+    if (this.onSidebarPending === undefined) { return; }
+    const pending = new Map<string, DesktopSidebarPending>();
+    const record = (item: DesktopInteraction): void => {
+      const kind = item.planReview !== undefined ? DesktopSidebarPending.PLAN_REVIEW :
+        item.kind === 'question' ? DesktopSidebarPending.QUESTION : DesktopSidebarPending.APPROVAL;
+      if (kind > (pending.get(item.sessionId) ?? 0)) { pending.set(item.sessionId, kind); }
+    };
+    items.forEach(record);
+    this.continued.forEach(record);
+    this.views?.forEach((view: DesktopInteractions): void => { view.continued.forEach(record); });
+    if (this.sidebarPending.size === pending.size && Array.from(pending.keys()).every((id: string): boolean =>
+      this.sidebarPending.get(id) === pending.get(id))) { return; }
+    this.sidebarPending = pending;
+    this.onSidebarPending(pending);
   }
 
   private publishView(all: DesktopInteraction[], claimed: Set<string>): void {
