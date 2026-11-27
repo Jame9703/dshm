@@ -308,7 +308,9 @@ struct DesktopWorkspace {
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
   private accountOpening: boolean = false;
+  private accountClosePending: boolean = false;
   @State private accountDialog: number = -1;
+  @State private accountDismissRequest: number = 0;
   @State private accountNotices: DesktopAccountNotice[] = [];
   @State private accountNoticesWindowShown: boolean = true;
   private quotaNotice?: DesktopQuotaNotice;
@@ -460,6 +462,7 @@ struct DesktopWorkspace {
   }
 
   onBackPress(): boolean {
+    if (this.accountDialog >= 0) { this.accountDismissRequest++; return true; }
     if (this.terminalRename !== undefined) { this.terminalRename = undefined; return true; }
     if (this.quotaDialogToken >= 0) { this.data?.dismissQuota(this.quotaDialogToken); return true; }
     if (this.settingsOpen) { this.closeSettings(); return true; }
@@ -485,6 +488,7 @@ struct DesktopWorkspace {
     if (!this.pageActive) {
       return;
     }
+    this.closeAccount();
     this.closeFeedback();
     this.closeImagePreview();
     this.closeArchiveConfirmation();
@@ -2349,10 +2353,14 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private AccountDialog() {
+  private AccountDialog(owner: DesktopWorkspaceData | undefined, callbackOrigin: string) {
     DesktopAccountPane({
-      host: this.data?.actions,
-      callbackOrigin: parseTarget(this.hostUrl)?.address.baseUrl ?? '',
+      host: owner?.actions,
+      callbackOrigin: callbackOrigin,
+      appearance: this.appearance,
+      localePreference: owner?.accountLanguagePreference() ?? 'system',
+      dismissRequest: this.accountDismissRequest,
+      onState: (state: Object): void => { if (this.data === owner) { owner?.completeAccountLogin(state); } },
       onClose: (): void => { this.closeAccount(); },
       onAddKey: (): void => {
         this.closeAccount();
@@ -2366,19 +2374,26 @@ struct DesktopWorkspace {
       return;
     }
     this.accountOpening = true;
+    this.accountClosePending = false;
+    const owner = this.data;
+    const callbackOrigin = parseTarget(this.hostUrl)?.address.baseUrl ?? '';
+    owner?.startAccountUpdates();
     const prompt = this.getUIContext().getPromptAction();
     try {
       const material = dialogMaterial();
       const id = await prompt.openCustomDialog({
-        builder: (): void => { this.AccountDialog(); },
+        builder: (): void => { this.AccountDialog(owner, callbackOrigin); },
         alignment: DialogAlignment.Center,
         width: Math.max(220, Math.min(440, this.workbenchWidth - 32)),
         autoCancel: false,
         systemMaterial: material,
         backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onWillDismiss: (action: DismissDialogAction): void => {
+          if (action.reason === DismissReason.PRESS_BACK) { this.accountDismissRequest++; }
+        },
         onDidDisappear: (): void => { this.accountDialog = -1; }
       });
-      if (this.pageActive) {
+      if (this.pageActive && !this.accountClosePending && this.data === owner) {
         this.accountDialog = id;
       } else {
         prompt.closeCustomDialog(id);
@@ -2393,6 +2408,7 @@ struct DesktopWorkspace {
   }
 
   private closeAccount(): void {
+    this.accountClosePending = true;
     if (this.accountDialog >= 0) {
       this.getUIContext().getPromptAction().closeCustomDialog(this.accountDialog);
     }

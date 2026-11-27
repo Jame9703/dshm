@@ -101,6 +101,8 @@ export class DesktopWorkspaceData {
   };
   private accountWatchScheduled: boolean = false;
   private accountWatchEnabled: boolean = false;
+  private accountLocalePreference: string = 'system';
+  private readonly initializedLoginAttempts = new Set<string>();
   private active: boolean = true;
   private workspaceReady: boolean = false;
   private sessionsReady: boolean = false;
@@ -135,7 +137,8 @@ export class DesktopWorkspaceData {
     this.onTheme = onTheme;
     this.onQuotaNotice = onQuotaNotice;
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
-    this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices);
+    this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices,
+      (state: Object): void => { this.completeAccountLogin(state); });
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.interactions.setLocale(desktopAccountLocale());
@@ -148,6 +151,24 @@ export class DesktopWorkspaceData {
   }
 
   holdQuota(token: number): () => void { return this.quota.hold(token); }
+
+  startAccountUpdates(): void {
+    if (!this.active) { return; }
+    this.accountWatchEnabled = true;
+    this.accountNotices.connect();
+  }
+
+  accountLanguagePreference(): string { return this.accountLocalePreference; }
+
+  async completeAccountLogin(state: Object): Promise<void> {
+    if (!this.active || getString(state, 'status') !== 'credential-stored') { return; }
+    const attempt = getRecord(state, 'attempt');
+    const id = getString(attempt, 'id');
+    if (!id || getString(attempt, 'phase') !== 'succeeded' || this.initializedLoginAttempts.has(id)) { return; }
+    this.initializedLoginAttempts.add(id);
+    const result = await this.actions.call('session/initializeDefaultModel');
+    if (this.active && result.ok) { this.actions.modelCatalogChanged(); }
+  }
 
   dismissQuota(token: number): void {
     if (this.active && this.quota.dismiss(token)) { this.onQuotaNotice(undefined); }
@@ -273,6 +294,7 @@ export class DesktopWorkspaceData {
     const appearance = getRecord(theme, 'value');
     if (appearance !== undefined) { this.onTheme(desktopThemeFrom(appearance)); }
     const language = getString(getRecord(locale, 'value'), 'preference') ?? 'system';
+    this.accountLocalePreference = language;
     this.interactions.setLocale(desktopAccountLocale(language));
     this.accountNotices.setLocale(language);
     this.connectorAccounts.setLocale(language);
@@ -569,8 +591,7 @@ export class DesktopWorkspaceData {
         this.accountWatchScheduled = true;
         this.afterFrame((): void => {
           if (this.active) {
-            this.accountWatchEnabled = true;
-            this.accountNotices.connect();
+            this.startAccountUpdates();
             this.cordis.start();
           }
         });

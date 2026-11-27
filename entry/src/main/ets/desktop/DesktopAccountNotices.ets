@@ -45,6 +45,7 @@ function liveNotice(notice: DesktopAccountNotice, at: number): boolean {
 export class DesktopAccountNotices {
   private readonly host: DesktopHostActions;
   private readonly publish: (notices: DesktopAccountNotice[]) => void;
+  private readonly onAccountState: (state: Object) => void;
   private active: boolean = true;
   private signedIn: boolean = false;
   private watchVersion: number = 0;
@@ -61,9 +62,11 @@ export class DesktopAccountNotices {
   private readonly displayed: Set<string> = new Set<string>();
   private readonly dismissed: Set<string> = new Set<string>();
 
-  constructor(host: DesktopHostActions, publish: (notices: DesktopAccountNotice[]) => void) {
+  constructor(host: DesktopHostActions, publish: (notices: DesktopAccountNotice[]) => void,
+    onAccountState: (state: Object) => void = (_state: Object): void => {}) {
     this.host = host;
     this.publish = publish;
+    this.onAccountState = onAccountState;
   }
 
   observeAccount(listener: (identity: DesktopAccountSettingsIdentity) => void): () => void {
@@ -106,6 +109,7 @@ export class DesktopAccountNotices {
         if (version !== this.watchVersion) { return; }
         const state = getRecord(frame, 'state');
         if (state === undefined) { return; }
+        this.onAccountState(state);
         if (getString(frame, 'type') === 'credentials-changed' || getString(state, 'status') !== 'credential-stored') {
           this.clearAccount();
         }
