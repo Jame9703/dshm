@@ -289,6 +289,10 @@
       "value": "Use WebUI by default"
     },
     {
+      "name": "desktop_sidebar_new_in_workspace",
+      "value": "New session in %s"
+    },
+    {
       "name": "desktop_sidebar_sessions",
       "value": "Sessions"
     },

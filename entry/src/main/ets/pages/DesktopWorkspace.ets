@@ -58,7 +58,7 @@ import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/D
 import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
 import { DesktopSessionGrouping, DesktopSessionOrdering, desktopReorderSessions, desktopSessionAccount,
   desktopSessionOrder, desktopSessionOrdersEqual, desktopSessionRows, desktopSidebarSections,
-  desktopWorkspaceParents } from '../desktop/DesktopSessionOrder';
+  desktopWorkspaceMove, desktopWorkspaceParents } from '../desktop/DesktopSessionOrder';
 import type { DesktopSessionInsertion, DesktopSidebarSection, DesktopWorkspaceGroup } from '../desktop/DesktopSessionOrder';
 import { readDesktopSidebarView, saveDesktopSidebarView } from '../desktop/DesktopSidebarPreference';
 
@@ -78,6 +78,19 @@ interface DesktopSessionDrag {
   owner: string;
   groupId: string;
   session: SessionListItem;
+}
+
+interface DesktopWorkspaceDropBand {
+  id: string;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+interface DesktopWorkspaceDropCue {
+  band: DesktopWorkspaceDropBand;
+  after: boolean;
 }
 
 interface DesktopDockDrop {
@@ -127,6 +140,11 @@ struct DesktopWorkspace {
   @State private sessionDropPane: number = -1;
   @State private sessionInsertion?: DesktopSessionInsertion = undefined;
   private sidebarListBounds?: Area;
+  @State private workspaceDragId: string = '';
+  @State private workspaceDragTitle: string = '';
+  @State private workspaceDropCue?: DesktopWorkspaceDropCue = undefined;
+  private workspaceDropBands: DesktopWorkspaceDropBand[] = [];
+  private readonly workspaceHeaderBounds: Map<string, Area> = new Map<string, Area>();
   private readonly sessionRowBounds: Map<string, Area> = new Map<string, Area>();
   private dockDrag?: DesktopDockDrag;
   private dockDrop?: DesktopDockDrop;
@@ -276,6 +294,7 @@ struct DesktopWorkspace {
     this.pageVisible = false;
     this.shortcutsOpen = false;
     this.clearSessionDrag();
+    this.clearWorkspaceDrag();
     this.syncReading();
   }
 
@@ -331,6 +350,7 @@ struct DesktopWorkspace {
     this.dockSessionId = '';
     this.rightDock = emptyDesktopDock();
     this.clearDockGesture();
+    this.clearWorkspaceDrag();
     this.terminalCreateSession = '';
     this.chatError = '';
     this.creating = false;
@@ -636,6 +656,7 @@ struct DesktopWorkspace {
   private setSidebarGrouping(grouping: DesktopSessionGrouping): void {
     if (grouping === this.sidebarGrouping) { return; }
     this.clearSessionDrag();
+    this.clearWorkspaceDrag();
     this.sidebarGrouping = grouping;
     this.filterGroups(this.query);
     this.saveSidebarView();
@@ -977,16 +998,16 @@ struct DesktopWorkspace {
     this.data?.conversation.open('');
   }
 
-  private async newSession(): Promise<void> {
+  private async newSession(targetWorkspaceId?: string): Promise<void> {
     const data = this.data;
     if (data === undefined || !this.ready || this.creating) {
       return;
     }
-    const workspace = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
-      group.id.length > 0 && group.id === this.workspaceId) ??
-      this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id.length > 0);
+    const preferred = targetWorkspaceId ?? this.workspaceId;
+    const workspace = this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id && group.id === preferred) ??
+      (targetWorkspaceId === undefined ? this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id) : undefined);
     if (workspace === undefined) {
-      this.addWorkspace();
+      if (targetWorkspaceId === undefined) { this.addWorkspace(); }
       return;
     }
     this.creating = true;
@@ -1974,28 +1995,165 @@ struct DesktopWorkspace {
     .width('100%').height(38).padding({ left: 10, right: 132 })
   }
 
+  private workspaceDragParents(): Map<string, string> {
+    return this.sidebarGrouping === DesktopSessionGrouping.TREE ? desktopWorkspaceParents(this.groups) : new Map<string, string>();
+  }
+
+  private workspaceTargets(sourceId: string): DesktopWorkspaceDropBand[] {
+    const parents = this.workspaceDragParents();
+    const owner = parents.get(sourceId);
+    const bands = new Map<string, DesktopWorkspaceDropBand>();
+    const sections = this.sidebarSections();
+    for (const section of sections) {
+      const id = section.group.id;
+      if (!id || id === sourceId || !section.header || parents.get(id) !== owner) { continue; }
+      const area = this.workspaceHeaderBounds.get(id);
+      if (area === undefined || Number(area.height) <= 0) { continue; }
+      const x = Number(area.globalPosition.x);
+      const y = Number(area.globalPosition.y);
+      bands.set(id, { id: id, left: x + Math.min(7, section.depth) * 12, right: x + Number(area.width),
+        top: y, bottom: y + Number(area.height) });
+    }
+    for (const section of sections) {
+      let band: DesktopWorkspaceDropBand | undefined;
+      for (let id: string | undefined = section.group.id; id !== undefined; id = parents.get(id)) {
+        band = bands.get(id);
+        if (band !== undefined) { break; }
+      }
+      if (band === undefined) { continue; }
+      const groupBand = band;
+      if (section.header) {
+        this.extendWorkspaceBand(groupBand, this.workspaceHeaderBounds.get(section.group.id));
+      } else {
+        section.group.sessions.forEach((session: SessionListItem): void => {
+          this.extendWorkspaceBand(groupBand, this.sessionRowBounds.get(session.id));
+        });
+      }
+    }
+    return Array.from(bands.values());
+  }
+
+  private extendWorkspaceBand(band: DesktopWorkspaceDropBand, area?: Area): void {
+    if (area === undefined || Number(area.height) <= 0) { return; }
+    band.bottom = Math.max(band.bottom, Number(area.globalPosition.y) + Number(area.height));
+  }
+
+  private canDragWorkspace(id: string): boolean {
+    return this.ready && !this.workspaceBusy && !!id && this.sidebarGrouping !== DesktopSessionGrouping.FLAT &&
+      !this.query.trim();
+  }
+
+  private beginWorkspaceDrag(event: GestureEvent, group: DesktopWorkspaceGroup): void {
+    if (!this.canDragWorkspace(group.id)) { return; }
+    this.workspaceDropBands = this.workspaceTargets(group.id);
+    this.workspaceDragTitle = this.accessibilityLabel(group.title);
+    this.workspaceDragId = group.id;
+    this.updateWorkspaceDrag(event);
+  }
+
+  private positionSidebarDrag(x: number, y: number): void {
+    this.dockDragX = Math.max(0, Math.min(this.workbenchWidth - 160, x + 12));
+    this.dockDragY = Math.max(0, Math.min(this.workbenchHeight - 28, y + 9));
+  }
+
+  private updateWorkspaceDrag(event: GestureEvent): void {
+    if (!this.workspaceDragId) { return; }
+    const pointer = event.fingerInfos?.[0] ?? event.fingerList[0];
+    if (pointer === undefined) { return; }
+    const x = pointer.globalX;
+    const y = pointer.globalY;
+    this.positionSidebarDrag(x - Number(this.workbenchBounds?.globalPosition.x ?? 0),
+      y - Number(this.workbenchBounds?.globalPosition.y ?? 0));
+    const band = this.dockAreaContains(this.sidebarListBounds, x, y) ? this.workspaceDropBands.find(
+      (item: DesktopWorkspaceDropBand): boolean => x >= item.left && x < item.right && y >= item.top && y < item.bottom) : undefined;
+    const after = band !== undefined && y >= (band.top + band.bottom) / 2;
+    if (this.workspaceDropCue?.band.id !== band?.id || this.workspaceDropCue?.after !== after) {
+      this.workspaceDropCue = band === undefined ? undefined : { band: band, after: after };
+    }
+  }
+
+  private clearWorkspaceDrag(): void {
+    this.workspaceDragId = '';
+    this.workspaceDragTitle = '';
+    this.workspaceDropCue = undefined;
+    this.workspaceDropBands = [];
+  }
+
+  private dropWorkspace(event: GestureEvent): void {
+    this.updateWorkspaceDrag(event);
+    const source = this.workspaceDragId;
+    const cue = this.workspaceDropCue;
+    this.clearWorkspaceDrag();
+    if (cue === undefined || !this.canDragWorkspace(source)) { return; }
+    const move = desktopWorkspaceMove(this.groups, this.workspaceDragParents(), source, cue.band.id, cue.after);
+    if (move === undefined) { return; }
+    const payload: Record<string, Object> = { 'workspaceId': source };
+    if (move.beforeId !== undefined) { payload['beforeWorkspaceId'] = move.beforeId; }
+    this.manage('workspace/insertBefore', payload);
+  }
+
+  private workspaceMarkerY(cue: DesktopWorkspaceDropCue): number {
+    const origin = Number(this.workbenchBounds?.globalPosition.y ?? 0);
+    const top = Number(this.sidebarListBounds?.globalPosition.y ?? origin);
+    const bottom = top + Number(this.sidebarListBounds?.height ?? 0);
+    const edge = cue.after ? cue.band.bottom : cue.band.top;
+    return Math.min(bottom - 2, Math.max(top, edge - 1)) - origin;
+  }
+
+  @Builder
+  private WorkspaceDropMarker(cue: DesktopWorkspaceDropCue) {
+    Divider().width(Math.max(0, cue.band.right - cue.band.left)).strokeWidth(2)
+      .color($r('sys.color.ohos_id_color_activated'))
+      .position({ x: cue.band.left - Number(this.workbenchBounds?.globalPosition.x ?? 0),
+        y: this.workspaceMarkerY(cue) })
+      .zIndex(this.rightDock.floats.length + 1).hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+  }
+
   @Builder
   private WorkspaceRow(group: DesktopWorkspaceGroup, depth: number) {
     Row() {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.folder')).fontSize(16)
-            .fontColor([this.isExpanded(group.id) ? $r('sys.color.brand') : $r('sys.color.font_secondary')])
+          Image(this.isExpanded(group.id) ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
+            .width(16).height(16).supportSvg2(true).draggable(false).accessibilityLevel('no')
+          Image($r('app.media.dsh_sidebar_workspace_arrow')).width(10).height(10).supportSvg2(true)
+            .fillColor($r('sys.color.font_tertiary')).draggable(false).accessibilityLevel('no')
+            .rotate({ angle: this.isExpanded(group.id) ? 90 : 0 })
           Text(group.title).fontSize(14).fontColor($r('sys.color.font_primary'))
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(11).fontColor([$r('sys.color.font_tertiary')])
-            .rotate({ angle: this.isExpanded(group.id) ? 90 : 0 })
         }
         .width('100%')
       }
       .layoutWeight(1).height(34).padding({ left: 8, right: 4 }).borderRadius(8)
       .backgroundColor(Color.Transparent).focusOnTouch(false).accessibilityText(this.accessibilityLabel(group.title))
+      .priorityGesture(GestureGroup(GestureMode.Exclusive,
+        PanGesture({ direction: PanDirection.All, distance: 8 }).allowedTypes([SourceTool.MOUSE, SourceTool.TOUCHPAD])
+          .onActionStart((event: GestureEvent): void => { this.beginWorkspaceDrag(event, group); })
+          .onActionUpdate((event: GestureEvent): void => { this.updateWorkspaceDrag(event); })
+          .onActionEnd((event: GestureEvent): void => { this.dropWorkspace(event); })
+          .onActionCancel((): void => { this.clearWorkspaceDrag(); }),
+        GestureGroup(GestureMode.Sequence,
+          LongPressGesture({ duration: 320 }).allowedTypes([SourceTool.Finger, SourceTool.Pen]),
+          PanGesture({ direction: PanDirection.All, distance: 8 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+            .onActionStart((event: GestureEvent): void => { this.beginWorkspaceDrag(event, group); })
+            .onActionUpdate((event: GestureEvent): void => { this.updateWorkspaceDrag(event); })
+            .onActionEnd((event: GestureEvent): void => { this.dropWorkspace(event); })
+            .onActionCancel((): void => { this.clearWorkspaceDrag(); }))))
       .onClick((): void => this.toggleWorkspace(group.id))
-      if (group.id.length > 0) {
+      if (group.id) {
         this.RowMenu('管理工作区 ' + this.accessibilityLabel(group.title), this.workspaceActions(group))
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.dsh_sidebar_workspace_new_chat')).width(14).height(14).supportSvg2(true)
+            .draggable(false).accessibilityLevel('no')
+        }.key('desktopWorkspaceNewSession-' + group.id).width(28).height(30).padding(0).borderRadius(7)
+          .focusOnTouch(false).enabled(!this.creating)
+          .accessibilityText($r('app.string.desktop_sidebar_new_in_workspace', this.accessibilityLabel(group.title)))
+          .onClick((): void => { this.newSession(group.id); })
       }
     }
     .width('100%').padding({ left: Math.min(7, depth) * 12 })
+    .onAreaChange((_, area: Area): void => { this.workspaceHeaderBounds.set(group.id, area); })
+    .onDisAppear((): void => { this.workspaceHeaderBounds.delete(group.id); })
   }
 
   private canDragSession(session: SessionListItem, archived: boolean): boolean {
@@ -2015,8 +2173,7 @@ struct DesktopWorkspace {
     if (pointer === undefined) { return; }
     const x = pointer.globalX - Number(this.workbenchBounds?.globalPosition.x ?? 0);
     const y = pointer.globalY - Number(this.workbenchBounds?.globalPosition.y ?? 0);
-    this.dockDragX = Math.max(0, Math.min(this.workbenchWidth - 160, x + 12));
-    this.dockDragY = Math.max(0, Math.min(this.workbenchHeight - 28, y + 9));
+    this.positionSidebarDrag(x, y);
     this.sessionDropPane = this.sessionRightDrop(drag, pointer.globalX, pointer.globalY, x, y);
     const insert = this.sidebarSessionDrop(drag, pointer.globalX, pointer.globalY);
     if (insert?.id !== this.sessionInsertion?.id || insert?.after !== this.sessionInsertion?.after) {
@@ -2319,7 +2476,7 @@ struct DesktopWorkspace {
         }
       }
       .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-      .enableScrollInteraction(this.sessionDrag === undefined)
+      .enableScrollInteraction(this.sessionDrag === undefined && !this.workspaceDragId)
       .onAreaChange((_, area: Area): void => { this.sidebarListBounds = area; })
       .onVisibleAreaChange([0], (visible: boolean): void => this.markSidebarVisible(visible))
     } else {
@@ -3133,7 +3290,10 @@ struct DesktopWorkspace {
         if (this.archiveNotice !== undefined) {
           this.ArchiveNoticeContent(this.archiveNotice)
         }
-        if (this.sessionDrag !== undefined) {
+        if (this.workspaceDropCue !== undefined) { this.WorkspaceDropMarker(this.workspaceDropCue) }
+        if (this.workspaceDragTitle) {
+          this.DockDragPreview(this.workspaceDragTitle)
+        } else if (this.sessionDrag !== undefined) {
           this.DockDragPreview(this.sessionDrag.session.title)
         } else if (this.dockDragTitle) {
           this.DockDragPreview(this.dockDragTitle)

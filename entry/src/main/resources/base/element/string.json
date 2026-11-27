@@ -309,6 +309,10 @@
       "value": "将 WebUI 设为默认"
     },
     {
+      "name": "desktop_sidebar_new_in_workspace",
+      "value": "在 %s 中新建会话"
+    },
+    {
       "name": "desktop_sidebar_sessions",
       "value": "会话"
     },

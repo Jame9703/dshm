@@ -174,3 +174,30 @@ export function desktopSidebarSections(groups: DesktopWorkspaceGroup[], grouping
   appendWorkspaceSections(out, roots, children, expanded, 0);
   return out;
 }
+
+
+export interface DesktopWorkspaceMove {
+  beforeId?: string;
+}
+
+export function desktopWorkspaceMove(groups: DesktopWorkspaceGroup[], parents: Map<string, string>, sourceId: string,
+  targetId: string, after: boolean): DesktopWorkspaceMove | undefined {
+  if (!sourceId || !targetId || sourceId === targetId || parents.get(sourceId) !== parents.get(targetId)) { return undefined; }
+  const owner = parents.get(sourceId);
+  const siblings = groups.filter((group: DesktopWorkspaceGroup): boolean => !!group.id && parents.get(group.id) === owner);
+  const from = siblings.findIndex((group: DesktopWorkspaceGroup): boolean => group.id === sourceId);
+  const target = siblings.findIndex((group: DesktopWorkspaceGroup): boolean => group.id === targetId);
+  if (from < 0 || target < 0) { return undefined; }
+  const before = target + Number(after);
+  if (before === from || before === from + 1) { return undefined; }
+  return { beforeId: siblings[before]?.id };
+}
+
+export function desktopInsertWorkspaceBefore(ids: string[], sourceId: string, beforeId?: string): string[] | undefined {
+  if (!ids.includes(sourceId) || sourceId === beforeId || (beforeId !== undefined && !ids.includes(beforeId))) {
+    return undefined;
+  }
+  const ordered = ids.filter((id: string): boolean => id !== sourceId);
+  ordered.splice(beforeId === undefined ? ordered.length : ordered.indexOf(beforeId), 0, sourceId);
+  return ordered.some((id: string, index: number): boolean => id !== ids[index]) ? ordered : undefined;
+}

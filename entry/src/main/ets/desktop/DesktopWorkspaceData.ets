@@ -13,6 +13,7 @@ import type { DesktopConversationSnapshot } from './DesktopConversation';
 import { desktopForkTitle } from './DesktopReplyTimeline';
 import { DesktopSessionReading } from './DesktopSessionReading';
 import type { DesktopUnreadSession } from './DesktopSessionReading';
+import { desktopInsertWorkspaceBefore } from './DesktopSessionOrder';
 
 export interface DesktopForkResult {
   id: string;
@@ -68,6 +69,7 @@ export class DesktopWorkspaceData {
   private workspaceError: string = '';
   private sessionError: string = '';
   private workspaces: DesktopWorkspaceRow[] = [];
+  private workspaceOrderRevision: number = 0;
   private sessions: SessionListItem[] = [];
   private archivedIds: Set<string> = new Set<string>();
   private pinnedIds: string[] = [];
@@ -253,6 +255,7 @@ export class DesktopWorkspaceData {
   }
 
   async manage(endpoint: string, payload: Record<string, Object>): Promise<string> {
+    if (endpoint === 'workspace/insertBefore') { return this.reorderWorkspace(payload); }
     const result = await this.actions.call(endpoint, payload);
     if (!result.ok) {
       return result.error?.message ?? '宿主未能保存修改';
@@ -261,6 +264,34 @@ export class DesktopWorkspaceData {
       await this.refreshSessions();
     }
     return '';
+  }
+
+  private applyWorkspaceOrder(ids: string[]): void {
+    const ranks = new Map<string, number>();
+    ids.forEach((id: string, index: number): void => { ranks.set(id, index); });
+    this.workspaces = this.workspaces.slice().sort((a: DesktopWorkspaceRow, b: DesktopWorkspaceRow): number =>
+      (ranks.get(a.id) ?? ids.length) - (ranks.get(b.id) ?? ids.length));
+  }
+
+  private async reorderWorkspace(payload: Record<string, Object>): Promise<string> {
+    const previous = this.workspaces.map((row: DesktopWorkspaceRow): string => row.id);
+    const id = getString(payload, 'workspaceId') ?? '';
+    const optimistic = desktopInsertWorkspaceBefore(previous, id, getString(payload, 'beforeWorkspaceId'));
+    if (optimistic === undefined) { return ''; }
+    const revision = this.workspaceOrderRevision;
+    this.applyWorkspaceOrder(optimistic);
+    this.publish();
+    const result = await this.actions.call('workspace/insertBefore', payload);
+    if (!this.active) { return ''; }
+    const returned = getArray(result.value, 'workspaceIds');
+    const confirmed = returned === undefined ? [] : toStringArray(returned);
+    const accepted = result.ok && confirmed.includes(id) && new Set<string>(confirmed).size === confirmed.length;
+    // A follow frame can carry a newer complete order while this request is still returning.
+    if (revision === this.workspaceOrderRevision) {
+      this.applyWorkspaceOrder(accepted ? confirmed : previous);
+      this.publish();
+    }
+    return accepted ? '' : (result.error?.message ?? '宿主未能保存工作区顺序');
   }
 
   stop(): void {
@@ -327,6 +358,7 @@ export class DesktopWorkspaceData {
           rows.push(row);
         }
       }
+      this.workspaceOrderRevision++;
       this.workspaces = rows;
       this.archivedIds = new Set<string>(toStringArray(getArray(value, 'archivedSessionIds') ?? []));
       this.pinnedIds = toStringArray(getArray(value, 'pinnedSessionIds') ?? []);
@@ -348,11 +380,8 @@ export class DesktopWorkspaceData {
       const id = getString(frame, 'workspaceId');
       this.workspaces = this.workspaces.filter((row: DesktopWorkspaceRow): boolean => row.id !== id);
     } else if (type === 'order') {
-      const ids = toStringArray(getArray(frame, 'workspaceIds') ?? []);
-      const ranks = new Map<string, number>();
-      ids.forEach((id: string, index: number): void => { ranks.set(id, index); });
-      this.workspaces = this.workspaces.slice().sort((a: DesktopWorkspaceRow, b: DesktopWorkspaceRow): number =>
-        (ranks.get(a.id) ?? ids.length) - (ranks.get(b.id) ?? ids.length));
+      this.workspaceOrderRevision++;
+      this.applyWorkspaceOrder(toStringArray(getArray(frame, 'workspaceIds') ?? []));
     } else if (type === 'pinned') {
       this.pinnedIds = toStringArray(getArray(frame, 'pinnedSessionIds') ?? []);
     } else if (type === 'archived') {
