@@ -1,9 +1,14 @@
 import { getArray, getBoolean, getField, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
+import { SETTINGS_DESCRIBE_ENDPOINT } from 'dshcompat';
 import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
+import { desktopPluginConfigurationScopes, readDesktopPluginConfiguration, SHELL_PLUGIN_SETTINGS,
+  SUBAGENT_SETTINGS, WEB_PLUGIN_SETTINGS } from './DesktopPluginSettingsModel';
+import { DesktopPluginBundleComponents, desktopPluginComponents } from './DesktopPluginBundleComponents';
+import type { DesktopPluginComponent, DesktopPluginComponentView } from './DesktopPluginBundleComponents';
 import { DESKTOP_VOICE_BUNDLE, DesktopVoiceSettings } from './DesktopVoiceSettings';
 import { desktopVoiceNeedsInstallation, desktopVoiceSelectedProvider, readDesktopVoiceCatalog } from './DesktopVoiceSettingsModel';
 import { showDesktopVoiceSetup } from './DesktopVoiceSettingsPrompt';
@@ -30,6 +35,9 @@ interface DesktopPluginRow {
   version: string;
   update: string;
   installSpec: string;
+  phase: string;
+  diagnostic: string;
+  components: DesktopPluginComponent[];
 }
 
 interface DesktopPluginVersion {
@@ -61,7 +69,7 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
         id: id,
         title: bundle ? desktopLocalizedText(meta, 'title') || id : getString(value, 'moduleName') ?? id,
         description: bundle ? desktopLocalizedText(meta, 'description') || getString(value, 'description') || '' :
-          getString(value, 'phase') ?? '',
+          getString(value, 'fiberPhase') ?? getString(value, 'phase') ?? '',
         version: getString(value, 'version') ?? '',
         installed: installed,
         enabled: enabled,
@@ -69,7 +77,10 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
           enabled || optional || installed : !!getString(value, 'patchId')),
         removable: bundle && getBoolean(value, 'removable') === true && !getString(value, 'readOnlyReason'),
         update: bundle ? getString(value, 'update') ?? '' : '',
-        installSpec: getString(target, 'spec') ?? ''
+        installSpec: getString(target, 'spec') ?? '',
+        phase: getString(value, 'fiberPhase') ?? '',
+        diagnostic: getString(value, 'diagnostic') ?? '',
+        components: bundle && getString(value, 'availability') !== 'missing' ? desktopPluginComponents(value) : []
       });
   }
   return rows;
@@ -92,6 +103,8 @@ export struct DesktopPluginsPane {
   @State private detailLoading: boolean = false;
   @State private tab: string = 'bundles';
   @State private settingsVisited: boolean = false;
+  @State private basicScopes: string[] = [];
+  @State private settingsDetail: string = '';
   @State private bundles: DesktopPluginRow[] = [];
   @State private plugins: DesktopPluginRow[] = [];
   @State private sources: DesktopMarketSource[] = [];
@@ -121,6 +134,7 @@ export struct DesktopPluginsPane {
   private active: boolean = false;
   private detailRead: number = 0;
   private refreshAgain: boolean = false;
+  private basicRead: number = 0;
   private stopCatalog?: () => void;
   private stopAccounts?: () => void;
   private installDialog: number = -1;
@@ -166,6 +180,7 @@ export struct DesktopPluginsPane {
 
   private async openBundle(name: string): Promise<void> {
     this.tab = 'bundles';
+    this.settingsDetail = '';
     this.marketDetail = undefined;
     this.resetVersions();
     this.detailName = name;
@@ -192,7 +207,16 @@ export struct DesktopPluginsPane {
     this.catalogBusy = false;
   }
 
+  private async loadBasicScopes(host: DesktopHostActions): Promise<void> {
+    const read = ++this.basicRead;
+    const result = await host.call(SETTINGS_DESCRIBE_ENDPOINT);
+    if (this.active && read === this.basicRead && result.ok) {
+      this.basicScopes = desktopPluginConfigurationScopes(readDesktopPluginConfiguration(result.value).documents);
+    }
+  }
+
   private async loadCatalog(host: DesktopHostActions): Promise<void> {
+    this.loadBasicScopes(host);
     const results = await Promise.all([
       host.call('pluginManager/listBundles'),
       host.call('pluginManager/listPlugins'),
@@ -692,6 +716,95 @@ export struct DesktopPluginsPane {
     }
   }
 
+  private basicTitle(scope: string): Resource {
+    switch (scope) {
+      case SUBAGENT_SETTINGS: return $r('app.string.desktop_plugin_basic_subagent');
+      case WEB_PLUGIN_SETTINGS: return $r('app.string.desktop_plugin_basic_web');
+      case SHELL_PLUGIN_SETTINGS: return $r('app.string.desktop_plugin_basic_shell');
+      default: return $r('app.string.desktop_plugin_basic_loop');
+    }
+  }
+
+  private basicSummary(scope: string): Resource {
+    switch (scope) {
+      case SUBAGENT_SETTINGS: return $r('app.string.desktop_plugin_basic_subagent_summary');
+      case WEB_PLUGIN_SETTINGS: return $r('app.string.desktop_plugin_basic_web_summary');
+      case SHELL_PLUGIN_SETTINGS: return $r('app.string.desktop_plugin_basic_shell_summary');
+      default: return $r('app.string.desktop_plugin_basic_loop_summary');
+    }
+  }
+
+  private basicArtwork(scope: string): Resource {
+    switch (scope) {
+      case SUBAGENT_SETTINGS: return $r('app.media.dsh_plugin_artwork_subagent');
+      case WEB_PLUGIN_SETTINGS: return $r('app.media.dsh_plugin_artwork_web');
+      case SHELL_PLUGIN_SETTINGS: return $r('app.media.dsh_plugin_artwork_shell');
+      default: return $r('app.media.dsh_plugin_artwork_loop');
+    }
+  }
+
+  @Builder
+  private BasicSettingsCards() {
+    Column({ space: 8 }) {
+      Text($r('app.string.desktop_plugin_basic_title')).fontSize(17).fontWeight(FontWeight.Medium)
+      ForEach(this.basicScopes, (scope: string): void => {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 12 }) {
+            Image(this.basicArtwork(scope)).width(36).height(36).supportSvg2(true).draggable(false).accessibilityLevel('no')
+            Column({ space: 4 }) {
+              Text(this.basicTitle(scope)).fontSize(15).fontWeight(FontWeight.Medium)
+              Text(this.basicSummary(scope)).fontSize(13).fontColor($r('sys.color.font_secondary'))
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+            Image($r('app.media.dsh_browser_chevron_right_outline')).width(16).height(16)
+              .supportSvg2(true).draggable(false).accessibilityLevel('no')
+          }.width('100%').padding(9)
+        }.width('100%').constraintSize({ minHeight: 60 }).padding(0).borderRadius(12)
+          .backgroundColor($r('app.color.workspace_panel')).key('desktopPluginBasic-' + scope)
+          .accessibilityText(this.basicTitle(scope)).enabled(!this.busy)
+          .onClick((): void => { this.settingsDetail = scope; })
+      }, (scope: string): string => scope)
+    }.key('desktopPluginBasicSettings').width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private BasicSettingsDetail() {
+    Column({ space: 12 }) {
+      Button($r('app.string.desktop_plugin_basic_back'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .key('desktopPluginSettingsBack').onClick((): void => { this.settingsDetail = ''; })
+      ForEach([this.settingsDetail], (scope: string): void => {
+        Column({ space: 12 }) {
+          Row({ space: 12 }) {
+            Image(this.basicArtwork(scope)).width(36).height(36).supportSvg2(true).draggable(false).accessibilityLevel('no')
+            Text(this.basicTitle(scope)).fontSize(22).fontWeight(FontWeight.Medium)
+          }.width('100%')
+          Text(this.basicSummary(scope)).fontSize(14).fontColor($r('sys.color.font_secondary')).width('100%')
+          DesktopPluginSettings({ host: this.host, scope: scope })
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }, (scope: string): string => scope)
+    }.key('desktopPluginBasicDetail-' + this.settingsDetail).width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  private bundleComponentState(bundle: DesktopPluginRow): DesktopPluginComponentView[] {
+    return bundle.components.map((component: DesktopPluginComponent): DesktopPluginComponentView => {
+      const live = component.entryId ? this.plugins.find((row: DesktopPluginRow): boolean => row.id === component.entryId) :
+        undefined;
+      return { component: component, toggle: bundle.enabled && live?.toggle === true,
+        enabled: bundle.enabled && live?.enabled === true,
+        phase: bundle.enabled ? live?.phase ?? '' : '', diagnostic: bundle.enabled ? live?.diagnostic ?? '' : '' };
+    });
+  }
+
+  private toggleBundleComponent(bundleId: string, entryId: string, enabled: boolean): void {
+    const current = this.bundles.find((row: DesktopPluginRow): boolean => row.id === bundleId);
+    if (this.detailName !== bundleId || current === undefined || this.catalogBusy || this.installer.busy() ||
+      this.maintenance.phase === 'running') { return; }
+    const row = this.bundleComponentState(current).find((item: DesktopPluginComponentView): boolean =>
+      item.component.entryId === entryId);
+    if (row?.toggle && row.enabled !== enabled) {
+      this.mutate('pluginManager/setPluginEnabled', { 'id': entryId, 'enabled': enabled });
+    }
+  }
+
   @Builder
   private BundleDetail() {
     Column({ space: 12 }) {
@@ -714,6 +827,11 @@ export struct DesktopPluginsPane {
         Column({ space: 8 }) {
           this.PluginRow(row)
           this.BundleActions(row)
+          if (row.components.length > 0) {
+            DesktopPluginBundleComponents({ rows: this.bundleComponentState(row),
+              busy: this.busy || this.catalogBusy || this.installer.busy() || this.maintenance.phase === 'running',
+              onToggle: (entryId: string, enabled: boolean): void => { this.toggleBundleComponent(row.id, entryId, enabled); } })
+          }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }, (row: DesktopPluginRow): string => JSON.stringify(row))
       DesktopConnectorAccountView({ account: this.connectorAccounts.byBundle(this.detailName),
@@ -863,7 +981,7 @@ export struct DesktopPluginsPane {
           .enabled(!this.busy).onClick((): void => { this.onWeb(this.detailName); })
       }
       .width('100%')
-      if (!this.detailName && this.marketDetail === undefined) {
+      if (!this.detailName && !this.settingsDetail && this.marketDetail === undefined) {
         Row({ space: 8 }) {
           Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' :
             this.tab === 'settings' ? '配置' : '插件市场',
@@ -904,6 +1022,8 @@ export struct DesktopPluginsPane {
         Column({ space: 8 }) {
           if (this.detailName) {
             this.BundleDetail()
+          } else if (this.settingsDetail) {
+            this.BasicSettingsDetail()
           } else if (this.marketDetail !== undefined) {
             this.MarketDetail()
           } else {
@@ -913,10 +1033,12 @@ export struct DesktopPluginsPane {
             if (this.tab === 'market') {
               this.Discover()
             } else if (this.tab !== 'settings') {
+              if (this.tab === 'bundles' && this.basicScopes.length > 0) { this.BasicSettingsCards() }
               ForEach(this.tab === 'bundles' ? this.bundles : this.plugins, (row: DesktopPluginRow) => {
                 this.PluginRow(row, this.tab === 'bundles')
               }, (row: DesktopPluginRow): string => JSON.stringify(row))
-              if (!this.busy && !this.catalogBusy && (this.tab === 'bundles' ? this.bundles.length : this.plugins.length) === 0) {
+              if (!this.busy && !this.catalogBusy && (this.tab === 'bundles' ?
+                this.bundles.length === 0 && this.basicScopes.length === 0 : this.plugins.length === 0)) {
                 Text('暂无插件').fontColor($r('sys.color.font_secondary'))
               }
             }

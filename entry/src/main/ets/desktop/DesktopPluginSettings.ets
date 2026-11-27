@@ -21,6 +21,7 @@ const FETCH: string = 'fetchProvider';
 @Component
 export struct DesktopPluginSettings {
   host?: DesktopHostActions;
+  @Prop scope: string = '';
   @State private configuration: DesktopPluginConfiguration = { writable: false, documents: [] };
   @State private edits: DesktopPluginEdit[] = [];
   @State private providers?: Object = undefined;
@@ -105,7 +106,7 @@ export struct DesktopPluginSettings {
       this.configuration = { writable: false, documents: this.configuration.documents };
       return false;
     }
-    this.configuration = readDesktopPluginConfiguration(result.value);
+    this.configuration = readDesktopPluginConfiguration(result.value, this.scope);
     if (!this.subagentChanged()) { this.subagentDraft = undefined; }
     return true;
   }
@@ -564,7 +565,8 @@ export struct DesktopPluginSettings {
   build() {
     Column({ space: 12 }) {
       Row({ space: 8 }) {
-        Text('插件配置').fontSize(18).fontWeight(FontWeight.Medium).layoutWeight(1)
+        if (!this.scope) { Text('插件配置').fontSize(18).fontWeight(FontWeight.Medium).layoutWeight(1) }
+        else { Blank() }
         if (this.reading) { LoadingProgress().width(20).height(20) }
         Button('刷新配置', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.reading && !this.saving)
           .onClick((): void => { this.load(); })

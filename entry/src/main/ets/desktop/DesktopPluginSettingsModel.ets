@@ -1,6 +1,8 @@
 import { getArray, getBoolean, getField, getNumber, getRecord, getString } from 'connection';
 import type { ModelOption } from 'appstate';
 
+export const WEB_PLUGIN_SETTINGS: string = 'web-search';
+export const SHELL_PLUGIN_SETTINGS: string = 'shell';
 export const WEB_SETTINGS: string = 'web';
 export const WEB_API_SETTINGS: string = 'web-deepseek-api';
 export const WEB_LEGACY_SETTINGS: string = 'web-search-deepseek';
@@ -62,15 +64,36 @@ export interface DesktopSubagentModelGroup {
   models: DesktopSubagentModel[];
 }
 
-export function readDesktopPluginConfiguration(value?: Object): DesktopPluginConfiguration {
-  const names = [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS, AGENT_LOOP_SETTINGS, BASH_SETTINGS, PWSH_SETTINGS,
-    SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];
+export function readDesktopPluginConfiguration(value?: Object, scope: string = ''): DesktopPluginConfiguration {
+  const names = desktopPluginConfigurationNamespaces(scope);
   const documents: DesktopPluginDocument[] = [];
   for (const item of getArray(value, 'namespaces') ?? []) {
     const document = readDesktopPluginDocument(item);
     if (document !== undefined && names.includes(document.id)) { documents.push(document); }
   }
   return { writable: getBoolean(value, 'writable') === true, documents: documents };
+}
+
+function desktopPluginConfigurationNamespaces(scope: string): string[] {
+  switch (scope) {
+    case WEB_PLUGIN_SETTINGS: return [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS];
+    case AGENT_LOOP_SETTINGS: return [AGENT_LOOP_SETTINGS];
+    case SHELL_PLUGIN_SETTINGS: return [BASH_SETTINGS, PWSH_SETTINGS];
+    case SUBAGENT_SETTINGS: return [SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];
+    case '': return [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS, AGENT_LOOP_SETTINGS, BASH_SETTINGS, PWSH_SETTINGS,
+      SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];
+    default: return [];
+  }
+}
+
+export function desktopPluginConfigurationScopes(documents: DesktopPluginDocument[]): string[] {
+  const names = new Set<string>(documents.map((document: DesktopPluginDocument): string => document.id));
+  const scopes: string[] = [];
+  if (names.has(SUBAGENT_SETTINGS) || names.has(SUBAGENT_MODEL_SETTINGS)) { scopes.push(SUBAGENT_SETTINGS); }
+  if (names.has(WEB_SETTINGS)) { scopes.push(WEB_PLUGIN_SETTINGS); }
+  if (names.has(AGENT_LOOP_SETTINGS)) { scopes.push(AGENT_LOOP_SETTINGS); }
+  if (names.has(BASH_SETTINGS) || names.has(PWSH_SETTINGS)) { scopes.push(SHELL_PLUGIN_SETTINGS); }
+  return scopes;
 }
 
 export function readDesktopPluginDocument(value?: Object): DesktopPluginDocument | undefined {
