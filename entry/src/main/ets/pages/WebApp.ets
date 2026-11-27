@@ -31,6 +31,9 @@
  */
 
 import { DESKTOP_WORKSPACE_PAGE, setDesktopWorkspaceEnabled } from '../desktop/DesktopWorkspacePreference';
+import { buildDesktopPluginDetailScript, buildDesktopWebContextScript, readDesktopWebContext,
+  readDesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
+import type { DesktopWebContext } from '../desktop/DesktopWorkspaceHandoff';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { webview } from '@kit.ArkWeb';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
@@ -2994,7 +2997,10 @@ function buildDesktopWorkspaceSessionScript(sessionId: string, workspaceId: stri
       return document.querySelector('[data-row-key="' + CSS.escape(key) + '"]');
     };
     if (typeof globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ === 'function') {
-      return globalThis.__DSHM_OPEN_WORKSPACE_SESSION__(id);
+      if (!globalThis.__DSHM_OPEN_WORKSPACE_SESSION__(id)) return false;
+      try {
+        return JSON.parse(localStorage.getItem('dsh.sessions.current'))?.sessionId === id;
+      } catch (_) { return false; }
     }
     var row = exactRow('session:' + id);
     if (row) {
@@ -4192,9 +4198,9 @@ const TABLET_STARTUP_REVEALED_BG: string = '#59' + SPLASH_BG.substring(1);
 @Component
 struct WebApp {
   @LocalStorageProp('dshStartupMainWindow') private startupMainWindow: boolean = false;
-  @LocalStorageLink('dshDesktopWebSessionId') private desktopWebSessionId: string = '';
-  @LocalStorageLink('dshDesktopWebWorkspaceId') private desktopWebWorkspaceId: string = '';
-  @LocalStorageLink('dshDesktopWebAction') private desktopWebAction: string = '';
+  @LocalStorageLink('dshDesktopWebHandoff') private desktopWebHandoff: string = '';
+  @LocalStorageLink('dshDesktopNativeHandoff') private desktopNativeHandoff: string = '';
+  private desktopWebDocument: number = 0;
   private desktopWorkspaceSwitching: boolean = false;
   @StorageProp(KEY_DESKTOP_HOST_STARTUP) private startupHostStage: number = DesktopHostStartupStage.WaitingForFolders;
   private startupProgressVisible: boolean = false;
@@ -5921,46 +5927,74 @@ struct WebApp {
   }
 
   private openDesktopWorkspaceSession(): void {
-    const id: string = this.desktopWebSessionId;
-    const workspaceId: string = this.desktopWebWorkspaceId;
-    const action: string = this.desktopWebAction;
-    this.desktopWebSessionId = '';
-    this.desktopWebWorkspaceId = '';
-    this.desktopWebAction = '';
-    if (id.length === 0) {
-      this.openDesktopWorkspaceAction(action);
+    const target = readDesktopWebDestination(this.desktopWebHandoff);
+    if (target === undefined) { return; }
+    if (target.host !== this.launchUrl) {
+      this.desktopWebHandoff = '';
       return;
     }
-    this.runDesktopWorkspaceScript(buildDesktopWorkspaceSessionScript(id, workspaceId), (opened: boolean): void => {
-      if (opened) {
-        hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');
-        this.openDesktopWorkspaceAction(action);
-      } else {
-        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
-      }
-    });
-  }
-
-  private openDesktopWorkspaceAction(action: string): void {
-    if (action !== 'new-session' && action !== 'plugins' && action !== 'schedule' && action !== 'add-workspace') {
-      return;
-    }
-    this.runDesktopWorkspaceScript(buildDesktopWorkspaceActionScript(action), (opened: boolean): void => {
-      if (!opened) {
-        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
-      }
-    });
-  }
-
-  private runDesktopWorkspaceScript(script: string, done: (opened: boolean) => void): void {
-    const retry = (attempts: number): void => {
-      if (!this.startupPageActive) {
-        return;
-      }
-      this.controller.runJavaScript(script, (error: BusinessError, result: string): void => {
-        if (!this.startupPageActive) {
-          return;
+    const document = this.desktopWebDocument;
+    if (!this.currentDesktopWebDocument(target.host, document)) { return; }
+    this.desktopWebHandoff = '';
+    const openAction = (): void => {
+      if (target.action !== 'new-session' && target.action !== 'plugins' &&
+        target.action !== 'schedule' && target.action !== 'add-workspace') { return; }
+      const script = target.action === 'plugins' && target.bundle ?
+        buildDesktopPluginDetailScript(target.bundle) : buildDesktopWorkspaceActionScript(target.action);
+      this.runDesktopWorkspaceScript(script, target.host, document, (opened: boolean): void => {
+        if (!opened) {
+          this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
         }
+      });
+    };
+    if (!target.sessionId) {
+      openAction();
+      return;
+    }
+    this.runDesktopWorkspaceScript(buildDesktopWorkspaceSessionScript(target.sessionId, target.workspaceId),
+      target.host, document, (opened: boolean): void => {
+        if (opened) {
+          hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');
+        }
+        if (opened || target.action) {
+          openAction();
+        } else {
+          this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
+        }
+      }, target.action ? 24 : 60);
+  }
+
+  private currentDesktopWebDocument(host: string, document: number): boolean {
+    if (!this.startupPageActive || !this.webReady || document !== this.desktopWebDocument || host !== this.launchUrl) {
+      return false;
+    }
+    const expected = desktopWorkbenchPaintPage(host);
+    if (!expected) { return false; }
+    try {
+      return expected === desktopWorkbenchPaintPage(this.controller.getUrl());
+    } catch (_) {
+      return false;
+    }
+  }
+
+  private async runDesktopWorkspaceScript(script: string, host: string, document: number,
+    done: (opened: boolean) => void, retries: number = 60): Promise<void> {
+    if (!this.currentDesktopWebDocument(host, document)) { return; }
+    let originTime = 0;
+    try {
+      originTime = Number(await this.controller.runJavaScript('performance.timeOrigin'));
+    } catch (_) {
+      // The document may have gone away before the controller was reached.
+    }
+    if (!this.currentDesktopWebDocument(host, document)) { return; }
+    if (!Number.isFinite(originTime) || originTime <= 0) { done(false); return; }
+    const expected = JSON.stringify(desktopWorkbenchPaintPage(host));
+    const guarded = '(function () { return window === window.top && location.origin + location.pathname === ' +
+      expected + ' && performance.timeOrigin === ' + originTime + ' && (' + script + '); })()';
+    const retry = (attempts: number): void => {
+      if (!this.currentDesktopWebDocument(host, document)) { return; }
+      this.controller.runJavaScript(guarded, (error: BusinessError, result: string): void => {
+        if (!this.currentDesktopWebDocument(host, document)) { return; }
         if (!error && result === 'true') {
           done(true);
         } else if (attempts > 0) {
@@ -5970,7 +6004,7 @@ struct WebApp {
         }
       });
     };
-    retry(60);
+    retry(retries);
   }
 
   /** 注入「直达会话」脚本（卡片点击用；失败 fail-closed 只留痕）。 */
@@ -6109,6 +6143,7 @@ struct WebApp {
     this.closeWebActionMenu();
     this.desktopWebPicker.close();
     this.startupPageActive = false;
+    this.desktopWebDocument++;
     this.clearTabletStartupBrandTimer();
     if (this.startupWebPrepareTimer !== -1) {
       clearTimeout(this.startupWebPrepareTimer);
@@ -6852,6 +6887,7 @@ struct WebApp {
 
   /** 预挂载的 Web 已经加载空页，宿主发布新地址时用已附着的控制器导航。 */
   private onLaunchUrlChanged(): void {
+    this.desktopWebDocument++;
     if (this.launchUrl.length > 0) {
       this.enterLoading();
       this.loadPreparedHostPage();
@@ -7793,20 +7829,16 @@ struct WebApp {
     }
   }
 
-  private async desktopWorkspaceAppearance(): Promise<string> {
-    if (this.webReady) {
+  private async desktopWorkspaceContext(host: string, document: number): Promise<DesktopWebContext> {
+    if (this.currentDesktopWebDocument(host, document)) {
       try {
-        // Ask for the durable preference, so a system-following WebUI still follows the system in ArkUI.
-        const value = await this.controller.runJavaScript("document.documentElement.getAttribute('data-ds-theme-source')");
-        const appearance = value.replaceAll('"', '');
-        if (appearance === 'light' || appearance === 'dark') {
-          return appearance;
-        }
+        const value = await this.controller.runJavaScript(buildDesktopWebContextScript(desktopWorkbenchPaintPage(host)));
+        if (this.currentDesktopWebDocument(host, document)) { return readDesktopWebContext(value, host); }
       } catch (_) {
-        // A legacy Host may omit the preference attribute.
+        // The document may have reloaded while the request was in flight.
       }
     }
-    return 'system';
+    return { appearance: 'system' };
   }
 
   private async openDesktopWorkspace(): Promise<void> {
@@ -7820,9 +7852,15 @@ struct WebApp {
       if (context === undefined) {
         throw new Error('工作台设置不可用');
       }
-      await setDesktopWorkspaceEnabled(context, true, await this.desktopWorkspaceAppearance());
+      const host = this.launchUrl;
+      const document = this.desktopWebDocument;
+      const snapshot = await this.desktopWorkspaceContext(host, document);
+      await setDesktopWorkspaceEnabled(context, true, snapshot.appearance);
+      this.desktopNativeHandoff = snapshot.destination !== undefined && this.currentDesktopWebDocument(host, document) ?
+        JSON.stringify(snapshot.destination) : '';
       await ui.getRouter().replaceUrl({ url: DESKTOP_WORKSPACE_PAGE });
     } catch (_) {
+      this.desktopNativeHandoff = '';
       this.desktopWorkspaceSwitching = false;
       ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_switch_failed') });
     }
@@ -8637,6 +8675,7 @@ struct WebApp {
             // 的主检和变异体依赖此顺序）。
             this.closeWebActionMenu();
             this.desktopWebPicker.close();
+            this.desktopWebDocument++;
             if (this.isStartupBlankNavigation(event.url)) {
               return;
             }

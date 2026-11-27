@@ -5,7 +5,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture } from '../desktop/DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
-import { getString, parseTarget } from 'connection';
+import { getRecord, getString, parseTarget } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
@@ -32,7 +32,7 @@ import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { DesktopWorkspaceSearchResults } from '../desktop/DesktopWorkspaceSearch';
 import { desktopWorkspaceSearchQuery } from '../desktop/DesktopWorkspaceSearchModel';
-import { desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
+import { desktopSubagentCatalog, desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
 import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
@@ -78,6 +78,8 @@ import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } fr
 import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
+import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
+import type { DesktopNativeDestination, DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
@@ -168,10 +170,9 @@ struct DesktopWorkspace {
   @LocalStorageLink('dshDesktopWorkspaceActive') private active: boolean = false;
   @LocalStorageLink('dshDesktopWorkspaceId') private workspaceId: string = '';
   @LocalStorageLink('dshDesktopSessionId') private sessionId: string = '';
-  @LocalStorageLink('dshDesktopWebSessionId') private webSessionId: string = '';
-  @LocalStorageLink('dshDesktopWebWorkspaceId') private webWorkspaceId: string = '';
-
-  @LocalStorageLink('dshDesktopWebAction') private webAction: string = '';
+  @LocalStorageLink('dshDesktopWebHandoff') private webHandoff: string = '';
+  @LocalStorageLink('dshDesktopNativeHandoff') private nativeHandoff: string = '';
+  private nativeSelectionVersion: number = 0;
 
   @State private visibleGroups: DesktopWorkspaceGroup[] = [];
   @State private expandedIds: string[] = [];
@@ -498,6 +499,8 @@ struct DesktopWorkspace {
     this.agentTerminals.clear();
     this.data?.stop();
     this.data = undefined;
+    this.selectedSubagent = undefined;
+    this.subagentAddresses.clear();
     this.attachmentsBySession.clear();
     this.attachments = [];
     this.groups = [];
@@ -616,6 +619,9 @@ struct DesktopWorkspace {
 
   private updateGroups(workspaces: DesktopWorkspaceRow[], sessions: SessionListItem[], newPins: string[]): void {
     this.sessionSummaries = sessions;
+    const returned = readDesktopNativeDestination(this.nativeHandoff);
+    this.nativeHandoff = '';
+    const destination = returned?.host === this.hostUrl ? returned : undefined;
     const byMember = new Map<string, DesktopWorkspaceGroup>();
     const byPath = new Map<string, DesktopWorkspaceGroup>();
     this.groups = workspaces.map((row: DesktopWorkspaceRow): DesktopWorkspaceGroup => {
@@ -632,14 +638,17 @@ struct DesktopWorkspace {
     for (const session of sessions) {
       const group = byMember.get(session.id) ?? byPath.get(session.cwd) ?? ungrouped;
       group.sessions.push(session);
-      if (session.id === this.sessionId && this.selectedSubagent === undefined && !this.archivedIds.includes(session.id)) {
+      if (destination === undefined && session.id === this.sessionId && this.selectedSubagent === undefined &&
+        !this.archivedIds.includes(session.id)) {
         this.selectSession(group, session);
       }
     }
     if (ungrouped.sessions.length > 0) {
       this.groups.push(ungrouped);
     }
-    if (this.archivedIds.includes(this.sessionId) || (this.selectedSubagent === undefined &&
+    if (destination !== undefined) {
+      this.restoreWebSelection(destination);
+    } else if (this.archivedIds.includes(this.sessionId) || (this.selectedSubagent === undefined &&
       !sessions.some((session: SessionListItem): boolean => session.id === this.sessionId))) {
       this.clearSession();
       this.selectedWorkspaceTitle =
@@ -658,6 +667,55 @@ struct DesktopWorkspace {
       this.pendingForkSource = '';
     }
     this.openPendingCreator();
+  }
+
+  private restoreWebSelection(destination: DesktopNativeDestination): void {
+    if (!destination.parentId && destination.sessionId && this.openSessionById(destination.sessionId, false)) { return; }
+    this.clearSession();
+    this.selectedWorkspaceTitle =
+      this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
+    if (destination.parentId) {
+      this.restoreWebSubagent(destination);
+    } else if (destination.sessionId) {
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
+    }
+  }
+
+  private async restoreWebSubagent(destination: DesktopNativeDestination): Promise<void> {
+    const owner = this.data;
+    const parentId = destination.parentId;
+    const childId = destination.sessionId;
+    const selection = this.nativeSelectionVersion;
+    const archived = (): boolean => this.archivedIds.includes(parentId) || this.archivedIds.includes(childId);
+    const accepts = (entry?: DesktopSubagentEntry): boolean => entry !== undefined &&
+      entry.parentId === parentId && entry.id === childId && entry.mode !== 'external' &&
+      (destination.mode === 'unknown' || entry.mode === destination.mode);
+    let group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
+      candidate.sessions.some((session: SessionListItem): boolean => session.id === parentId));
+    let summary = this.sessionSummaries.find((item: SessionListItem): boolean => item.id === childId);
+    let entry = summary === undefined ? undefined : desktopSubagentFromSummary(summary);
+    if (owner !== undefined && group !== undefined && !archived() && !accepts(entry)) {
+      const result = await owner.actions.call('session/projections', { 'sessionId': parentId });
+      if (!this.pageActive || this.data !== owner || this.hostUrl !== destination.host ||
+        selection !== this.nativeSelectionVersion || this.panel !== 'session') { return; }
+      const children = result.ok ? desktopSubagentCatalog(parentId, getRecord(result.value, 'values')) : undefined;
+      entry = children?.find((child: DesktopSubagentEntry): boolean => accepts(child));
+      group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
+        candidate.sessions.some((session: SessionListItem): boolean => session.id === parentId));
+      summary = this.sessionSummaries.find((item: SessionListItem): boolean => item.id === childId);
+    }
+    if (group === undefined || archived() || entry === undefined || !accepts(entry)) {
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
+      return;
+    }
+    const parent = group.sessions.find((session: SessionListItem): boolean => session.id === parentId);
+    const session: SessionListItem = summary ?? { id: childId, title: entry.label || entry.name, cwd: parent?.cwd ?? group.path,
+      createdAt: entry.createdAt, updatedAt: 0, running: false, blank: false, raw: '' };
+    this.subagentAddresses.set(entry.id, entry);
+    this.selectSession(group, session, entry);
+    this.panel = 'session';
+    this.revealWorkspace(group.id);
+    this.revealSidebarSession(group.id, parentId);
   }
 
   private showRename(id: string, workspace: boolean, title: ResourceStr): void {
@@ -1234,6 +1292,7 @@ struct DesktopWorkspace {
     }
     const changing = this.sessionId !== session.id;
     if (changing) {
+      this.nativeSelectionVersion++;
       this.terminalRename = undefined;
       this.terminalCreateSession = '';
       this.referenceOffer = undefined;
@@ -1307,6 +1366,7 @@ struct DesktopWorkspace {
   }
 
   private clearSession(): void {
+    if (this.sessionId) { this.nativeSelectionVersion++; }
     this.terminalRename = undefined;
     this.closeFeedback();
     this.closeImagePreview();
@@ -2610,7 +2670,8 @@ struct DesktopWorkspace {
     }
   }
 
-  private async openWeb(leaveExperiment: boolean, action: string = '', session: string = this.sessionId): Promise<void> {
+  private async openWeb(leaveExperiment: boolean, action: string = '', session: string = this.sessionId,
+    bundle: string = ''): Promise<void> {
     if (this.switching) {
       return;
     }
@@ -2624,17 +2685,18 @@ struct DesktopWorkspace {
         }
         await setDesktopWorkspaceEnabled(context, false);
       }
-      this.webAction = leaveExperiment ? '' : action;
-      this.webSessionId = leaveExperiment || (action.length > 0 && action !== 'new-session') ? '' : session;
-      this.webWorkspaceId = !this.webSessionId ? '' : session === this.sessionId ? this.workspaceId :
+      const sessionId = leaveExperiment ? '' : session;
+      const workspaceId = !sessionId ? '' : session === this.sessionId ? this.workspaceId :
         this.groups.find((group: DesktopWorkspaceGroup): boolean =>
           group.sessions.some((row: SessionListItem): boolean => row.id === session))?.id ?? '';
+      const target: DesktopWebDestination = {
+        host: this.hostUrl, sessionId: sessionId, workspaceId: workspaceId, action: action, bundle: bundle
+      };
+      this.webHandoff = leaveExperiment ? '' : JSON.stringify(target);
       hilog.warn(DOMAIN, TAG, 'DSHM-TRACE 从 ArkUI 打开 WebUI');
       await ui.getRouter().replaceUrl({ url: WEB_WORKSPACE_PAGE });
     } catch (_) {
-      this.webAction = '';
-      this.webSessionId = '';
-      this.webWorkspaceId = '';
+      this.webHandoff = '';
       this.switching = false;
       ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_switch_failed') });
     }
@@ -4289,7 +4351,7 @@ struct DesktopWorkspace {
                 connectorAccounts: this.data.connectorAccounts, localePreference: this.data.accountLanguagePreference(),
                 requestedBundle: this.pluginName, requestedTitle: this.pluginTitle,
                 requestedDescription: this.pluginDescription,
-                onWeb: (): void => { this.openWeb(false, 'plugins'); }
+                onWeb: (name: string): void => { this.openWeb(false, 'plugins', this.sessionId, name); }
               })
             } else if (this.panel === 'schedule' && this.ready && this.data !== undefined) {
               DesktopSchedulePane({

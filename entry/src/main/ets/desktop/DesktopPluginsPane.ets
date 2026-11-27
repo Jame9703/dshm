@@ -85,7 +85,7 @@ export struct DesktopPluginsPane {
   @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
   @Prop requestedTitle: string = '';
   @Prop requestedDescription: string = '';
-  onWeb: () => void = (): void => {};
+  onWeb: (name: string) => void = (_name: string): void => {};
   @State private detailName: string = '';
   @State private detailText: string = '';
   @State private detailError: string = '';
@@ -859,7 +859,8 @@ export struct DesktopPluginsPane {
         Text('插件').fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
         Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy && !this.catalogBusy)
           .onClick((): void => { this.connectorAccounts.reconnect(); this.refresh(); })
-        Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy).onClick(this.onWeb)
+        Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginOpenWeb')
+          .enabled(!this.busy).onClick((): void => { this.onWeb(this.detailName); })
       }
       .width('100%')
       if (!this.detailName && this.marketDetail === undefined) {
