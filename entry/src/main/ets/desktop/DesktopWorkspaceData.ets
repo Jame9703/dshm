@@ -6,6 +6,8 @@ import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LL
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopAccountNotices } from './DesktopAccountNotices';
+import type { DesktopAccountNotice } from './DesktopAccountNotices';
 import { DesktopInteractions } from './DesktopInteractions';
 import type { DesktopInteraction } from './DesktopInteractions';
 import { DesktopConversation } from './DesktopConversation';
@@ -63,7 +65,11 @@ export class DesktopWorkspaceData {
   readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
   readonly reading: DesktopSessionReading;
+  readonly accountNotices: DesktopAccountNotices;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
+  private readonly afterFrame: (run: () => void) => void;
+  private accountWatchScheduled: boolean = false;
+  private accountWatchEnabled: boolean = false;
   private active: boolean = true;
   private workspaceReady: boolean = false;
   private sessionsReady: boolean = false;
@@ -87,8 +93,11 @@ export class DesktopWorkspaceData {
     onConversation: (snapshot: DesktopConversationSnapshot) => void,
     onInteractions: (items: DesktopInteraction[]) => void,
     onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void,
-    onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void) {
+    onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void,
+    onAccountNotices: (notices: DesktopAccountNotice[]) => void) {
     this.listener = listener;
+    this.afterFrame = afterFrame;
+    this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices);
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.interactions.observeSidebarPending(onSidebarPending);
@@ -138,6 +147,7 @@ export class DesktopWorkspaceData {
         });
         this.readConversationPreferences();
         this.actions.modelCatalogChanged();
+        if (this.accountWatchEnabled) { this.accountNotices.connect(); }
       },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
@@ -154,7 +164,9 @@ export class DesktopWorkspaceData {
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
-          if (namespace === 'ui-conversation' || namespace === 'ui-chat') { this.readConversationPreferences(); }
+          if (namespace === 'ui-conversation' || namespace === 'ui-chat' || namespace === 'locale') {
+            this.readConversationPreferences();
+          }
           if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
             this.actions.modelCatalogChanged();
           }
@@ -192,6 +204,8 @@ export class DesktopWorkspaceData {
       getString(row, 'ns') === 'ui-conversation');
     const chat = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'ui-chat');
     this.browserInDock = getString(getRecord(chat, 'value'), 'linkOpening') !== 'new-tab';
+    const locale = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'locale');
+    this.accountNotices.setLocale(getString(getRecord(locale, 'value'), 'preference') ?? 'system');
     this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';
     this.conversation.setBusyEnter(this.busyEnterSteers);
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
@@ -313,6 +327,7 @@ export class DesktopWorkspaceData {
 
   stop(): void {
     this.active = false;
+    this.accountNotices.stop();
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();
     this.conversation.close();
@@ -426,15 +441,25 @@ export class DesktopWorkspaceData {
 
   private publish(): void {
     if (this.active) {
+      const ready = this.workspaceReady && this.sessionsReady;
       this.listener({
         workspaces: this.workspaces,
         sessions: this.sessions,
         unlistedRunning: Array.from(this.unlistedRunning),
         archivedIds: Array.from(this.archivedIds),
         pinned: this.pinnedIds,
-        ready: this.workspaceReady && this.sessionsReady,
+        ready: ready,
         error: this.workspaceError || this.sessionError
       });
+      if (ready && !this.accountWatchScheduled) {
+        this.accountWatchScheduled = true;
+        this.afterFrame((): void => {
+          if (this.active) {
+            this.accountWatchEnabled = true;
+            this.accountNotices.connect();
+          }
+        });
+      }
     }
   }
 }

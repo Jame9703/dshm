@@ -24,6 +24,8 @@ import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
 import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
+import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
+import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
 import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openExternalUrl, openFileLocation, openSystemPreview, PickOutcome,
   pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
@@ -238,12 +240,19 @@ struct DesktopWorkspace {
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
   private accountOpening: boolean = false;
-  private accountDialog: number = -1;
+  @State private accountDialog: number = -1;
+  @State private accountNotices: DesktopAccountNotice[] = [];
+  @State private accountNoticesWindowShown: boolean = true;
   private pageActive: boolean = false;
   @State private pageVisible: boolean = false;
   private readingWindow?: window.Window;
   private readingFocused: boolean = false;
   private readonly readingWindowEvent = (event: window.WindowEventType): void => {
+    if (event === window.WindowEventType.WINDOW_HIDDEN) {
+      this.accountNoticesWindowShown = false;
+    } else if (event === window.WindowEventType.WINDOW_SHOWN || event === window.WindowEventType.WINDOW_ACTIVE) {
+      this.accountNoticesWindowShown = true;
+    }
     this.readingFocused = event === window.WindowEventType.WINDOW_ACTIVE ||
       (event === window.WindowEventType.WINDOW_SHOWN && this.readingWindow?.isFocused() === true);
     this.syncReading();
@@ -278,6 +287,7 @@ struct DesktopWorkspace {
         owner.on('windowEvent', this.readingWindowEvent);
         this.readingWindow = owner;
         this.readingFocused = owner.isFocused();
+        this.accountNoticesWindowShown = owner.isWindowShowing();
       } catch (_) {}
     }
   }
@@ -417,6 +427,8 @@ struct DesktopWorkspace {
       this.sidebarPending = pending;
       this.collectSidebarAttention();
       this.raiseSidebarWatermarks();
+    }, (notices: DesktopAccountNotice[]): void => {
+      if (this.pageActive) { this.accountNotices = notices; }
     });
     this.data.start(this.hostUrl);
   }
@@ -2694,6 +2706,32 @@ struct DesktopWorkspace {
 
   @Builder
   private Sidebar() {
+    Stack({ alignContent: Alignment.BottomStart }) {
+      this.SidebarContent()
+      if (!this.sidebarCollapsed && this.pageVisible && this.accountNoticesWindowShown &&
+        this.accountDialog < 0 && this.accountNotices.length > 0) {
+        Column() {
+          ForEach(this.accountNotices.slice(0, 1), (notice: DesktopAccountNotice): void => {
+            DesktopAccountNoticeCard({ notice: notice, behind: this.accountNotices.length - 1,
+              copyHeight: Math.max(80, this.workbenchHeight * 0.4),
+              onDisplayed: (id: string): void => {
+                if (this.pageVisible && this.accountNoticesWindowShown && this.accountDialog < 0) {
+                  this.data?.accountNotices.reportDisplayed(id);
+                }
+              },
+              onAccount: (id: string): void => {
+                if (this.data?.accountNotices.openAccount(id)) { this.openAccount(); }
+              },
+              onDismiss: (id: string): void => { this.data?.accountNotices.dismiss(id); }
+            })
+          }, (notice: DesktopAccountNotice): string => notice.id)
+        }.width(Math.min(280, this.sidebarWidth - 20)).margin({ left: 10, bottom: 48 })
+      }
+    }.width(this.sidebarCollapsed ? 52 : this.sidebarWidth).height('100%')
+  }
+
+  @Builder
+  private SidebarContent() {
     Column({ space: 2 }) {
       Row({ space: 9 }) {
         if (!this.sidebarCollapsed) {
@@ -2728,7 +2766,7 @@ struct DesktopWorkspace {
       }
       this.SidebarMenu(true)
     }
-    .width(this.sidebarCollapsed ? 52 : this.sidebarWidth)
+    .width('100%')
     .height('100%')
     .padding({ left: this.sidebarCollapsed ? 8 : 10, right: this.sidebarCollapsed ? 8 : 10, bottom: 8 })
     .backgroundColor($r('app.color.workspace_sidebar'))

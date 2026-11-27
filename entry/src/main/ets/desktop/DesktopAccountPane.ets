@@ -1,6 +1,6 @@
-import { i18n } from '@kit.LocalizationKit';
 import { getNumber, getRecord, getString } from 'connection';
-import { openExternalUrl, readAppVersionText } from 'platform';
+import { openExternalUrl } from 'platform';
+import { desktopAccountMetadata } from './DesktopAccountClient';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 
 @Component
@@ -36,15 +36,6 @@ export struct DesktopAccountPane {
     this.stopWatch?.();
     this.stopWatch = undefined;
     clearTimeout(this.pollTimer);
-  }
-
-  private metadata(): Record<string, Object> {
-    const version = readAppVersionText().split(' ')[0];
-    return {
-      'version': version === '—' ? '' : version,
-      'locale': i18n.System.getSystemLanguage(),
-      'timezoneOffsetSeconds': -new Date().getTimezoneOffset() * 60
-    };
   }
 
   private connect(): void {
@@ -123,7 +114,7 @@ export struct DesktopAccountPane {
   }
 
   private async loadProfile(): Promise<void> {
-    const result = await this.host?.call('account/getProfile', { 'client': this.metadata() });
+    const result = await this.host?.call('account/getProfile', { 'client': desktopAccountMetadata() });
     if (this.active && this.status === 'credential-stored' && result?.ok) {
       const profile = getRecord(result.value, 'value');
       this.name = getString(profile, 'name') ?? '';
@@ -151,7 +142,7 @@ export struct DesktopAccountPane {
     this.failure = '';
     const revision = this.stateRevision;
     const result = await this.host.call('account/startSignIn', {
-      'client': this.metadata(), 'callbackOrigin': this.callbackOrigin, 'loginSource': 'desktop'
+      'client': desktopAccountMetadata(), 'callbackOrigin': this.callbackOrigin, 'loginSource': 'desktop'
     });
     if (!this.active) {
       return;
@@ -228,7 +219,7 @@ export struct DesktopAccountPane {
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([$r('sys.color.font_secondary')])
         }
-        .width(36).height(36).padding(0).accessibilityText('关闭')
+        .key('desktopAccountDialogClose').width(36).height(36).padding(0).accessibilityText('关闭')
         .enabled(!this.busy && this.phase !== 'committing').onClick((): void => { this.dismiss(); })
       }
       .width('100%')
@@ -255,7 +246,7 @@ export struct DesktopAccountPane {
                   { text: '退出登录', color: '#B73535' }]
               }).then((result): void => {
                 if (result.index === 1 && this.active) {
-                  this.changeAccount('account/signOut', { 'client': this.metadata() });
+                  this.changeAccount('account/signOut', { 'client': desktopAccountMetadata() });
                 }
               }).catch((): void => {});
             })
