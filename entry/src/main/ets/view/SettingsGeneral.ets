@@ -60,7 +60,7 @@ export struct SettingsGeneral {
   /** 以下五个转给 `SettingRow` */
   onToggleSetting: (key: string, value: boolean) => void = () => {
   };
-  onPickChoice: (key: string, current: string) => void = () => {
+  onPickChoice: (key: string, current: string, selection?: string) => void = () => {
   };
   onEditText: (item: SettingItem) => void = () => {
   };
@@ -135,8 +135,8 @@ export struct SettingsGeneral {
                     onToggleSetting: (key: string, value: boolean) => {
                       this.onToggleSetting(key, value);
                     },
-                    onPickChoice: (key: string, current: string) => {
-                      this.onPickChoice(key, current);
+                    onPickChoice: (key: string, current: string, selection?: string) => {
+                      this.onPickChoice(key, current, selection);
                     },
                     onEditText: (it: SettingItem) => {
                       this.onEditText(it);

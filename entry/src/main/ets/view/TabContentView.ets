@@ -303,8 +303,12 @@ export struct TabContentView {
           }
           this.f.writeSetting(key, value as Object, key);
         },
-        onPickChoice: (key: string, current: string) => {
+        onPickChoice: (key: string, current: string, selection?: string) => {
           const item: SettingItem | undefined = this.f.settingItemOf(key);
+          if (selection !== undefined && item !== undefined) {
+            if (selection !== current) { this.f.writeSetting(key, selection, item.label); }
+            return;
+          }
           if (item === undefined) {
             // 本机偏好：没有上游写路径，但**有端侧持久化路径**（`platform/LocalPrefs`）。
             // 仍然复用同一个选中浮层（选项来源换成端侧那一组），提交时由 `applyChoice` 分流。

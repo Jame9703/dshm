@@ -8,7 +8,7 @@ export enum DesktopShortcut {
   SEARCH = 'session.search', ADD_WORKSPACE = 'workspace.add', RENAME = 'session.rename', FORK = 'session.fork',
   ARCHIVE = 'session.archive', SETTINGS = 'settings.open', FILES = 'workspace.files',
   NEW_TERMINAL = 'terminal.new', TOGGLE_READ = 'session.toggleRead', RIGHT_SIDEBAR = 'sidebar.right.toggle',
-  SPLIT_DOCK = 'pane.split', CLOSE_DOCK_TAB = 'page.close'
+  SPLIT_DOCK = 'pane.split', CLOSE_DOCK_TAB = 'page.close', NEW_BROWSER = 'browser.new'
 }
 
 export interface DesktopShortcutKey {
@@ -68,6 +68,7 @@ const COMMANDS: ShortcutDefinition[] = [
   command(DesktopShortcut.RIGHT_SIDEBAR, '展开／收起右侧栏', 'right sidebar', KeyCode.KEYCODE_B, true),
   command(DesktopShortcut.FILES, '工作区文件', 'workspace files', KeyCode.KEYCODE_P),
   command(DesktopShortcut.NEW_TERMINAL, '新建终端', 'new terminal shell', KeyCode.KEYCODE_GRAVE),
+  command(DesktopShortcut.NEW_BROWSER, '浏览器', 'browser new browser tab', KeyCode.KEYCODE_T),
   command(DesktopShortcut.SPLIT_DOCK, '向右分屏', 'split pane', KeyCode.KEYCODE_BACKSLASH),
   command(DesktopShortcut.CLOSE_DOCK_TAB, '关闭标签页', 'close page tab', KeyCode.KEYCODE_W),
   command(DesktopShortcut.TOGGLE_READ, '切换会话已读状态', 'toggle read unread', KeyCode.KEYCODE_U, false, true)

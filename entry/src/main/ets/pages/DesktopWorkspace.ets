@@ -8,6 +8,8 @@ import { getString, parseTarget } from 'connection';
 import { WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
+import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
+import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
 import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
 import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
@@ -22,7 +24,7 @@ import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
 import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
-import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openFileLocation, openSystemPreview, PickOutcome,
+import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openExternalUrl, openFileLocation, openSystemPreview, PickOutcome,
   pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
@@ -41,7 +43,7 @@ import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDockFloatPosition, desktopDockFloatRect,
   desktopDockFocusFloat, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSeatFloat, desktopDockSelect,
   desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
-  desktopDockChatTab, desktopDockResourceId, DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
+  desktopDockBrowserAddress, desktopDockChatTab, desktopDockResourceId, DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
 import { readDesktopDock, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
@@ -158,6 +160,7 @@ struct DesktopWorkspace {
   private dockDrop?: DesktopDockDrop;
   private dockPanActive: boolean = false;
   private readonly dockTabBounds = new Map<string, Area>();
+  private browserTabCount: number = 0;
   private readonly dockPaneBounds = new Map<number, Area>();
   private dockSessionId: string = '';
   private dockResizeStart: number = 0;
@@ -803,6 +806,7 @@ struct DesktopWorkspace {
     }
     if (key === DesktopShortcut.FILES) { this.showWorkspaceFiles(); return true; }
     if (key === DesktopShortcut.NEW_TERMINAL) { this.showTerminal(true); return true; }
+    if (key === DesktopShortcut.NEW_BROWSER) { this.openBrowser(this.rightDock.focus); return true; }
     const session = this.groups.find((group: DesktopWorkspaceGroup): boolean =>
       group.id === this.workspaceId)?.sessions.find((row: SessionListItem): boolean => row.id === this.sessionId);
     if (session === undefined || this.archivedIds.includes(session.id)) { return false; }
@@ -831,7 +835,7 @@ struct DesktopWorkspace {
     const row = this.shortcutBindings.find((item: DesktopShortcutRow): boolean => !item.occupiedBy &&
       desktopShortcutEqual(item.binding, key));
     return row !== undefined && [DesktopShortcut.REFERENCE, DesktopShortcut.SETTINGS, DesktopShortcut.FILES,
-      DesktopShortcut.NEW_TERMINAL, DesktopShortcut.RIGHT_SIDEBAR, DesktopShortcut.SPLIT_DOCK,
+      DesktopShortcut.NEW_TERMINAL, DesktopShortcut.NEW_BROWSER, DesktopShortcut.RIGHT_SIDEBAR, DesktopShortcut.SPLIT_DOCK,
       DesktopShortcut.CLOSE_DOCK_TAB].includes(row.id) && this.workspaceShortcut(row.id);
   }
 
@@ -2796,6 +2800,7 @@ struct DesktopWorkspace {
           onDropAttachments: (files: DesktopDroppedFiles): void => { this.attachDroppedFiles(files); },
           onPasteAttachments: (): void => { this.attachClipboard(); },
           onOpenImage: (row: DesktopMediaAttachment): void => { this.openImagePreview(row); },
+          onLink: (href: string): void => this.openConversationLink(href),
           onRemoveAttachment: (receiptId: string): void => {
             this.setAttachments(this.sessionId, this.attachments.filter((file: DesktopDraftAttachment): boolean =>
               file.receiptId !== receiptId));
@@ -2880,7 +2885,8 @@ struct DesktopWorkspace {
   private dockMenu(index: number): MenuElement[] {
     const items: MenuElement[] = [
       { value: '工作区文件', action: (): void => this.openDockTool(index, DesktopDockKind.FILES) },
-      { value: '新建终端', action: (): void => this.openDockTool(index, DesktopDockKind.TERMINAL) }
+      { value: '新建终端', action: (): void => this.openDockTool(index, DesktopDockKind.TERMINAL) },
+      { value: $r('app.string.desktop_browser_title'), action: (): void => { this.openBrowser(index); } }
     ];
     if (this.canSplitDock()) {
       items.push({ value: '向右分屏', action: (): void => { this.splitDock(); } });
@@ -2900,6 +2906,32 @@ struct DesktopWorkspace {
     this.focusDockPane(index);
     if (kind === DesktopDockKind.FILES) { this.showWorkspaceFiles(); }
     else if (kind === DesktopDockKind.TERMINAL) { this.showTerminal(true); }
+  }
+
+  private browserOrigin(): string {
+    return parseTarget(this.hostUrl)?.address.baseUrl ?? '';
+  }
+
+  private openConversationLink(href: string): void {
+    const page = desktopBrowserAddress(href, this.browserOrigin(), false);
+    if (!page.href) {
+      this.getUIContext().getPromptAction().showToast({ message: page.problem });
+      return;
+    }
+    if (this.data?.opensLinksInDock() !== false) {
+      this.openBrowser(this.rightDock.focus, page.href, page.title);
+    } else {
+      openExternalUrl(page.href).then((ok: boolean): void => {
+        if (!ok) { this.getUIContext().getPromptAction().showToast({ message: '无法打开系统浏览器' }); }
+      });
+    }
+  }
+
+  private openBrowser(index: number, address: string = '', title: string = '浏览器'): void {
+    if (!this.rightDock.panes[index] || !this.sessionId) { return; }
+    const id = 'browser:' + Date.now() + ':' + ++this.browserTabCount;
+    const tab: DesktopDockTab = { id: id, kind: DesktopDockKind.BROWSER, title: title, browserAddress: address };
+    this.setDock(desktopDockOpen(this.rightDock, tab, true, index));
   }
 
   private dockTabMenu(index: number, tab: DesktopDockTab): MenuElement[] {
@@ -3137,6 +3169,7 @@ struct DesktopWorkspace {
         this.referenceFileAction(action, path, name, id);
       },
       openPlan: (id: string, plan: DesktopPlanDocument): void => this.showPlan(plan, id),
+      openLink: (href: string): void => this.openConversationLink(href),
       openChanges: (target: DesktopChangeTarget): void => this.showChanges(target, target.sessionId),
       openModels: (): void => { this.openSettings('settings.models'); },
       copy: (id: string): void => { this.copyTranscript(id); },
@@ -3192,6 +3225,11 @@ struct DesktopWorkspace {
         title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
         busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,
         appearance: this.appearance, summaries: this.sessionSummaries })
+    } else if (tab.kind === DesktopDockKind.BROWSER) {
+      DesktopBrowserPane({ address: tab.browserAddress ?? '', restore: tab.restoreBrowser ?? false,
+        workspaceOrigin: this.browserOrigin(), onNavigated: (href: string, title: string): void => {
+          this.setDock(desktopDockBrowserAddress(this.rightDock, tab.id, href, title));
+        } })
     } else {
       DesktopChangesPane({ host: this.data?.actions, sessionId: tab.sourceSessionId ?? this.sessionId,
         target: this.dockStoredTab(index, tab.id)?.changes, changeLocation: this.dockStoredTab(index, tab.id)?.changeLocation,
@@ -3209,8 +3247,13 @@ struct DesktopWorkspace {
   private DockTab(index: number, tab: DesktopDockTab) {
     Row({ space: 2 }) {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          .fontColor($r('sys.color.font_primary'))
+        Row({ space: 4 }) {
+          if (tab.kind === DesktopDockKind.BROWSER) {
+            Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
+          }
+          Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontColor($r('sys.color.font_primary'))
+        }
       }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
         .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
         .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
@@ -3246,6 +3289,8 @@ struct DesktopWorkspace {
         .onClick((): void => this.openDockTool(index, DesktopDockKind.FILES))
       Button('新建终端', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideTerminal-' + index)
         .onClick((): void => this.openDockTool(index, DesktopDockKind.TERMINAL))
+      Button($r('app.string.desktop_browser_title'), { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideBrowser-' + index)
+        .onClick((): void => this.openBrowser(index))
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)
   }
 

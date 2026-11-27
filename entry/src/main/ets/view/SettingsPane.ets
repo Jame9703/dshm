@@ -76,7 +76,7 @@ export struct SettingsPane {
 
   onToggleSetting: (key: string, value: boolean) => void = () => {
   };
-  onPickChoice: (key: string, current: string) => void = () => {
+  onPickChoice: (key: string, current: string, selection?: string) => void = () => {
   };
   /** 打开文本 / 数字设置项的编辑浮层 */
   onEditText: (item: SettingItem) => void = () => {
@@ -227,8 +227,8 @@ export struct SettingsPane {
               onToggleSetting: (key: string, value: boolean) => {
                 this.onToggleSetting(key, value);
               },
-              onPickChoice: (key: string, current: string) => {
-                this.onPickChoice(key, current);
+              onPickChoice: (key: string, current: string, selection?: string) => {
+                this.onPickChoice(key, current, selection);
               },
               onEditText: (item: SettingItem) => {
                 this.onEditText(item);

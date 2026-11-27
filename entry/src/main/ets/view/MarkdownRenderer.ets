@@ -38,6 +38,7 @@ export struct MarkdownRenderer {
    * 包一层等于把渲染逻辑抄两遍。
    */
   @Prop muted: boolean = false;
+  onLink?: (href: string) => void;
 
   @State blocks: MdBlock[] = [];
 
@@ -217,6 +218,10 @@ export struct MarkdownRenderer {
    * 不伪造成功。
    */
   private openLink(href: string): void {
+    if (this.onLink !== undefined) {
+      this.onLink(href);
+      return;
+    }
     openExternalUrl(href).then((ok: boolean) => {
       if (!ok) {
         hilog.warn(DOMAIN, TAG, 'open link failed');

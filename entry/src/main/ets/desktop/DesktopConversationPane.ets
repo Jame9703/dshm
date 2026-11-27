@@ -76,6 +76,7 @@ export struct DesktopConversationPane {
   onDropAttachments: (files: DesktopDroppedFiles) => void = (_files: DesktopDroppedFiles): void => {};
   onPasteAttachments: () => void = (): void => {};
   onOpenImage: (row: DesktopMediaAttachment) => void = (_row: DesktopMediaAttachment): void => {};
+  onLink?: (href: string) => void;
   onRemoveAttachment: (receiptId: string) => void = () => {};
   onSend: (alternateDelivery: boolean) => void = (_alternateDelivery: boolean): void => {};
   onQueueAction: (session: string, id: string, action: QueueActionBody) => Promise<string> =
@@ -737,7 +738,7 @@ export struct DesktopConversationPane {
         Text(row.completed < 0 ? '执行中' : (row.outcome === 'success' ? '完成' : '失败'))
           .fontSize(12).fontColor($r('sys.color.font_secondary'))
       }.width('100%')
-      if (row.text) { MarkdownRenderer({ text: row.text }) }
+      if (row.text) { MarkdownRenderer({ text: row.text, onLink: this.onLink }) }
     }.width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start).padding(12)
       .borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
   }
@@ -846,10 +847,10 @@ export struct DesktopConversationPane {
                 this.expandedReasoning.filter((id: string): boolean => id !== item.id) : [...this.expandedReasoning, item.id];
             })
           if (this.expandedReasoning.includes(item.id)) {
-            MarkdownRenderer({ text: item.reasoning })
+            MarkdownRenderer({ text: item.reasoning, onLink: this.onLink })
           }
         }
-        if (item.body) { MarkdownRenderer({ text: item.body }) }
+        if (item.body) { MarkdownRenderer({ text: item.body, onLink: this.onLink }) }
       }
     }
     .width('100%').constraintSize({ maxWidth: 712 })

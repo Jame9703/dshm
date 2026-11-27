@@ -33,6 +33,7 @@ export interface DesktopDockChatActions {
   openParent: (child: DesktopSubagentEntry) => void;
   openImage: (id: string, image: DesktopMediaAttachment) => void;
   openFile: (id: string, path: string, name: string) => void;
+  openLink: (href: string) => void;
   systemFile: (id: string, path: string, name: string, reveal: boolean) => void;
   referenceFile: (id: string, action: DesktopReferenceAction, path: string, name: string) => void;
   openPlan: (id: string, plan: DesktopPlanDocument) => void;
@@ -190,6 +191,7 @@ export struct DesktopDockChatPane {
             this.actions?.writeAttachments(this.target?.id ?? '', this.attachments);
           },
           onOpenImage: (row: DesktopMediaAttachment): void => { this.actions?.openImage(this.target?.id ?? '', row); },
+          onLink: (href: string): void => { this.actions?.openLink(href); },
           onArtifactFile: (path: string, name: string): void => { this.actions?.openFile(this.target?.id ?? '', path, name); },
           onArtifactAction: (path: string, name: string, reveal: boolean): void => {
             this.actions?.systemFile(this.target?.id ?? '', path, name, reveal);

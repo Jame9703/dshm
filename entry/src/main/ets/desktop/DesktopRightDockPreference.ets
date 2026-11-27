@@ -3,6 +3,7 @@ import { preferences } from '@kit.ArkData';
 import { getArray, getBoolean, getNumber, getRecord, getString, parseJson } from 'connection';
 import { desktopDockChatTab, desktopDockResourceId, desktopDockSplitFraction, DesktopDockKind, emptyDesktopDock } from './DesktopRightDock';
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from './DesktopRightDock';
+import { desktopBrowserAddress } from './DesktopBrowserAddress';
 
 const PREFS: string = 'dshm_desktop_dock';
 
@@ -17,6 +18,8 @@ interface SavedDockTab {
   wrap?: boolean;
   chat?: DesktopDockChatTarget;
   sourceSessionId?: string;
+  browserId?: string;
+  browserAddress?: string;
 }
 
 interface SavedDockPane {
@@ -43,14 +46,16 @@ interface SavedDock {
 
 function restorable(tab: DesktopDockTab): boolean {
   return tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.TERMINAL || tab.file !== undefined ||
-    (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined || tab.chat !== undefined;
+    (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined || tab.chat !== undefined ||
+    tab.kind === DesktopDockKind.BROWSER;
 }
 
 function saveTab(tab: DesktopDockTab): SavedDockTab {
   return { kind: tab.kind, path: tab.file?.path ?? '', title: tab.title,
     sequence: tab.plan?.sequence ?? tab.changeLocation?.sequence, callId: tab.plan?.callId,
     index: tab.changeLocation?.index, split: tab.changeLocation?.split, wrap: tab.changeLocation?.wrap, chat: tab.chat,
-    sourceSessionId: tab.sourceSessionId };
+    sourceSessionId: tab.sourceSessionId,
+    browserId: tab.kind === DesktopDockKind.BROWSER ? tab.id : undefined, browserAddress: tab.browserAddress };
 }
 
 export function encodeDesktopDock(layout: DesktopDockLayout): string {
@@ -76,6 +81,13 @@ function restoreTab(row: Object | undefined): DesktopDockTab | undefined {
   const kind = getString(row, 'kind');
   if (kind === DesktopDockKind.FILES) { return { id: kind, kind: kind, title: '工作区文件' }; }
   if (kind === DesktopDockKind.TERMINAL) { return { id: kind, kind: kind, title: '终端' }; }
+  if (kind === DesktopDockKind.BROWSER) {
+    const id = getString(row, 'browserId') ?? '';
+    if (!new RegExp('^browser:[0-9]+:[0-9]+$').test(id)) { return undefined; }
+    const page = desktopBrowserAddress(getString(row, 'browserAddress') ?? '', '', false);
+    return { id: id, kind: DesktopDockKind.BROWSER, title: page.title || '浏览器',
+      browserAddress: page.href, restoreBrowser: !!page.href };
+  }
   if (kind === DesktopDockKind.CHAT) {
     const chat = getRecord(row, 'chat');
     const id = getString(chat, 'id') ?? '';

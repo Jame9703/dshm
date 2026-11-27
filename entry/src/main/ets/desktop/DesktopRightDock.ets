@@ -4,7 +4,8 @@ import type { DesktopPlanDocument } from './DesktopPlan';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 
 export enum DesktopDockKind {
-  FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes', CHAT = 'chat'
+  FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes', CHAT = 'chat',
+  BROWSER = 'browser'
 }
 
 export interface DesktopDockChatTarget {
@@ -22,6 +23,8 @@ export interface DesktopDockTab {
   changeLocation?: DesktopChangeLocation;
   chat?: DesktopDockChatTarget;
   sourceSessionId?: string;
+  browserAddress?: string;
+  restoreBrowser?: boolean;
 }
 
 export function desktopDockChatTab(target: DesktopDockChatTarget, title: string): DesktopDockTab {
@@ -136,6 +139,25 @@ export function desktopDockSelect(layout: DesktopDockLayout, pane: number, tab: 
   next.focus = pane;
   next.focusedFloat = '';
   next.panes[pane].active = tab;
+  return next;
+}
+
+export function desktopDockBrowserAddress(layout: DesktopDockLayout, id: string, href: string,
+  title: string): DesktopDockLayout {
+  const next = copyDock(layout);
+  const owner = next.panes.find((pane: DesktopDockPane): boolean => pane.tabs.some(
+    (tab: DesktopDockTab): boolean => tab.kind === DesktopDockKind.BROWSER && tab.id === id));
+  const index = owner?.tabs.findIndex((tab: DesktopDockTab): boolean => tab.id === id) ?? -1;
+  const floating = next.floats.findIndex((row: DesktopDockFloat): boolean =>
+    row.tab.kind === DesktopDockKind.BROWSER && row.tab.id === id);
+  const tab = owner?.tabs[index] ?? next.floats[floating]?.tab;
+  if (tab === undefined || (tab.browserAddress === href && tab.title === title && !tab.restoreBrowser)) { return layout; }
+  const updated: DesktopDockTab = { id: id, kind: DesktopDockKind.BROWSER, title: title, browserAddress: href };
+  if (owner !== undefined && index >= 0) {
+    owner.tabs[index] = updated;
+  } else if (floating >= 0) {
+    next.floats[floating] = { tab: updated, rect: next.floats[floating].rect };
+  }
   return next;
 }
 

@@ -14,6 +14,8 @@
  */
 
 import { Fs, Radius, SettingItem, SettingKind, SettingOrigin, Sp, splitSettingKey } from 'appstate';
+import type { SettingChoice } from 'appstate';
+import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 
 /**
  * 选择项的显示文案：优先用选项自带的显示名，找不到就回退到取值本身。
@@ -55,6 +57,9 @@ function officialSettingLabel(ns: string, key: string): string {
   if (ns === 'ui-chat' && key === 'transcriptView') {
     return '对话显示';
   }
+  if (ns === 'ui-chat' && key === 'linkOpening') {
+    return '网页链接默认打开方式';
+  }
   if (ns === 'ui-conversation' && key === 'busyEnter') {
     return '回车键行为';
   }
@@ -91,6 +96,10 @@ function officialSettingLabel(ns: string, key: string): string {
 
 /** 官方对**选项值**的中文措辞（取不到就返回空串，由调用方回落原值） */
 function officialSettingValue(ns: string, key: string, value: string): string {
+  if (ns === 'ui-chat' && key === 'linkOpening') {
+    if (value === 'sidebar') { return '应用内侧边栏'; }
+    if (value === 'new-tab') { return '默认浏览器'; }
+  }
   if (ns === 'ui-theme' && key === 'preference') {
     if (value === 'light') {
       return '浅色';
@@ -115,6 +124,9 @@ function officialSettingValue(ns: string, key: string, value: string): string {
 
 /** 官方对**说明文字**的中文措辞（同上，取不到返回空串） */
 function officialSettingHint(ns: string, key: string): string {
+  if (ns === 'ui-chat' && key === 'linkOpening') {
+    return '对话中网页链接的打开位置';
+  }
   if (ns === 'ui-theme' && key === 'fontSize') {
     return '仅影响会话内容的字号';
   }
@@ -131,7 +143,7 @@ export struct SettingRow {
 
   onToggleSetting: (key: string, value: boolean) => void = () => {
   };
-  onPickChoice: (key: string, current: string) => void = () => {
+  onPickChoice: (key: string, current: string, selection?: string) => void = () => {
   };
   onEditText: (item: SettingItem) => void = () => {
   };
@@ -139,6 +151,14 @@ export struct SettingRow {
   };
   onResetSetting: (key: string) => void = () => {
   };
+
+  private linkChoices(): MenuElement[] {
+    return this.item.choices.map((choice: SettingChoice): MenuElement => {
+      const label = officialSettingValue('ui-chat', 'linkOpening', choice.value) || choice.label;
+      return { value: (choice.value === this.item.textValue ? '✓  ' : '') + label,
+        action: (): void => { this.onPickChoice(this.item.key, this.item.textValue, choice.value); } };
+    });
+  }
 
   build() {
     Row({ space: Sp.M }) {
@@ -221,7 +241,11 @@ export struct SettingRow {
             this.onToggleSetting(this.item.key, on);
           })
       } else if (this.item.kind === SettingKind.CHOICE) {
-        Text(this.valueLabelOf(this.item))
+        if (this.item.key === 'ui-chat.linkOpening' && !this.item.readOnly && this.item.choices.length > 0) {
+          Button(this.valueLabelOf(this.item), { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopLinkOpening')
+            .fontSize(Fs.SECONDARY).bindMenu(this.linkChoices(), desktopMenuOptions(Placement.BottomRight))
+        } else {
+          Text(this.valueLabelOf(this.item))
           .fontSize(Fs.SECONDARY)
           .fontColor(this.item.readOnly ? $r('sys.color.font_tertiary') : $r('sys.color.brand'))
           .onClick(() => {
@@ -229,6 +253,7 @@ export struct SettingRow {
               this.onPickChoice(this.item.key, this.item.textValue);
             }
           })
+        }
       } else if (this.item.kind === SettingKind.STRUCT) {
         // 结构化值（数组 / 嵌套对象 / 复杂 union）：整值编辑。
         // 与 TEXT 一样**必须可点**——不可点的控件等于没有这个功能。

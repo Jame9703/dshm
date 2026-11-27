@@ -79,6 +79,9 @@ export class DesktopWorkspaceData {
   private stopWorkspace?: () => void;
   private dockConversations?: Set<DesktopDockConversation>;
   private busyEnterSteers: boolean = false;
+  private browserInDock: boolean = true;
+
+  opensLinksInDock(): boolean { return this.browserInDock; }
 
   constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
     onConversation: (snapshot: DesktopConversationSnapshot) => void,
@@ -133,7 +136,7 @@ export class DesktopWorkspaceData {
           binding.conversation.feedback.resync();
           binding.conversation.readGoalActivation();
         });
-        this.readSubmitPreference();
+        this.readConversationPreferences();
         this.actions.modelCatalogChanged();
       },
       onEvent: (frame: Object): void => {
@@ -151,7 +154,7 @@ export class DesktopWorkspaceData {
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
-          if (namespace === 'ui-conversation') { this.readSubmitPreference(); }
+          if (namespace === 'ui-conversation' || namespace === 'ui-chat') { this.readConversationPreferences(); }
           if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
             this.actions.modelCatalogChanged();
           }
@@ -178,14 +181,17 @@ export class DesktopWorkspaceData {
     }
   }
 
-  private submitPreferenceVersion: number = 0;
+  private conversationPreferencesVersion: number = 0;
 
-  private async readSubmitPreference(): Promise<void> {
-    const version = ++this.submitPreferenceVersion;
+  private async readConversationPreferences(): Promise<void> {
+    const version = ++this.conversationPreferencesVersion;
     const result = await this.actions.call(SETTINGS_DESCRIBE_ENDPOINT, {});
-    if (!result.ok || !this.active || version !== this.submitPreferenceVersion) { return; }
-    const settings = getArray(result.value, 'namespaces')?.find((row: Object): boolean =>
+    if (!result.ok || !this.active || version !== this.conversationPreferencesVersion) { return; }
+    const namespaces = getArray(result.value, 'namespaces');
+    const settings = namespaces?.find((row: Object): boolean =>
       getString(row, 'ns') === 'ui-conversation');
+    const chat = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'ui-chat');
+    this.browserInDock = getString(getRecord(chat, 'value'), 'linkOpening') !== 'new-tab';
     this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';
     this.conversation.setBusyEnter(this.busyEnterSteers);
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
