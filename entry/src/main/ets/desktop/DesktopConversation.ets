@@ -45,6 +45,7 @@ import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
 import { DesktopHostActions } from './DesktopHostActions';
+import type { DesktopTimelineSource } from './DesktopTimelineModel';
 import { DesktopFeedback } from './DesktopFeedback';
 import { DesktopActionCardState, desktopHideActionCardFences } from './DesktopActionCards';
 import type { DesktopActionCard } from './DesktopActionCards';
@@ -128,6 +129,7 @@ export interface DesktopConversationSnapshot {
   runningStartedAt?: number;
   continuationSequence: number;
   historyLoaded: boolean;
+  timeline?: DesktopTimelineSource;
   receivedTurn: number;
   waitingForInput: boolean;
   models: ModelOption[];
@@ -274,6 +276,8 @@ export class DesktopConversation {
   private nextStepHuman: boolean = false;
   private nextStepAsOf: number = -1;
   private historyLoaded: boolean = false;
+  private timeline?: DesktopTimelineSource;
+  private timelineSequence: number = -2;
   private receivedTurn: number = 0;
   private waitingForInput: boolean = false;
   private attempt: string = '';
@@ -390,6 +394,8 @@ export class DesktopConversation {
     this.nextStepHuman = false;
     this.nextStepAsOf = -1;
     this.historyLoaded = false;
+    this.timeline = undefined;
+    this.timelineSequence = -2;
     this.receivedTurn = 0;
     this.waitingForInput = false;
     this.attempt = '';
@@ -1270,6 +1276,7 @@ export class DesktopConversation {
         const values = getRecord(result.value, 'values');
         const sequence = projectionCursor ?? -1;
         if (values !== undefined) { this.fullProjectionCursor = Math.max(this.fullProjectionCursor, sequence); }
+        const timelineChanged = this.readTimeline(values, sequence);
         const continuationChanged = this.readContinuation(values, sequence);
         const subagentsChanged = this.readSubagents(values, sequence);
         const questionsChanged = this.readQuestions(values, sequence);
@@ -1282,7 +1289,7 @@ export class DesktopConversation {
         const outlineChanged = this.readTurnOutline(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         const usageChanged = this.chatUsage.readProjection(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? -1);
         if (this.readPlan(result.value) || goalChanged || queueChanged || questionsChanged || subagentsChanged || cardsChanged || teamChanged ||
-          modelChanged || outlineChanged || usageChanged || continuationChanged) {
+          modelChanged || outlineChanged || usageChanged || continuationChanged || timelineChanged) {
           this.publish();
         }
       }
@@ -1409,6 +1416,15 @@ export class DesktopConversation {
     return true;
   }
 
+  private readTimeline(values: Object | undefined, sequence: number): boolean {
+    if (values === undefined || !Number.isSafeInteger(sequence) || sequence <= this.timelineSequence) { return false; }
+    this.timelineSequence = sequence;
+    const view = getRecord(values, 'timeline');
+    const changed = this.timeline?.value !== view;
+    if (changed) { this.timeline = view === undefined ? undefined : { sequence: sequence, value: view }; }
+    return changed;
+  }
+
   private readProjection(projection: Object | undefined): void {
     const values = getRecord(projection, 'values');
     const sequence = getNumber(projection, 'asOfSeq');
@@ -1416,6 +1432,7 @@ export class DesktopConversation {
     if (values !== undefined && sequence !== undefined) {
       this.fullProjectionCursor = Math.max(this.fullProjectionCursor, sequence);
     }
+    if (sequence !== undefined) { this.readTimeline(values, sequence); }
     this.readQuestions(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readTurnOutline(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.chatUsage.readProjection(values, getNumber(projection, 'asOfSeq') ?? -1);
@@ -1682,7 +1699,7 @@ export class DesktopConversation {
       runningStartedAt: openTurn && latestTurn.startTime > 0 ? latestTurn.startTime : undefined,
       runningHolding: !this.running && openTurn,
       continuationSequence: this.canContinue() && sending === undefined ? this.continuationSequence : -1,
-      historyLoaded: this.historyLoaded, receivedTurn: this.receivedTurn,
+      historyLoaded: this.historyLoaded, timeline: this.timeline, receivedTurn: this.receivedTurn,
       models: this.modelCatalog?.models ?? [], modelsLoading: this.modelsLoading, modelCatalog: this.modelCatalog,
       modelError: this.modelError, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,

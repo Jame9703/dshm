@@ -51,7 +51,7 @@ interface SavedDock {
 function restorable(tab: DesktopDockTab): boolean {
   return tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.TERMINAL || tab.file !== undefined ||
     (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined || tab.chat !== undefined ||
-    tab.kind === DesktopDockKind.BROWSER || tab.kind === DesktopDockKind.COMPACTION;
+    tab.kind === DesktopDockKind.BROWSER || tab.kind === DesktopDockKind.COMPACTION || tab.kind === DesktopDockKind.TIMELINE;
 }
 
 function saveTab(tab: DesktopDockTab): SavedDockTab {
@@ -86,6 +86,7 @@ export function encodeDesktopDock(layout: DesktopDockLayout): string {
 function restoreTab(row: Object | undefined): DesktopDockTab | undefined {
   const kind = getString(row, 'kind');
   if (kind === DesktopDockKind.FILES) { return { id: kind, kind: kind, title: '工作区文件' }; }
+  if (kind === DesktopDockKind.TIMELINE) { return { id: kind, kind: kind, title: getString(row, 'title') || '时间线' }; }
   if (kind === DesktopDockKind.TERMINAL) {
     const id = getString(row, 'terminalId');
     if (id && getString(row, 'terminalTabId')) { return desktopDockTerminalTab(id, getString(row, 'title') || '终端'); }

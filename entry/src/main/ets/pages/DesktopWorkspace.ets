@@ -51,6 +51,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { followSessionAddress, followSubagentAddress, projectSessionPage } from 'appstate';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import { DesktopTimelinePane } from '../desktop/DesktopTimelinePane';
 import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
 import { DesktopReplyMedia } from '../desktop/DesktopReplyMedia';
 import type { DesktopDockChatActions } from '../desktop/DesktopDockChatPane';
@@ -3611,6 +3612,8 @@ struct DesktopWorkspace {
           },
           filesOpen: this.dockShows(DesktopDockKind.FILES),
           rightDockOpen: this.rightDock.expanded,
+          timelineOpen: this.dockShows(DesktopDockKind.TIMELINE),
+          onTimeline: (): void => { this.showTimeline(true); },
           onRightDock: (): void => this.toggleRightDock(),
           onFiles: (): void => this.showWorkspaceFiles(true),
           terminalOpen: this.dockShows(DesktopDockKind.TERMINAL),
@@ -3638,12 +3641,28 @@ struct DesktopWorkspace {
     .onAreaChange((_, area: Area): void => { this.sessionContentBounds = area; })
   }
 
+  private hasTimeline(): boolean {
+    return this.chat?.sessionId === this.sessionId && this.chat?.timeline !== undefined;
+  }
+
+  private showTimeline(toggle: boolean = false): void {
+    if (!this.hasTimeline()) { return; }
+    if (toggle && this.dockShows(DesktopDockKind.TIMELINE)) { this.hideDockTool(DesktopDockKind.TIMELINE); return; }
+    const tab: DesktopDockTab = { id: DesktopDockKind.TIMELINE, kind: DesktopDockKind.TIMELINE,
+      title: this.accessibilityLabel($r('app.string.desktop_timeline_title')) };
+    this.setDock(desktopDockOpen(this.rightDock, tab));
+  }
+
   private dockMenu(index: number): MenuElement[] {
     const items: MenuElement[] = [
       { value: '工作区文件', action: (): void => this.openDockTool(index, DesktopDockKind.FILES) },
       { value: '新建终端', action: (): void => this.openDockTool(index, DesktopDockKind.TERMINAL) },
       { value: $r('app.string.desktop_browser_title'), action: (): void => { this.openBrowser(index); } }
     ];
+    if (this.hasTimeline()) {
+      items.push({ value: $r('app.string.desktop_timeline_title'),
+        action: (): void => { this.openDockTool(index, DesktopDockKind.TIMELINE); } });
+    }
     if (this.canSplitDock()) {
       items.push({ value: '向右分屏', action: (): void => { this.splitDock(); } });
     } else if (this.rightDock.panes.length === 2) {
@@ -3662,6 +3681,7 @@ struct DesktopWorkspace {
     this.focusDockPane(index);
     if (kind === DesktopDockKind.FILES) { this.showWorkspaceFiles(); }
     else if (kind === DesktopDockKind.TERMINAL) { this.showTerminal(true); }
+    else if (kind === DesktopDockKind.TIMELINE) { this.showTimeline(); }
   }
 
   private browserOrigin(): string {
@@ -3987,7 +4007,12 @@ struct DesktopWorkspace {
 
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
-    if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
+    if (tab.kind === DesktopDockKind.TIMELINE) {
+      DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId,
+        opening: this.chat?.sessionId === this.sessionId ? this.chat?.timeline : undefined,
+        active: this.hasTimeline() && (index < 0 || (this.rightDock.expanded && this.rightDock.panes[index]?.active === tab.id)),
+        onWeb: (): void => { this.openWeb(false); } })
+    } else if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
       DesktopFilesPane({ host: this.data?.actions,
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
         sessionId: tab.sourceSessionId ?? this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
@@ -4140,6 +4165,15 @@ struct DesktopWorkspace {
         .onClick((): void => this.openDockTool(index, DesktopDockKind.FILES))
       Button('新建终端', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideTerminal-' + index)
         .onClick((): void => this.openDockTool(index, DesktopDockKind.TERMINAL))
+      if (this.hasTimeline()) {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 7 }) {
+            Image($r('app.media.dsh_timeline_icon')).width(20).height(20).supportSvg2(true).accessibilityLevel('no')
+            Text($r('app.string.desktop_timeline_title')).fontSize(14)
+          }
+        }.key('desktopDockGuideTimeline').accessibilityText($r('app.string.desktop_timeline_title'))
+          .onClick((): void => { this.openDockTool(index, DesktopDockKind.TIMELINE); })
+      }
       Button($r('app.string.desktop_browser_title'), { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideBrowser-' + index)
         .onClick((): void => this.openBrowser(index))
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {

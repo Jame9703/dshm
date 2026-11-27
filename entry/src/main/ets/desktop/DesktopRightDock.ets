@@ -6,7 +6,7 @@ import type { DesktopAgentTerminalBinding } from './DesktopTerminalRosters';
 
 export enum DesktopDockKind {
   FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes', CHAT = 'chat',
-  BROWSER = 'browser', COMPACTION = 'compaction'
+  BROWSER = 'browser', COMPACTION = 'compaction', TIMELINE = 'timeline'
 }
 
 export interface DesktopDockChatTarget {

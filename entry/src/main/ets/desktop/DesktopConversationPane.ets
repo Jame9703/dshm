@@ -109,6 +109,8 @@ export struct DesktopConversationPane {
   @Prop terminalOpen: boolean = false;
   @Prop filesOpen: boolean = false;
   @Prop rightDockOpen: boolean = false;
+  @Prop timelineOpen: boolean = false;
+  onTimeline: () => void = (): void => {};
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
   @Prop copyingTranscript: boolean = false;
@@ -1821,6 +1823,14 @@ export struct DesktopConversationPane {
           }
             .key('desktopWorkspaceFiles').width(34).height(34).padding(0).focusOnTouch(false)
             .accessibilityText('工作区文件').accessibilitySelected(this.filesOpen).onClick(this.onFiles)
+          if (this.snapshot?.timeline !== undefined) {
+            Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+              Image($r('app.media.dsh_timeline_icon')).width(16).height(16).fillColor($r('sys.color.font_primary'))
+                .supportSvg2(true).accessibilityLevel('no')
+            }.key('desktopConversationTimeline').width(34).height(34).padding(0).focusOnTouch(false)
+              .accessibilityText($r('app.string.desktop_timeline_title')).accessibilitySelected(this.timelineOpen)
+              .onClick(this.onTimeline)
+          }
           Button('终端', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
             .width(44).height(34).padding(0).focusOnTouch(false)
             .accessibilitySelected(this.terminalOpen)
