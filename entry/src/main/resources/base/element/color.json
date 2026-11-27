@@ -29,6 +29,10 @@
       "value": "#B33232"
     },
     {
+      "name": "desktop_connector_connected",
+      "value": "#23854A"
+    },
+    {
       "name": "workspace_border",
       "value": "#1A191C20"
     },

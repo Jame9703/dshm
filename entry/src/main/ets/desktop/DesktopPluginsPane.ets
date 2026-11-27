@@ -6,6 +6,9 @@ import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
 import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
+import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
+import type { DesktopConnectorAccount, DesktopConnectorAction, DesktopConnectorPrompt } from './DesktopConnectorAccounts';
+import { DesktopConnectorAccountView, DesktopConnectorBadge, DesktopConnectorDialog } from './DesktopConnectorAccountView';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 
 const MARKET_BUNDLE: string = '@deepseek-ai/dsh-experimental-plugin-market-bundle';
@@ -57,6 +60,7 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
 export struct DesktopPluginsPane {
   host?: DesktopHostActions;
   @ObjectLink installer: DesktopPluginInstall;
+  @ObjectLink connectorAccounts: DesktopConnectorAccounts;
   @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
   @Prop requestedTitle: string = '';
   @Prop requestedDescription: string = '';
@@ -89,12 +93,18 @@ export struct DesktopPluginsPane {
   private detailRead: number = 0;
   private refreshAgain: boolean = false;
   private stopCatalog?: () => void;
+  private stopAccounts?: () => void;
   private installDialog: number = -1;
   private installOpening: boolean = false;
+  private connectorDialog: number = -1;
+  private connectorOpening: boolean = false;
+  private activationBundle: string = '';
+  private activationShowing: string = '';
 
   aboutToAppear(): void {
     this.active = true;
     this.stopCatalog = this.installer.watchCatalog((): void => { this.refresh(); });
+    this.stopAccounts = this.connectorAccounts.watch((): void => { this.updateActivation(); });
     this.refresh();
     this.requestedBundleChanged();
   }
@@ -103,7 +113,10 @@ export struct DesktopPluginsPane {
     this.active = false;
     this.stopCatalog?.();
     this.stopCatalog = undefined;
+    this.stopAccounts?.();
+    this.stopAccounts = undefined;
     this.closeInstall();
+    this.closeConnectorDialog();
   }
 
   private requestedBundleChanged(): void {
@@ -170,6 +183,7 @@ export struct DesktopPluginsPane {
       }
     }
     this.catalogError = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
+    this.updateActivation();
   }
 
   private async saveSources(urls: string[]): Promise<void> {
@@ -232,7 +246,7 @@ export struct DesktopPluginsPane {
     }
   }
 
-  private async mutate(endpoint: string, payload: Record<string, Object>): Promise<void> {
+  private async mutate(endpoint: string, payload: Record<string, Object>, activate: string = ''): Promise<void> {
     if (this.host === undefined || this.busy) {
       return;
     }
@@ -247,13 +261,19 @@ export struct DesktopPluginsPane {
     const outcome: RpcResult = { ok: result.ok, value: value, error: result.error };
     const problem = desktopHostProblem(outcome);
     await this.refresh();
+    if (!this.active) { return; }
     this.status = problem || (getString(value, 'application') === 'restart-required' ?
       '已保存，重启核心后生效' : '操作已完成');
+    if (activate && !problem && getString(value, 'application') !== 'restart-required') {
+      this.activationBundle = activate;
+      this.updateActivation();
+    }
   }
 
   @Builder
   private InstallDialog() {
-    DesktopPluginInstallDialog({ installer: this.installer, onClose: (): void => { this.closeInstall(); } })
+    DesktopPluginInstallDialog({ installer: this.installer, onClose: (): void => { this.closeInstall(); },
+      onEnable: (): void => { this.enableInstalled(); } })
   }
 
   private async openInstall(spec: string = '', registry: string = ''): Promise<void> {
@@ -270,6 +290,7 @@ export struct DesktopPluginsPane {
         onDidDisappear: (): void => {
           this.installDialog = -1;
           this.installer.closeInspection();
+          this.updateActivation();
         }
       });
       if (this.active) { this.installDialog = id; }
@@ -283,6 +304,84 @@ export struct DesktopPluginsPane {
 
   private closeInstall(): void {
     if (this.installDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.installDialog); }
+  }
+
+  private async enableInstalled(): Promise<void> {
+    const name = await this.installer.enable();
+    if (this.active && name) {
+      this.activationBundle = name;
+      this.updateActivation();
+    }
+  }
+
+  private updateActivation(): void {
+    if (!this.active || !this.connectorAccounts.linked) { return; }
+    if (this.activationShowing && this.connectorAccounts.byBundle(this.activationShowing)?.phase !== 'disconnected') {
+      this.closeConnectorDialog();
+    }
+    if (!this.activationBundle || this.connectorOpening || this.connectorDialog >= 0 ||
+      !this.bundles.some((row: DesktopPluginRow): boolean => row.id === this.activationBundle && row.enabled)) { return; }
+    const account = this.connectorAccounts.byBundle(this.activationBundle);
+    if (account === undefined) { return; }
+    if (account.phase === 'connected' || account.phase === 'unavailable') { this.activationBundle = ''; return; }
+    const prompt = account.activation;
+    if (account.phase !== 'disconnected' || prompt === undefined) { return; }
+    if (this.installDialog >= 0) { this.closeInstall(); return; }
+    this.activationBundle = '';
+    this.showConnectorDialog(account, prompt, true, (): void => {
+      const latest = this.connectorAccounts.byBundle(account.packageName);
+      if (latest?.key !== account.key || latest.phase !== 'disconnected') { return; }
+      this.openBundle(account.packageName);
+      if (latest.connect !== undefined) { this.connectorAccounts.run(latest, latest.connect, true); }
+    });
+  }
+
+  private accountAction(account: DesktopConnectorAccount, action: DesktopConnectorAction): void {
+    if (action.confirm === undefined) {
+      this.connectorAccounts.run(account, action);
+    } else {
+      this.showConnectorDialog(account, action.confirm, false, (): void => { this.connectorAccounts.run(account, action); });
+    }
+  }
+
+  @Builder
+  private ConnectorDialog(accountKey: string, data: DesktopConnectorPrompt, activation: boolean, action: () => void) {
+    DesktopConnectorDialog({ accounts: this.connectorAccounts, prompt: data, accountKey: accountKey, activation: activation,
+      onDismiss: (): void => { this.closeConnectorDialog(); },
+      onConfirm: (): void => { this.closeConnectorDialog(); if (this.active) { action(); } } })
+  }
+
+  private async showConnectorDialog(account: DesktopConnectorAccount, data: DesktopConnectorPrompt, activation: boolean,
+    action: () => void): Promise<void> {
+    if (!this.active || this.connectorOpening || this.connectorDialog >= 0) { return; }
+    this.connectorOpening = true;
+    this.activationShowing = activation ? account.packageName : '';
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.ConnectorDialog(account.key, data, activation, action); },
+        alignment: DialogAlignment.Center, width: Math.max(240, Math.min(442, this.paneWidth - 28)),
+        isModal: true, autoCancel: true, cornerRadius: 22, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          this.connectorDialog = -1;
+          this.activationShowing = '';
+          this.updateActivation();
+        }
+      });
+      if (this.active) { this.connectorDialog = id; this.updateActivation(); }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      this.activationShowing = '';
+      if (this.active) { prompt.showToast({ message: $r('app.string.desktop_connector_failed') }); }
+    } finally {
+      this.connectorOpening = false;
+    }
+  }
+
+  private closeConnectorDialog(): void {
+    if (this.connectorDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.connectorDialog); }
   }
 
   private async listVersions(row: DesktopPluginRow): Promise<void> {
@@ -321,7 +420,8 @@ export struct DesktopPluginsPane {
     if (row.toggle) {
       result.push({ value: row.enabled ? '停用' : '启用', action: (): void => {
         if (this.tab === 'bundles') {
-          this.mutate('pluginManager/setBundleEnabled', { 'name': row.id, 'enabled': !row.enabled });
+          if (row.enabled && this.activationBundle === row.id) { this.activationBundle = ''; }
+          this.mutate('pluginManager/setBundleEnabled', { 'name': row.id, 'enabled': !row.enabled }, row.enabled ? '' : row.id);
         } else {
           this.mutate('pluginManager/setPluginEnabled', { 'id': row.id, 'enabled': !row.enabled });
         }
@@ -396,14 +496,27 @@ export struct DesktopPluginsPane {
     Column({ space: 12 }) {
       Button('返回插件包', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
         .onClick((): void => { this.closeBundle(); })
-      Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') || this.detailName)
-        .key('desktopPluginDetailTitle').fontSize(22).fontWeight(FontWeight.Medium)
+      Row({ space: 8 }) {
+        Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') || this.detailName)
+          .key('desktopPluginDetailTitle').fontSize(22).fontWeight(FontWeight.Medium)
+        if (this.bundles.some((row: DesktopPluginRow): boolean => row.id === this.detailName && row.enabled) &&
+          this.connectorAccounts.byBundle(this.detailName)?.badge) {
+          DesktopConnectorBadge({ text: this.connectorAccounts.byBundle(this.detailName)?.badge ?? '',
+            phase: this.connectorAccounts.byBundle(this.detailName)?.phase ?? '' })
+        }
+      }.width('100%')
       if (this.detailName === this.requestedBundle && this.requestedDescription) {
         Text(this.requestedDescription).fontSize(14).fontColor($r('sys.color.font_secondary'))
       }
       ForEach(this.bundles.filter((row: DesktopPluginRow): boolean => row.id === this.detailName), (row: DesktopPluginRow): void => {
         this.PluginRow(row)
       }, (row: DesktopPluginRow): string => JSON.stringify(row))
+      DesktopConnectorAccountView({ account: this.connectorAccounts.byBundle(this.detailName),
+        actionsEnabled: this.connectorAccounts.linked &&
+          !this.connectorAccounts.pending.includes(this.connectorAccounts.byBundle(this.detailName)?.key ?? ''),
+        onAction: (account: DesktopConnectorAccount, action: DesktopConnectorAction): void => {
+          this.accountAction(account, action);
+        } })
       if (this.detailLoading) {
         LoadingProgress().width(22).height(22)
       } else if (this.detailError) {
@@ -506,7 +619,7 @@ export struct DesktopPluginsPane {
       Row({ space: 8 }) {
         Text('插件').fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
         Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy && !this.catalogBusy)
-          .onClick((): void => { this.refresh(); })
+          .onClick((): void => { this.connectorAccounts.reconnect(); this.refresh(); })
         Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy).onClick(this.onWeb)
       }
       .width('100%')

@@ -5,6 +5,7 @@ import { desktopMenuOptions } from './DesktopMenuOptions';
 export struct DesktopPluginInstallDialog {
   @ObjectLink installer: DesktopPluginInstall;
   onClose: () => void = (): void => {};
+  onEnable: () => void = (): void => {};
   @State private detailsOpen: boolean = false;
 
   private phaseTitle(): Resource {
@@ -142,7 +143,7 @@ export struct DesktopPluginInstallDialog {
         }
         if (this.installer.phase === 'done' && this.installer.installedName && !this.installer.enabled) {
           Button($r('app.string.desktop_plugin_install_enable')).key('desktopPluginInstallEnable')
-            .enabled(!this.installer.enabling).onClick((): void => { this.installer.enable(); })
+            .enabled(!this.installer.enabling).onClick(this.onEnable)
         } else {
           Button($r('app.string.desktop_plugin_install_close')).onClick(this.onClose)
         }

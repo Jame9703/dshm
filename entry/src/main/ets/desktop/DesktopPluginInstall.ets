@@ -269,17 +269,20 @@ export class DesktopPluginInstall {
     this.catalogChanged();
   }
 
-  async enable(): Promise<void> {
-    if (this.phase !== 'done' || !this.installedName || this.enabling || this.enabled) { return; }
+  async enable(): Promise<string> {
+    if (this.phase !== 'done' || !this.installedName || this.enabling || this.enabled) { return ''; }
+    const name = this.installedName;
     this.enabling = true;
-    const result = await this.host.call('pluginManager/setBundleEnabled', { 'name': this.installedName, 'enabled': true });
-    if (!this.active) { return; }
+    const result = await this.host.call('pluginManager/setBundleEnabled', { 'name': name, 'enabled': true });
+    if (!this.active) { return ''; }
     this.enabling = false;
     this.problem = desktopHostProblem(result);
     if (!this.problem) {
       this.enabled = true;
       this.restartRequired = getString(result.value, 'application') === 'restart-required';
       this.catalogChanged();
+      return this.restartRequired ? '' : name;
     }
+    return '';
   }
 }

@@ -446,6 +446,10 @@ struct DesktopWorkspace {
       if (this.pageActive) { this.accountNotices = notices; }
     }, (theme: DesktopTheme): void => {
       this.applyHostTheme(theme);
+    }, (link: string): Promise<boolean> => {
+      return this.pageActive ? openExternalUrl(link) : Promise.resolve(false);
+    }, (message: ResourceStr): void => {
+      if (this.pageActive) { this.getUIContext().getPromptAction().showToast({ message: message }); }
     });
     this.data.start(this.hostUrl);
   }
@@ -3604,7 +3608,7 @@ struct DesktopWorkspace {
             if (this.panel !== 'session' || !this.dockFullscreen()) { this.Sidebar() }
             if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
               DesktopPluginsPane({
-                host: this.data.actions, installer: this.data.pluginInstall,
+                host: this.data.actions, installer: this.data.pluginInstall, connectorAccounts: this.data.connectorAccounts,
                 requestedBundle: this.pluginName, requestedTitle: this.pluginTitle,
                 requestedDescription: this.pluginDescription,
                 onWeb: (): void => { this.openWeb(false, 'plugins'); }

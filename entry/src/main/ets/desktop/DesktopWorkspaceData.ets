@@ -7,6 +7,7 @@ import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LL
   SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
+import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
 import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
 import type { DesktopTheme } from './DesktopTheme';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
@@ -68,6 +69,7 @@ export class DesktopWorkspaceData {
   readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
   readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
+  readonly connectorAccounts: DesktopConnectorAccounts;
   readonly reading: DesktopSessionReading;
   readonly accountNotices: DesktopAccountNotices;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
@@ -99,10 +101,12 @@ export class DesktopWorkspaceData {
     onInteractions: (items: DesktopInteraction[]) => void,
     onReading: (items: DesktopUnreadSession[], ready: boolean) => void, afterFrame: (run: () => void) => void,
     onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void,
-    onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void) {
+    onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void,
+    openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
+    this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices);
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
@@ -154,6 +158,7 @@ export class DesktopWorkspaceData {
         this.readConversationPreferences();
         this.actions.modelCatalogChanged();
         this.pluginInstall.reconnect();
+        this.connectorAccounts.reconnect();
         if (this.accountWatchEnabled) { this.accountNotices.connect(); }
       },
       onEvent: (frame: Object): void => {
@@ -217,7 +222,9 @@ export class DesktopWorkspaceData {
     const theme = namespaces?.find((row: Object): boolean => getString(row, 'ns') === DESKTOP_THEME_NS);
     const appearance = getRecord(theme, 'value');
     if (appearance !== undefined) { this.onTheme(desktopThemeFrom(appearance)); }
-    this.accountNotices.setLocale(getString(getRecord(locale, 'value'), 'preference') ?? 'system');
+    const language = getString(getRecord(locale, 'value'), 'preference') ?? 'system';
+    this.accountNotices.setLocale(language);
+    this.connectorAccounts.setLocale(language);
     this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';
     this.conversation.setBusyEnter(this.busyEnterSteers);
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
@@ -340,6 +347,7 @@ export class DesktopWorkspaceData {
   stop(): void {
     this.active = false;
     this.pluginInstall.dispose();
+    this.connectorAccounts.dispose();
     this.accountNotices.stop();
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();
