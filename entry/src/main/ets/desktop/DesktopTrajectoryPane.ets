@@ -35,6 +35,7 @@ export struct DesktopTrajectoryPane {
   readRecords?: () => DesktopTraceRow[];
   @Prop @Watch('reload') revision: number = 0;
   @Prop @Watch('reset') sessionId: string = '';
+  @Prop @Watch('inspectRequested') inspectCall: string = '';
   @Prop hasEarlier: boolean = false;
   @Prop loading: boolean = false;
   @Prop codeFamily: string = '';
@@ -53,6 +54,7 @@ export struct DesktopTrajectoryPane {
   @State private matchesView: DesktopTraceRow[] = [];
   private readonly ledger: TraceListSource = new TraceListSource();
   private readonly scroller: Scroller = new Scroller();
+  private inspectedCall: string = '';
 
   aboutToAppear(): void { this.reload(); }
 
@@ -62,6 +64,7 @@ export struct DesktopTrajectoryPane {
     this.callsCollapsed = false;
     this.subcallsCollapsed = false;
     this.selected = '';
+    this.inspectedCall = '';
     this.focused = '';
     this.reload();
   }
@@ -69,6 +72,17 @@ export struct DesktopTrajectoryPane {
   private reload(): void {
     this.rows = this.readRecords?.() ?? [];
     this.applySearch();
+    this.inspectRequested();
+  }
+
+  private inspectRequested(): void {
+    const call = this.inspectCall;
+    if (!call || this.inspectedCall === call) { return; }
+    const id = 'tool-' + call;
+    if (this.rows.some((row: DesktopTraceRow): boolean => row.id === id)) {
+      this.inspectedCall = call;
+      this.openRelated(id);
+    }
   }
 
   private matches(row: DesktopTraceRow, query: string): boolean {

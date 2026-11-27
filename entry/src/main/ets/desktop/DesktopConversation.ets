@@ -22,6 +22,9 @@ import { DesktopInteractions } from './DesktopInteractions';
 import { desktopPlanMode, desktopSubmittedPlan, DesktopPlanDocument } from './DesktopPlan';
 import { DesktopTurnArtifacts, observeDesktopArtifacts } from './DesktopArtifacts';
 import { DesktopProcessGroup, DesktopToolLog } from './DesktopToolLog';
+import type { DesktopToolStep } from './DesktopToolLog';
+import type { DesktopCordisCard } from './DesktopCordisCards';
+import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopTrajectoryLog } from './DesktopTrajectoryLog';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
@@ -60,6 +63,7 @@ export interface DesktopTranscriptItem {
   plan?: DesktopPlanDocument;
   artifacts?: DesktopTurnArtifacts;
   process?: DesktopProcessGroup;
+  cordis?: DesktopCordisCard;
   command?: DesktopCommandRecord;
   replyTail?: DesktopReplyTail;
   workflow?: DesktopWorkflowRun;
@@ -109,6 +113,7 @@ interface DraftRequest {
 }
 
 export class DesktopConversation {
+  private readonly cordis?: DesktopCordisRuntime;
   private readonly connection: Connection;
   private readonly host: DesktopHostActions;
   private readonly interactions: DesktopInteractions;
@@ -173,9 +178,11 @@ export class DesktopConversation {
   private readonly pendingRequests: Map<string, DraftRequest> = new Map<string, DraftRequest>();
 
   constructor(connection: Connection, listener: (snapshot: DesktopConversationSnapshot) => void,
-    refreshSessions: () => void, interactions: DesktopInteractions, host: DesktopHostActions) {
+    refreshSessions: () => void, interactions: DesktopInteractions, host: DesktopHostActions,
+    cordis?: DesktopCordisRuntime) {
     this.connection = connection;
     this.host = host;
+    this.cordis = cordis;
     this.interactions = interactions;
     this.listener = listener;
     this.refreshSessions = refreshSessions;
@@ -678,12 +685,13 @@ export class DesktopConversation {
     this.publish();
   }
 
-  private addRecords(records: Object[], merge: boolean, hasEarlier: boolean): void {
+  private addRecords(records: Object[], merge: boolean, hasEarlier: boolean): boolean {
     const result: Map<string, DesktopTranscriptItem> = new Map<string, DesktopTranscriptItem>();
+    let cordisResult = false;
     if (merge) {
       this.transcript.forEach((item: DesktopTranscriptItem): void => {
         if (item.artifacts === undefined && item.process === undefined && item.command === undefined &&
-          item.replyTail === undefined && item.workflow === undefined && !item.inheritedHistory) {
+          item.replyTail === undefined && item.workflow === undefined && item.cordis === undefined && !item.inheritedHistory) {
           result.set(item.id, item);
         }
       });
@@ -710,7 +718,7 @@ export class DesktopConversation {
         this.receivedTurn = Math.max(this.receivedTurn, eventType === EVENT_TURN_END ? turn : turn - 1);
       }
       observeDesktopArtifacts(this.turnArtifacts, event);
-      this.toolLog.observe(record);
+      cordisResult = this.toolLog.observe(record) || cordisResult;
       observeDesktopCommand(this.commandRecords, event);
       this.replyTimeline.observe(event);
       this.workflows.observe(event);
@@ -758,8 +766,15 @@ export class DesktopConversation {
     const processes = this.toolLog.groups();
     this.trajectory.setProcesses(processes);
     for (const process of processes) {
-      const id = `process:${this.sessionId}:${process.id}`;
-      result.set(id, { id: id, sequence: process.sequence, process: process });
+      let pending: DesktopToolStep[] = [];
+      for (const step of process.steps) {
+        if (step.cordis === undefined) { pending.push(step); continue; }
+        this.addProcess(result, process, pending);
+        pending = [];
+        const id = 'cordis:' + this.sessionId + ':' + step.id;
+        result.set(id, { id: id, sequence: step.cordis.sequence, cordis: step.cordis });
+      }
+      this.addProcess(result, process, pending);
     }
     this.commandRecords.forEach((command: DesktopCommandRecord): void => {
       if (command.sequence >= 0 && command.name) {
@@ -795,6 +810,16 @@ export class DesktopConversation {
     }
     this.transcript = transcript;
     this.hasEarlier = hasEarlier;
+    return cordisResult;
+  }
+
+  private addProcess(result: Map<string, DesktopTranscriptItem>, group: DesktopProcessGroup,
+    steps: DesktopToolStep[]): void {
+    if (steps.length === 0) { return; }
+    const id = `process:${this.sessionId}:${steps[0].id}`;
+    result.set(id, { id: id, sequence: steps[0].sequence, process: {
+      id: steps[0].id, sequence: steps[0].sequence, turn: group.turn, version: group.version, steps: steps
+    } });
   }
 
   canForkAt(endSeq: number): boolean {
@@ -1019,7 +1044,7 @@ export class DesktopConversation {
         this.loadSelection(this.generation);
       }
       this.cursor = Math.max(this.cursor, getNumber(event, 'seq') ?? -1);
-      this.addRecords([frame], true, this.hasEarlier);
+      if (this.addRecords([frame], true, this.hasEarlier)) { this.cordis?.refresh(); }
       if (eventType === EVENT_TURN_END || (eventType !== undefined && mayChangeSessionTitle(eventType))) {
         this.refreshSessions();
       }

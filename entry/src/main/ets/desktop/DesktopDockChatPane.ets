@@ -167,7 +167,8 @@ export struct DesktopDockChatPane {
   build() {
     Column() {
       if (this.snapshot !== undefined && this.target !== undefined) {
-        DesktopConversationPane({ host: this.data?.actions, snapshot: this.snapshot, embedded: true,
+        DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis,
+          snapshot: this.snapshot, embedded: true,
           title: this.title, sessionDirectory: this.directory, appearance: this.appearance, typography: this.typography,
           sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, forking: this.forking,
           referenceOffer: this.referenceOffer,

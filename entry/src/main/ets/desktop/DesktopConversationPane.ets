@@ -22,6 +22,9 @@ import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { SessionListItem } from 'appstate';
 import { DesktopProcessPane } from './DesktopProcessPane';
 import { DesktopTrajectoryPane } from './DesktopTrajectoryPane';
+import { DesktopCordisCardView } from './DesktopCordisCardView';
+import { desktopCordisAction, desktopCordisCardIcon, desktopCordisCardTitle } from './DesktopCordisCards';
+import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
@@ -57,6 +60,7 @@ import type { DesktopComposerDraft, DesktopDraftReference } from './DesktopDraft
 @Component
 export struct DesktopConversationPane {
   host?: DesktopHostActions;
+  cordis?: DesktopCordisRuntime;
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop sessionSummaries: SessionListItem[] = [];
   @Prop embedded: boolean = false;
@@ -143,7 +147,9 @@ export struct DesktopConversationPane {
   private readonly scroller: Scroller = new Scroller();
   private following: boolean = true;
   private sessionId: string = '';
+  private preparing: string = '';
   @State private showTrajectory: boolean = false;
+  @State private inspectTrajectoryCall: string = '';
   private readonly trajectorySessions: Set<string> = new Set();
   private messageCount: number = 0;
   private partial: string = '';
@@ -220,6 +226,7 @@ export struct DesktopConversationPane {
     const id = this.snapshot?.sessionId ?? '';
     const count = this.snapshot?.transcript.length ?? 0;
     const partial = this.snapshot?.partial ?? '';
+    const preparing = this.snapshot?.preparingTool ?? '';
     this.updateWorkflowViews();
     if (id !== this.sessionId) {
       this.teamActionVersion++;
@@ -227,6 +234,7 @@ export struct DesktopConversationPane {
       this.teamSaving = false;
       this.teamProblem = '';
       this.sessionId = id;
+      this.inspectTrajectoryCall = '';
       this.showTrajectory = this.trajectorySessions.has(id);
       this.composerSelectionEnd = -1;
       this.scheduleComposerSync();
@@ -237,11 +245,12 @@ export struct DesktopConversationPane {
       this.inspectedTool = '';
       this.dismissedDraft = undefined;
       this.closePalette();
-    } else if (count === this.messageCount && partial === this.partial) {
+    } else if (count === this.messageCount && partial === this.partial && preparing === this.preparing) {
       return;
     }
     this.messageCount = count;
     this.partial = partial;
+    this.preparing = preparing;
     if (this.following && this.scrollTimer === -1) {
       this.scrollTimer = setTimeout((): void => {
         this.scrollTimer = -1;
@@ -991,8 +1000,16 @@ export struct DesktopConversationPane {
   private selectView(trajectory: boolean): void {
     this.showTrajectory = trajectory;
     if (trajectory) { this.trajectorySessions.add(this.snapshot?.sessionId ?? ''); }
-    else { this.trajectorySessions.delete(this.snapshot?.sessionId ?? ''); }
+    else {
+      this.trajectorySessions.delete(this.snapshot?.sessionId ?? '');
+      this.inspectTrajectoryCall = '';
+    }
     this.closePalette();
+  }
+
+  private inspectCordis(call: string): void {
+    this.inspectTrajectoryCall = call;
+    this.selectView(true);
   }
 
   private trajectoryInMenu(): boolean {
@@ -1347,6 +1364,11 @@ export struct DesktopConversationPane {
                 DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
                   artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
                   onReview: this.onChanges })
+              } else if (item.cordis !== undefined) {
+                DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
+                  sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
+                  codeFamily: this.typography.codeFamily, onInspect: (call: string): void => { this.inspectCordis(call); },
+                  onWeb: this.onWeb })
               } else if (item.process !== undefined) {
                 DesktopProcessPane({ group: item.process, expanded: this.expandedProcesses.includes(item.id),
                   codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
@@ -1363,6 +1385,7 @@ export struct DesktopConversationPane {
           }
         }, (item: DesktopTranscriptItem): string => this.sessionId + ':' + item.id +
           (item.process?.version ?? '') + (item.command?.completed ?? '') +
+          (item.cordis === undefined ? '' : `:${item.cordis.resultSequence}:${item.cordis.state}:${item.cordis.superseded}`) +
           (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels)))
         if ((this.snapshot?.partial.length ?? 0) > 0) {
           ListItem() {
@@ -1377,8 +1400,17 @@ export struct DesktopConversationPane {
         if (this.snapshot?.preparingTool) {
           ListItem() {
             Row({ space: 7 }) {
-              LoadingProgress().width(16).height(16)
-              Text(`正在准备 ${this.snapshot?.preparingTool ?? ''}`).fontSize(13)
+              if (desktopCordisAction(this.snapshot?.preparingTool ?? '')) {
+                Image(desktopCordisCardIcon(desktopCordisAction(this.snapshot?.preparingTool ?? '')))
+                  .width(14).height(14).supportSvg2(true).accessibilityLevel('no')
+                Text(desktopCordisCardTitle(desktopCordisAction(this.snapshot?.preparingTool ?? ''))).fontSize(14)
+                  .fontColor($r('sys.color.brand'))
+                LoadingProgress().key('desktopCordisPreparing-' + this.snapshot?.preparingTool).width(14).height(14)
+                  .accessibilityText($r('app.string.desktop_cordis_card_preparing'))
+              } else {
+                LoadingProgress().width(16).height(16)
+                Text(`正在准备 ${this.snapshot?.preparingTool ?? ''}`).fontSize(13)
+              }
             }.width('100%').constraintSize({ maxWidth: 712 }).padding({ left: 7 })
           }
         }
@@ -1391,6 +1423,7 @@ export struct DesktopConversationPane {
       })
       if (this.showTrajectory) {
         DesktopTrajectoryPane({ host: this.host, readRecords: this.snapshot?.readTrajectory,
+          inspectCall: this.inspectTrajectoryCall,
           revision: this.snapshot?.trajectoryRevision ?? 0,
           sessionId: this.snapshot?.sessionId ?? '', hasEarlier: this.snapshot?.hasEarlier ?? false,
           loading: this.snapshot?.loading ?? false, codeFamily: this.typography.codeFamily,

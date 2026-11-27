@@ -122,7 +122,7 @@ export class DesktopWorkspaceData {
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.interactions.observeSidebarPending(onSidebarPending);
     this.conversation = new DesktopConversation(this.connection, onConversation,
-      (): void => { this.refreshSessions(); }, this.interactions, this.actions);
+      (): void => { this.refreshSessions(); }, this.interactions, this.actions, this.cordis);
   }
 
   createDockConversation(onConversation: (snapshot: DesktopConversationSnapshot) => void,
@@ -132,7 +132,7 @@ export class DesktopWorkspaceData {
     this.dockConversations = conversations;
     const interactions = this.interactions.createView(onInteractions);
     const conversation = new DesktopConversation(this.connection, onConversation,
-      (): void => { this.refreshSessions(); }, interactions, this.actions);
+      (): void => { this.refreshSessions(); }, interactions, this.actions, this.cordis);
     const binding: DesktopDockConversation = { conversation: conversation, interactions: interactions,
       close: (): void => {
         if (!conversations.delete(binding)) { return; }

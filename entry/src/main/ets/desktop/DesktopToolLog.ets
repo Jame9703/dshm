@@ -1,5 +1,7 @@
 import { makeItem, projectWireRecord, ToolState, TrajectoryItem, TrajectoryKind } from 'appstate';
 import { getArray, getBoolean, getNumber, getRecord, getString, stringifyJson } from 'connection';
+import { desktopCordisAction, desktopCordisCard, desktopCordisRunKey } from './DesktopCordisCards';
+import type { DesktopCordisCard } from './DesktopCordisCards';
 
 interface ToolEntry {
   id: string;
@@ -10,15 +12,19 @@ interface ToolEntry {
   end: number;
   call?: TrajectoryItem;
   result?: TrajectoryItem;
+  cordisArgs?: string;
+  cordisResult?: Object;
   error: string;
 }
 
 export interface DesktopToolStep {
   id: string;
+  sequence: number;
   item: TrajectoryItem;
   depth: number;
   step: number;
   resultSequence: number;
+  cordis?: DesktopCordisCard;
   interrupted: boolean;
   error: string;
 }
@@ -44,22 +50,22 @@ export class DesktopToolLog {
 
   clear(): void { this.entries.clear(); this.closed.clear(); }
 
-  observe(record: Object): void {
+  observe(record: Object): boolean {
     const event = getRecord(record, 'event');
     const data = getRecord(event, 'data');
     const type = getString(event, 'type');
     const turn = getNumber(data, 'turn') ?? 0;
     const step = getNumber(data, 'step') ?? 0;
-    if (type === 'turn/end' && turn > 0) { this.closed.add(turn); return; }
+    if (type === 'turn/end' && turn > 0) { this.closed.add(turn); return false; }
     const child = type === 'tool/ptc-dispatch' || type === 'tool/ptc-dispatch-start';
     const done = type === 'tool/result' || type === 'tool/ptc-dispatch';
-    if (!child && type !== 'tool/call' && type !== 'tool/result') { return; }
+    if (!child && type !== 'tool/call' && type !== 'tool/result') { return false; }
     const seq = getNumber(event, 'seq') ?? -1;
     const resultMessage = getRecord(data, 'message');
     const id = child ? getString(data, 'subCallId') : done ?
       getString(resultMessage, 'toolCallId') || getString(getRecord(resultMessage, 'source'), 'callId') :
       getString(data, 'callId');
-    if (!id || seq < 0) { return; }
+    if (!id || seq < 0) { return false; }
     const entry: ToolEntry = this.entries.get(id) ??
       { id: id, parentId: '', turn: 0, step: 0, start: -1, end: -1, error: '' };
     const name = getString(data, 'name') ?? '';
@@ -74,7 +80,7 @@ export class DesktopToolLog {
     if (child && args !== undefined) { item.toolArgs = stringifyJson(args) ?? ''; }
     item.callId = id;
     if (done) {
-      if (entry.end > seq) { return; }
+      if (entry.end > seq) { return false; }
       const error = getRecord(data, 'error');
       const code = getString(error, 'code') ?? '';
       entry.error = getString(error, 'reason') || getString(error, 'message') || code;
@@ -85,12 +91,17 @@ export class DesktopToolLog {
       item.toolOutput = renderContent(child ? data : resultMessage) || item.toolOutput;
       entry.result = item;
       entry.end = seq;
+      if (desktopCordisAction(entry.call?.toolName || name) || getString(getRecord(data, 'meta'), 'pluginId')) {
+        entry.cordisResult = data;
+      }
     } else if (entry.start < 0 || seq < entry.start) {
       item.toolState = ToolState.RUNNING;
       entry.call = item;
       entry.start = seq;
+      if (desktopCordisAction(name)) { entry.cordisArgs = getString(data, 'arguments') ?? item.toolArgs; }
     }
     this.entries.set(id, entry);
+    return done && !!desktopCordisAction(entry.call?.toolName || name);
   }
 
   private step(entry: ToolEntry, depth: number, turn: number, parentStep: number): DesktopToolStep {
@@ -102,9 +113,14 @@ export class DesktopToolLog {
     item.toolOutput = result?.toolOutput ?? '';
     item.toolState = result?.toolState ?? ToolState.RUNNING;
     item.elapsedMs = result === undefined ? 0 : Math.max(0, result.at - (call?.at ?? result.at));
-    return { id: entry.id, item: item, depth: depth, step: entry.step || parentStep, resultSequence: entry.end,
-      interrupted: result === undefined && this.closed.has(turn),
-      error: entry.error };
+    const interrupted = result === undefined && this.closed.has(turn);
+    const action = desktopCordisAction(item.toolName);
+    const cordis = action ? desktopCordisCard(action, entry.id, timestamp(entry), entry.end,
+      entry.cordisArgs ?? item.toolArgs, entry.cordisResult, item.toolState, item.toolOutput || entry.error,
+      interrupted || getString(getRecord(entry.cordisResult, 'error'), 'code') === 'interrupted') : undefined;
+    return { id: entry.id, sequence: timestamp(entry), item: item, depth: depth, step: entry.step || parentStep,
+      resultSequence: entry.end,
+      interrupted: interrupted, error: entry.error, cordis: cordis };
   }
 
   groups(): DesktopProcessGroup[] {
@@ -117,6 +133,8 @@ export class DesktopToolLog {
     }
     const groups: DesktopProcessGroup[] = [];
     const seen: Set<string> = new Set();
+    const runCards: DesktopCordisCard[] = [];
+    const latestRuns = new Map<string, number>();
     for (const root of rows) {
       if (root.parentId && this.entries.has(root.parentId)) { continue; }
       const steps: DesktopToolStep[] = [];
@@ -124,7 +142,18 @@ export class DesktopToolLog {
       this.attach(root, 0, root.turn, root.step, children, seen, steps, stamps);
       if (steps.length > 0) {
         groups.push({ id: root.id, sequence: timestamp(root), turn: root.turn, version: stamps.join('|'), steps: steps });
+        for (const step of steps) {
+          if (step.cordis === undefined) { continue; }
+          const key = desktopCordisRunKey(step.cordis);
+          if (key) {
+            runCards.push(step.cordis);
+            latestRuns.set(key, Math.max(latestRuns.get(key) ?? -1, step.resultSequence));
+          }
+        }
       }
+    }
+    for (const card of runCards) {
+      card.superseded = (latestRuns.get(desktopCordisRunKey(card)) ?? -1) > card.resultSequence;
     }
     return groups;
   }

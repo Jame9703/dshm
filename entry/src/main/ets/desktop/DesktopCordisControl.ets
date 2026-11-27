@@ -16,6 +16,7 @@ export struct DesktopCordisControl {
   @State private errors: Map<string, string> = new Map();
   private approvals: Set<string> = new Set();
   private stopWatch?: () => void;
+  private dismissedAt: number = 0;
 
   aboutToAppear(): void {
     this.stopWatch = this.runtime?.watch((snapshot: DesktopCordisSnapshot): void => {
@@ -245,13 +246,20 @@ export struct DesktopCordisControl {
         $r('app.color.workspace_selection') : Color.Transparent)
       .focusOnTouch(false).accessibilityText($r('app.string.desktop_cordis_title')).accessibilitySelected(this.opened)
       .onClick((): void => {
+        // ArkUI can dismiss the popup on pointer down and then deliver the anchor's click on release.
+        if (!this.opened && Date.now() - this.dismissedAt < 150) { return; }
         this.opened = !this.opened;
         if (this.opened) { this.runtime?.refresh(); }
       })
       .bindPopup(this.opened, { builder: this.Panel(), placement: Placement.TopLeft,
         enableArrow: false, focusable: true, mask: false,
         systemMaterial: desktopMenuOptions(Placement.TopLeft).systemMaterial,
-        onStateChange: (event): void => { if (!event.isVisible) { this.opened = false; } } })
+        onStateChange: (event): void => {
+          if (!event.isVisible && this.opened) {
+            this.dismissedAt = Date.now();
+            this.opened = false;
+          }
+        } })
     }
   }
 }

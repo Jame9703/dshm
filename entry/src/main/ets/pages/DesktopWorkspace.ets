@@ -2923,6 +2923,7 @@ struct DesktopWorkspace {
       if (this.sessionId.length > 0) {
         DesktopConversationPane({
           host: this.data?.actions,
+          cordis: this.data?.cordis,
           snapshot: this.chat,
           sessionSummaries: this.sessionSummaries,
           onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {

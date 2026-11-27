@@ -16,10 +16,13 @@ export interface DesktopCordisRow {
   session: string;
   packages: DesktopCordisPackage[];
   running: string;
+  runId: string;
   current: string;
   next: string;
   approval: string;
   target: string;
+  attemptId: string;
+  mode: string;
   status: string;
   problem: string;
 }
@@ -27,6 +30,7 @@ export interface DesktopCordisRow {
 export interface DesktopCordisSnapshot {
   rows: DesktopCordisRow[];
   problem: string;
+  removed: Set<string>;
 }
 
 function readRow(raw: Object): DesktopCordisRow | undefined {
@@ -43,12 +47,14 @@ function readRow(raw: Object): DesktopCordisRow | undefined {
   }
   const attempt = getRecord(raw, 'latestRun');
   const status = getString(attempt, 'status') ?? '';
+  const active = getRecord(raw, 'activeRun');
   return {
     id: id, session: session, packages: packages,
-    running: getString(getRecord(raw, 'activeRun'), 'packageId') ?? '',
+    running: getString(active, 'packageId') ?? '', runId: getString(active, 'pluginRunId') ?? '',
     current: getString(raw, 'currentPackageId') ?? '', next: getString(raw, 'nextPackageId') ?? '',
     approval: status === 'awaiting-approval' ? getString(attempt, 'approvalRequestId') ?? '' : '',
     target: getString(attempt, 'packageId') ?? '', status: status,
+    attemptId: getString(attempt, 'pluginRunId') ?? '', mode: getString(attempt, 'mode') ?? '',
     problem: getString(getRecord(attempt, 'error'), 'message') ?? ''
   };
 }
@@ -56,7 +62,7 @@ function readRow(raw: Object): DesktopCordisRow | undefined {
 export class DesktopCordisRuntime {
   private readonly host: DesktopHostActions;
   private readonly listeners: Set<(snapshot: DesktopCordisSnapshot) => void> = new Set();
-  private snapshot: DesktopCordisSnapshot = { rows: [], problem: '' };
+  private snapshot: DesktopCordisSnapshot = { rows: [], problem: '', removed: new Set() };
   private enabled: boolean = false;
   private generation: number = 0;
   private reading: boolean = false;
@@ -114,9 +120,15 @@ export class DesktopCordisRuntime {
         const row = readRow(item);
         if (row !== undefined) { rows.push(row); }
       }
-      this.publish({ rows: rows, problem: '' });
+      const live = new Set(rows.map((row: DesktopCordisRow): string => row.id));
+      const removed = new Set(this.snapshot.removed);
+      this.snapshot.rows.forEach((row: DesktopCordisRow): void => {
+        if (!live.has(row.id)) { removed.add(row.id); }
+      });
+      live.forEach((id: string): void => { removed.delete(id); });
+      this.publish({ rows: rows, problem: '', removed: removed });
     } else {
-      this.publish({ rows: this.snapshot.rows, problem: result.error?.message ?? '' });
+      this.publish({ rows: this.snapshot.rows, problem: result.error?.message ?? '', removed: this.snapshot.removed });
     }
     this.reading = false;
     if (this.queued) {
