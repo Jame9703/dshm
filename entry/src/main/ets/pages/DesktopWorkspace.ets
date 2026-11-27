@@ -4285,7 +4285,8 @@ struct DesktopWorkspace {
             if (this.panel !== 'session' || !this.dockFullscreen()) { this.Sidebar() }
             if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
               DesktopPluginsPane({
-                host: this.data.actions, installer: this.data.pluginInstall, connectorAccounts: this.data.connectorAccounts,
+                host: this.data.actions, installer: this.data.pluginInstall, maintenance: this.data.pluginMaintenance,
+                connectorAccounts: this.data.connectorAccounts, localePreference: this.data.accountLanguagePreference(),
                 requestedBundle: this.pluginName, requestedTitle: this.pluginTitle,
                 requestedDescription: this.pluginDescription,
                 onWeb: (): void => { this.openWeb(false, 'plugins'); }

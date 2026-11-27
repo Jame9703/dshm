@@ -110,6 +110,7 @@ export const EVENT_GOAL_ACTIVATION_CHANGED: string = 'goal/activation-changed';
 export const EVENT_PLUGIN_MANAGER_CHANGED: string = 'plugin-manager/changed';
 export const EVENT_PLUGIN_INSTALL_STATE: string = 'plugin-manager/install-state';
 export const EVENT_PLUGIN_INSTALL_LOG: string = 'plugin-manager/install-log';
+export const EVENT_PLUGIN_UPDATE_STATE: string = 'plugin-manager/update-state';
 
 // ── 会话轨迹事件的**命名空间前缀** ──
 //

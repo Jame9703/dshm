@@ -1,4 +1,4 @@
-import { getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
+import { getArray, getBoolean, getField, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
 import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
@@ -9,6 +9,9 @@ import { desktopVoiceNeedsInstallation, desktopVoiceSelectedProvider, readDeskto
 import { showDesktopVoiceSetup } from './DesktopVoiceSettingsPrompt';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
 import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
+import { DesktopPluginMaintenance } from './DesktopPluginMaintenance';
+import { DesktopPluginMaintenanceDialog } from './DesktopPluginMaintenanceDialog';
+import { DesktopPluginMarketDetail } from './DesktopPluginMarketDetail';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
 import type { DesktopConnectorAccount, DesktopConnectorAction, DesktopConnectorPrompt } from './DesktopConnectorAccounts';
 import { DesktopConnectorAccountView, DesktopConnectorBadge, DesktopConnectorDialog } from './DesktopConnectorAccountView';
@@ -23,8 +26,17 @@ interface DesktopPluginRow {
   enabled: boolean;
   toggle: boolean;
   removable: boolean;
-  update: boolean;
+  installed: boolean;
+  version: string;
+  update: string;
   installSpec: string;
+}
+
+interface DesktopPluginVersion {
+  version: string;
+  prerelease: boolean;
+  deprecated: string | undefined;
+  installable: boolean;
 }
 
 interface DesktopMarketSource {
@@ -44,15 +56,19 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
         continue;
       }
       const target = getRecord(value, 'installTarget');
+      const meta = getRecord(value, 'meta');
       rows.push({
         id: id,
-        title: bundle ? id : getString(value, 'moduleName') ?? id,
-        description: getString(value, bundle ? 'version' : 'phase') ?? '',
+        title: bundle ? desktopLocalizedText(meta, 'title') || id : getString(value, 'moduleName') ?? id,
+        description: bundle ? desktopLocalizedText(meta, 'description') || getString(value, 'description') || '' :
+          getString(value, 'phase') ?? '',
+        version: getString(value, 'version') ?? '',
+        installed: installed,
         enabled: enabled,
         toggle: !getString(value, 'readOnlyReason') && (bundle ?
           enabled || optional || installed : !!getString(value, 'patchId')),
-        removable: bundle && getBoolean(value, 'removable') === true,
-        update: bundle && getString(value, 'update') === 'registry',
+        removable: bundle && getBoolean(value, 'removable') === true && !getString(value, 'readOnlyReason'),
+        update: bundle ? getString(value, 'update') ?? '' : '',
         installSpec: getString(target, 'spec') ?? ''
       });
   }
@@ -63,6 +79,8 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
 export struct DesktopPluginsPane {
   host?: DesktopHostActions;
   @ObjectLink installer: DesktopPluginInstall;
+  @ObjectLink maintenance: DesktopPluginMaintenance;
+  @Prop localePreference: string = 'system';
   @ObjectLink connectorAccounts: DesktopConnectorAccounts;
   @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
   @Prop requestedTitle: string = '';
@@ -85,13 +103,21 @@ export struct DesktopPluginsPane {
   @State private nextOffset: number = -1;
   @State private fetchedAt: number = 0;
   @State private market: Object[] = [];
+  @State private marketDetail?: Object = undefined;
+  @State private marketDetailSource: string = '';
   @State private status: string = '';
   @State private catalogError: string = '';
   @State private catalogBusy: boolean = false;
   @State private paneWidth: number = 500;
   @State private busy: boolean = false;
   @State private versionOwner: string = '';
-  @State private versions: string[] = [];
+  @State private versions: DesktopPluginVersion[] = [];
+  @State private recommendedVersion: string = '';
+  @State private versionStatus: string = '';
+  @State private versionInstalled: string = '';
+  private versionRegistry?: string | null;
+  private maintenanceDialog: number = -1;
+  private maintenanceOpening: boolean = false;
   private active: boolean = false;
   private detailRead: number = 0;
   private refreshAgain: boolean = false;
@@ -123,6 +149,7 @@ export struct DesktopPluginsPane {
     this.stopAccounts = undefined;
     this.closeInstall();
     this.closeConnectorDialog();
+    this.closeMaintenance();
     this.stopVoiceSetup();
   }
 
@@ -134,10 +161,13 @@ export struct DesktopPluginsPane {
   private closeBundle(): void {
     this.detailRead++;
     this.detailName = '';
+    this.resetVersions();
   }
 
   private async openBundle(name: string): Promise<void> {
     this.tab = 'bundles';
+    this.marketDetail = undefined;
+    this.resetVersions();
     this.detailName = name;
     this.detailText = '';
     this.detailError = '';
@@ -172,6 +202,8 @@ export struct DesktopPluginsPane {
       return;
     }
     this.bundles = pluginRows(results[0], true);
+    const checked = this.bundles.find((row: DesktopPluginRow): boolean => row.id === this.versionOwner);
+    if (this.versionInstalled && results[0].ok && checked?.version !== this.versionInstalled) { this.resetVersions(); }
     this.plugins = pluginRows(results[1], false);
     this.marketError = desktopHostProblem(results[2]);
     if (results[2].ok) {
@@ -284,7 +316,7 @@ export struct DesktopPluginsPane {
   }
 
   private async openInstall(spec: string = '', registry: string = ''): Promise<void> {
-    if (!this.active || this.installOpening || this.installDialog >= 0) { return; }
+    if (!this.active || this.installOpening || this.installDialog >= 0 || this.maintenance.phase === 'running') { return; }
     this.installOpening = true;
     this.installer.offer(spec, registry);
     const prompt = this.getUIContext().getPromptAction();
@@ -432,24 +464,111 @@ export struct DesktopPluginsPane {
     if (this.connectorDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.connectorDialog); }
   }
 
+  private resetVersions(): void {
+    this.versionOwner = '';
+    this.versionInstalled = '';
+    this.versions = [];
+    this.recommendedVersion = '';
+    this.versionStatus = '';
+    this.versionRegistry = undefined;
+  }
+
   private async listVersions(row: DesktopPluginRow): Promise<void> {
-    if (this.host === undefined || this.busy) {
-      return;
-    }
+    if (this.host === undefined || this.busy || this.maintenance.phase === 'running') { return; }
     this.busy = true;
+    this.resetVersions();
+    this.versionOwner = row.id;
     const result = await this.host.call('pluginManager/listVersions', { 'name': row.id });
-    if (!this.active) {
+    if (!this.active) { return; }
+    this.busy = false;
+    if (this.versionOwner !== row.id || this.detailName !== row.id) { return; }
+    if (!result.ok || getString(result.value, 'status') !== 'listed') {
+      this.versionStatus = desktopHostProblem(result) || getString(result.value, 'reason') || '无法检查更新';
       return;
     }
-    this.busy = false;
-    this.versionOwner = row.id;
-    this.versions = (getArray(result.value, 'versions') ?? [])
-      .filter((value: Object): boolean => getBoolean(value, 'bundle') === true &&
-        getRecord(value, 'incompatible') === undefined)
-      .map((value: Object): string => getString(value, 'version') ?? '')
-      .filter((value: string): boolean => value.length > 0);
-    this.status = desktopHostProblem(result) || getString(result.value, 'reason') ||
-      (this.versions.length === 0 ? '没有可用更新' : '');
+    this.versionInstalled = getString(result.value, 'installed') ?? '';
+    this.versionRegistry = getField(result.value, 'registry') === null ? null : getString(result.value, 'registry');
+    const versions: DesktopPluginVersion[] = [];
+    for (const value of getArray(result.value, 'versions') ?? []) {
+      const version = getString(value, 'version');
+      if (!version || version === this.versionInstalled) { continue; }
+      const info: DesktopPluginVersion = { version: version, prerelease: getBoolean(value, 'prerelease') === true,
+        deprecated: getString(value, 'deprecated'), installable: getBoolean(value, 'bundle') === true &&
+          getRecord(value, 'incompatible') === undefined };
+      if (!this.recommendedVersion && info.installable && !info.prerelease && info.deprecated === undefined) {
+        this.recommendedVersion = info.version;
+      }
+      versions.push(info);
+    }
+    this.versions = versions;
+    if (!versions.some((info: DesktopPluginVersion): boolean => info.installable)) {
+      this.versionStatus = '没有可用更新';
+    }
+  }
+
+  private offerRegistryUpdate(row: DesktopPluginRow, version: string): void {
+    if (this.maintenanceOpening || this.maintenanceDialog >= 0 || this.installer.busy() || this.busy ||
+      this.versionOwner !== row.id || this.versionInstalled !== row.version ||
+      !this.versions.some((info: DesktopPluginVersion): boolean => info.version === version && info.installable)) { return; }
+    if (this.maintenance.offerUpdate(row.id, row.title, this.versionInstalled, version, this.versionRegistry)) {
+      this.openMaintenance();
+    }
+  }
+
+  private offerRemove(row: DesktopPluginRow): void {
+    if (!row.removable || this.maintenanceOpening || this.maintenanceDialog >= 0 || this.installer.busy() || this.busy) { return; }
+    if (this.maintenance.offerRemove(row.id, row.title)) { this.openMaintenance(); }
+  }
+
+  @Builder
+  private MaintenanceDialog() {
+    DesktopPluginMaintenanceDialog({ model: this.maintenance, onClose: (): void => { this.closeMaintenance(); },
+      onConfirm: (): void => { this.confirmMaintenance(); } })
+  }
+
+  private async openMaintenance(): Promise<void> {
+    this.maintenanceOpening = true;
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.MaintenanceDialog(); },
+        alignment: DialogAlignment.Center, width: Math.max(240, Math.min(496, this.paneWidth - 28)),
+        isModal: true, autoCancel: false, cornerRadius: 22, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onWillDismiss: (action): void => { if (this.maintenance.phase !== 'running') { action.dismiss(); } },
+        onDidDisappear: (): void => { this.maintenanceDialog = -1; this.maintenance.close(); }
+      });
+      if (this.active) { this.maintenanceDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      this.maintenance.close();
+      if (this.active) { prompt.showToast({ message: $r('app.string.desktop_plugin_install_open_failed') }); }
+    } finally {
+      this.maintenanceOpening = false;
+    }
+  }
+
+  private closeMaintenance(): void {
+    if (this.maintenanceDialog >= 0) {
+      this.getUIContext().getPromptAction().closeCustomDialog(this.maintenanceDialog);
+    }
+  }
+
+  private async confirmMaintenance(): Promise<void> {
+    if (!await this.maintenance.confirm() || !this.active) { return; }
+    const name = this.maintenance.name;
+    const removed = this.maintenance.action === 'remove' && this.maintenance.application === 'applied';
+    if (this.versionOwner === name && this.maintenance.action === 'update' &&
+      (this.maintenance.application === 'applied' || this.maintenance.application === 'restart-required')) {
+      this.resetVersions();
+    }
+    await this.refresh();
+    if (!this.active) { return; }
+    if (removed && this.detailName === name && !this.catalogError &&
+      !this.bundles.some((row: DesktopPluginRow): boolean => row.id === name && row.installed)) {
+      this.closeBundle();
+    }
+    if (this.tab === 'market') { this.searchMarket(false); }
   }
 
   private confirm(title: string, message: string, action: () => void): void {
@@ -479,20 +598,11 @@ export struct DesktopPluginsPane {
     if (row.installSpec.length > 0) {
       result.push({ value: '安装', action: (): void => { this.openInstall(row.installSpec); } });
     }
-    if (row.update) {
-      result.push({ value: '检查更新', action: (): void => { this.listVersions(row); } });
-    }
-    if (row.removable) {
-      result.push({ value: '移除', action: (): void => {
-        this.confirm('移除插件包', row.title, (): void => {
-          this.mutate('pluginManager/removeBundle', { 'name': row.id });
-        });
-      } });
-    }
     return result;
   }
 
   private marketActions(entry: Object): MenuElement[] {
+    if (getString(getRecord(entry, 'installation'), 'status') !== 'not-installed') { return []; }
     return (getArray(entry, 'versions') ?? []).flatMap((row: Object): MenuElement[] => {
       const install = getRecord(row, 'install');
       const compatibility = getRecord(row, 'compatibility');
@@ -512,23 +622,18 @@ export struct DesktopPluginsPane {
     Row({ space: 10 }) {
       Column({ space: 4 }) {
         Text(row.title).fontSize(15).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text([row.enabled ? '已启用' : '未启用', row.description].filter((item: string): boolean =>
-          item.length > 0).join(' · ')).fontSize(12).fontColor($r('sys.color.font_secondary'))
+        Text([row.enabled ? '已启用' : '未启用', row.version || (navigable ? '' : row.description)]
+          .filter((item: string): boolean => item.length > 0).join(' · '))
+          .fontSize(12).fontColor($r('sys.color.font_secondary'))
+        if (navigable && row.description) {
+          Text(row.description).fontSize(13).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontColor($r('sys.color.font_secondary'))
+        }
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
       if (navigable) {
-        Button('查看详情', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.openBundle(row.id); })
-      }
-      if (this.versionOwner === row.id && this.versions.length > 0) {
-        Button('选择更新版本', { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .enabled(!this.busy)
-          .bindMenu(this.versions.map((version: string): MenuElement => {
-            return { value: version, action: (): void => {
-              this.confirm('更新插件', row.title + ' → ' + version, (): void => {
-                this.mutate('pluginManager/updateBundle', { 'name': row.id, 'version': version });
-              });
-            } };
-          }), desktopMenuOptions(Placement.BottomRight))
+        Button($r('app.string.desktop_plugin_maintenance_view'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPluginBundle-' + row.id).onClick((): void => { this.openBundle(row.id); })
       }
       if (this.rowActions(row).length > 0) {
         Button('更多', { buttonStyle: ButtonStyleMode.TEXTUAL })
@@ -541,12 +646,60 @@ export struct DesktopPluginsPane {
   }
 
   @Builder
+  private BundleActions(row: DesktopPluginRow) {
+    Row({ space: 8 }) {
+      if (row.update === 'registry' && row.removable) {
+        Button($r('app.string.desktop_plugin_maintenance_check'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPluginCheckVersions-' + row.id).enabled(!this.busy && this.maintenance.phase !== 'running')
+          .onClick((): void => { this.listVersions(row); })
+      }
+      if (row.installed || row.removable) {
+        Button($r('app.string.desktop_plugin_maintenance_remove_action'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPluginRemove-' + row.id)
+          .enabled(row.removable && !this.busy && !this.installer.busy() && this.maintenance.phase !== 'running')
+          .fontColor($r('app.color.workspace_status_error')).onClick((): void => { this.offerRemove(row); })
+      }
+    }.width('100%')
+    if (this.versionOwner === row.id) {
+      if (this.versionStatus) {
+        Text(this.versionStatus).fontSize(13).fontColor($r('sys.color.font_secondary'))
+      }
+      ForEach(this.versions, (version: DesktopPluginVersion): void => {
+        Row({ space: 8 }) {
+          Column({ space: 4 }) {
+            Text(version.version).key('desktopPluginListedVersion-' + version.version).fontSize(14)
+            if (!version.installable) {
+              Text($r('app.string.desktop_plugin_maintenance_incompatible')).fontSize(12)
+                .fontColor($r('sys.color.font_secondary'))
+            } else if (version.deprecated !== undefined) {
+              Text(version.deprecated || $r('app.string.desktop_plugin_maintenance_deprecated')).fontSize(12)
+                .fontColor($r('sys.color.font_secondary'))
+            } else if (version.prerelease) {
+              Text($r('app.string.desktop_plugin_maintenance_prerelease')).fontSize(12)
+                .fontColor($r('sys.color.font_secondary'))
+            }
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          if (version.installable) {
+            Button(version.version === this.recommendedVersion ? $r('app.string.desktop_plugin_maintenance_update_to',
+              version.version) : $r('app.string.desktop_plugin_maintenance_update_action'),
+              { buttonStyle: version.version === this.recommendedVersion ? ButtonStyleMode.EMPHASIZED : ButtonStyleMode.TEXTUAL })
+              .key('desktopPluginUpdateVersion-' + version.version)
+              .enabled(!this.busy && !this.installer.busy() && this.maintenance.phase !== 'running')
+              .onClick((): void => { this.offerRegistryUpdate(row, version.version); })
+          }
+        }.width('100%').padding(8)
+      }, (version: DesktopPluginVersion): string => version.version)
+    }
+  }
+
+  @Builder
   private BundleDetail() {
     Column({ space: 12 }) {
       Button('返回插件包', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
         .onClick((): void => { this.closeBundle(); })
       Row({ space: 8 }) {
-        Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') || this.detailName)
+        Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') ||
+          this.bundles.find((row: DesktopPluginRow): boolean => row.id === this.detailName)?.title || this.detailName)
           .key('desktopPluginDetailTitle').fontSize(22).fontWeight(FontWeight.Medium)
         if (this.bundles.some((row: DesktopPluginRow): boolean => row.id === this.detailName && row.enabled) &&
           this.connectorAccounts.byBundle(this.detailName)?.badge) {
@@ -558,7 +711,10 @@ export struct DesktopPluginsPane {
         Text(this.requestedDescription).fontSize(14).fontColor($r('sys.color.font_secondary'))
       }
       ForEach(this.bundles.filter((row: DesktopPluginRow): boolean => row.id === this.detailName), (row: DesktopPluginRow): void => {
-        this.PluginRow(row)
+        Column({ space: 8 }) {
+          this.PluginRow(row)
+          this.BundleActions(row)
+        }.width('100%').alignItems(HorizontalAlign.Start)
       }, (row: DesktopPluginRow): string => JSON.stringify(row))
       DesktopConnectorAccountView({ account: this.connectorAccounts.byBundle(this.detailName),
         actionsEnabled: this.connectorAccounts.linked &&
@@ -584,6 +740,33 @@ export struct DesktopPluginsPane {
   private canEnableMarket(): boolean {
     return this.bundles.some((row: DesktopPluginRow): boolean =>
       row.id === MARKET_BUNDLE && row.toggle && !row.enabled);
+  }
+
+  private installedMarketBundle(): DesktopPluginRow | undefined {
+    const name = getString(this.marketDetail, 'name');
+    return this.bundles.find((row: DesktopPluginRow): boolean => row.id === name && row.installed);
+  }
+
+  private offerMarketUpdate(name: string, title: string, from: string, to: string, spec: string): void {
+    const installed = this.installedMarketBundle();
+    if (installed?.id !== name || installed?.update !== 'git' || installed?.version !== from || !spec ||
+      this.maintenanceOpening || this.maintenanceDialog >= 0 || this.installer.busy() || this.busy) { return; }
+    if (this.maintenance.offerUpdate(name, title, from, to, undefined, spec)) { this.openMaintenance(); }
+  }
+
+  @Builder
+  private MarketDetail() {
+    DesktopPluginMarketDetail({ host: this.host, source: this.marketDetailSource, entry: this.marketDetail,
+      localePreference: this.localePreference,
+      installed: this.installedMarketBundle() !== undefined,
+      installedVersion: this.installedMarketBundle()?.version ?? '',
+      busy: this.busy || this.maintenance.phase === 'running',
+      onBack: (): void => { this.marketDetail = undefined; },
+      onOpenInstalled: (name: string): void => { this.marketDetail = undefined; this.openBundle(name); },
+      onInstall: (spec: string, registry: string): void => { this.openInstall(spec, registry); },
+      onUpdate: (name: string, title: string, from: string, to: string, spec: string): void => {
+        this.offerMarketUpdate(name, title, from, to, spec);
+      } })
   }
 
   @Builder
@@ -654,6 +837,9 @@ export struct DesktopPluginsPane {
           Text(desktopLocalizedText(entry, 'description')).fontSize(13).fontColor($r('sys.color.font_secondary'))
         }
         .layoutWeight(1).alignItems(HorizontalAlign.Start)
+        Button($r('app.string.desktop_plugin_maintenance_view'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPluginMarketEntry-' + getString(entry, 'name'))
+          .onClick((): void => { this.marketDetailSource = this.source; this.marketDetail = entry; })
         if (this.marketActions(entry).length > 0) {
           Button('选择版本', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
             .bindMenu(this.marketActions(entry), desktopMenuOptions(Placement.BottomRight))
@@ -676,7 +862,7 @@ export struct DesktopPluginsPane {
         Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy).onClick(this.onWeb)
       }
       .width('100%')
-      if (!this.detailName) {
+      if (!this.detailName && this.marketDetail === undefined) {
         Row({ space: 8 }) {
           Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' :
             this.tab === 'settings' ? '配置' : '插件市场',
@@ -717,6 +903,8 @@ export struct DesktopPluginsPane {
         Column({ space: 8 }) {
           if (this.detailName) {
             this.BundleDetail()
+          } else if (this.marketDetail !== undefined) {
+            this.MarketDetail()
           } else {
             if (this.settingsVisited) {
               DesktopPluginSettings({ host: this.host }).visibility(this.tab === 'settings' ? Visibility.Visible : Visibility.None)

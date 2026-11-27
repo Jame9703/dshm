@@ -2,10 +2,15 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { patchManagerLifecycle } from './lib/manager-lifecycle.mjs';
 const require = createRequire(import.meta.url);
-const work = fs.readFileSync('dist/core/work/dsh-core-0.2.2-rc.2+dshm.1/node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js', 'utf8');
+const recipe = JSON.parse(fs.readFileSync('hostcore/core-recipe.json', 'utf8'));
+const work = fs.readFileSync(join('dist/core/work', `dsh-core-${recipe.coreVersion}`,
+  'node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js'), 'utf8');
 const clean = `class Manager {
 async updateBundle(name, version, options) { return this.original(name); }
 installBundle(spec, options) { return this.change(() => spec); }
@@ -79,7 +84,7 @@ if (mutation) {
   vm.runInNewContext(text, context);
   helper = context.module.exports;
 }
-const root = fs.mkdtempSync('/data/storage/el2/base/files/tmp/deveco/final-yaml-');
+const root = fs.mkdtempSync(join(tmpdir(), 'dshm-update-transaction-'));
 try {
   for (const anchored of [false, true]) {
     const profile = root + '/' + anchored;
@@ -139,7 +144,7 @@ try {
 if (!mutation) {
   for (const mode of ['neighbour', 'required-id']) {
     const run = require('node:child_process').spawnSync(process.execPath,
-      [new URL(import.meta.url).pathname, '--mutate=' + mode], { encoding: 'utf8' });
+      [fileURLToPath(import.meta.url), '--mutate=' + mode], { encoding: 'utf8' });
     assert.notEqual(run.status, 0, 'production regression mutant must fail: ' + mode);
   }
   console.log('N1 changed-neighbour/N4 same-name-required-id production regression mutations rejected 2/2');

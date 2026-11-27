@@ -10,6 +10,7 @@ import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LL
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
+import { DesktopPluginMaintenance } from './DesktopPluginMaintenance';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
 import { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
@@ -87,6 +88,7 @@ export class DesktopWorkspaceData {
   readonly terminalRetentions: DesktopTerminalRetentions = new DesktopTerminalRetentions(this.actions);
   readonly terminalRosters: DesktopTerminalRosters = new DesktopTerminalRosters(this.actions);
   readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
+  readonly pluginMaintenance: DesktopPluginMaintenance = new DesktopPluginMaintenance(this.actions);
   readonly cordis: DesktopCordisRuntime = new DesktopCordisRuntime(this.actions);
   readonly connectorAccounts: DesktopConnectorAccounts;
   readonly reading: DesktopSessionReading;
@@ -229,6 +231,7 @@ export class DesktopWorkspaceData {
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
         this.pluginInstall.observe(frame);
+        this.pluginMaintenance.observe(frame);
         const event = getString(frame, 'event');
         this.cordis.observe(event);
         if (event === EVENT_COMMANDS_CHANGE) {
@@ -459,6 +462,7 @@ export class DesktopWorkspaceData {
     this.terminalRetentions.dispose();
     this.quota.clear();
     this.pluginInstall.dispose();
+    this.pluginMaintenance.dispose();
     this.connectorAccounts.dispose();
     this.cordis.dispose();
     this.accountNotices.stop();
