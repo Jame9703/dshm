@@ -2,6 +2,7 @@ import type { StreamSink } from 'connection';
 import { getNumber, getRecord, getString } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopTimelineRuler } from './DesktopTimelineRuler';
 import { desktopTimelineValue, readDesktopTimeline } from './DesktopTimelineModel';
 import type { DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
@@ -25,7 +26,7 @@ export struct DesktopTimelinePane {
   @State private tab: string = 'tasks';
   @State private treeId: string = '';
   @State private folded: string[] = [];
-  @State private reportLevel: number = -1;
+  @State private rulerVisited: boolean = false;
   @State private taskTrail: TimelineDetailTarget[] = [];
   @State private reportTrail: TimelineDetailTarget[] = [];
   @State private ready: boolean = false;
@@ -34,6 +35,7 @@ export struct DesktopTimelinePane {
   private readonly scroll = new Scroller();
   private taskScroll: number = 0;
   private reportScroll: number = 0;
+  private reportById: Map<string, DesktopTimelineReport> = new Map();
   private mounted: boolean = false;
   private generation: number = 0;
   private sequence: number = -2;
@@ -70,6 +72,8 @@ export struct DesktopTimelinePane {
     if (source.sequence <= this.sequence) { return; }
     this.sequence = source.sequence;
     this.view = readDesktopTimeline(source.value);
+    this.reportById.clear();
+    for (const row of this.view.reports) { this.reportById.set(row.id, row); }
     this.viewRevision++;
     this.ready = true;
     this.updating = false;
@@ -128,6 +132,7 @@ export struct DesktopTimelinePane {
     } else if (sequence >= this.sequence) {
       this.sequence = sequence;
       this.view = readDesktopTimeline();
+      this.reportById.clear();
       this.viewRevision++;
       this.ready = true;
     }
@@ -181,34 +186,8 @@ export struct DesktopTimelinePane {
     return rows;
   }
 
-  private levels(): number[] {
-    return Array.from(new Set<number>(this.view.reports.map((report: DesktopTimelineReport): number => report.level)))
-      .sort((first: number, second: number): number => first - second);
-  }
-
-  private levelOptions(): MenuElement[] {
-    const rows: MenuElement[] = [
-      { value: $r('app.string.desktop_timeline_all_levels'), action: (): void => { this.selectLevel(-1); } }
-    ];
-    for (const level of this.levels()) {
-      rows.push({ value: $r('app.string.desktop_timeline_level', level + 1),
-        action: (): void => { this.selectLevel(level); } });
-    }
-    return rows;
-  }
-
-  private selectLevel(level: number): void {
-    this.reportLevel = level;
-    this.moveScroll(0);
-  }
-
-  private reports(): DesktopTimelineReport[] {
-    return this.reportLevel < 0 ? this.view.reports :
-      this.view.reports.filter((row: DesktopTimelineReport): boolean => row.level === this.reportLevel);
-  }
-
   private report(id: string): DesktopTimelineReport | undefined {
-    return this.view.reports.find((row: DesktopTimelineReport): boolean => row.id === id);
+    return this.reportById.get(id);
   }
 
   private task(target?: TimelineDetailTarget): DesktopTimelineTask | undefined {
@@ -227,16 +206,19 @@ export struct DesktopTimelinePane {
   private moveScroll(offset: number): void {
     const revision = ++this.scrollVersion;
     setTimeout((): void => {
-      if (this.mounted && revision === this.scrollVersion) {
+      if (this.mounted && !this.rulerShown() && revision === this.scrollVersion) {
         this.scroll.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
       }
     }, 0);
   }
 
+  private rulerShown(): boolean { return this.tab === 'reports' && this.reportTrail.length === 0; }
+
   private selectTab(tab: string): void {
     if (tab === this.tab) { return; }
     if (this.tab === 'tasks') { this.taskScroll = this.recordedScrollOffset(); }
     else { this.reportScroll = this.recordedScrollOffset(); }
+    if (tab === 'reports') { this.rulerVisited = true; }
     this.tab = tab;
     this.moveScroll(tab === 'tasks' ? this.taskScroll : this.reportScroll);
   }
@@ -372,21 +354,6 @@ export struct DesktopTimelinePane {
   }
 
   @Builder
-  private Reports() {
-    if (this.view.reports.length > 0) {
-      Button(this.reportLevel < 0 ? $r('app.string.desktop_timeline_all_levels') :
-        $r('app.string.desktop_timeline_level', this.reportLevel + 1), { buttonStyle: ButtonStyleMode.TEXTUAL })
-        .key('desktopTimelineReportFilter').bindMenu(this.levelOptions(), desktopMenuOptions(Placement.BottomLeft))
-      ForEach(this.reports(), (row: DesktopTimelineReport): void => {
-        this.ReportRow(row, 'desktopTimelineReport-' + row.id)
-      }, (row: DesktopTimelineReport): string => row.id + ':' + row.end + ':' + row.level + ':' + (row.progress[0] ?? ''))
-    }
-    if (this.reports().length === 0) {
-      Text($r('app.string.desktop_timeline_no_reports')).width('100%').fontSize(13).fontColor($r('sys.color.font_secondary'))
-    }
-  }
-
-  @Builder
   private TaskDetail(task?: DesktopTimelineTask, target?: TimelineDetailTarget) {
     Column({ space: 9 }) {
       if (task !== undefined && target !== undefined) {
@@ -478,19 +445,25 @@ export struct DesktopTimelinePane {
       }
       if (this.updating && !this.ready) { LoadingProgress().width(20).height(20) }
       if (this.view.error) { Text(this.view.error).fontSize(12).fontColor($r('app.color.workspace_status_error')) }
-      Scroll(this.scroll) {
-        Column({ space: 9 }) {
-          ForEach([this.viewRevision], (_revision: number): void => {
-            if (this.tab === 'tasks') {
-              if (this.target() === undefined) { this.Tasks(this.selectedTree()) }
-              else { this.TaskDetail(this.task(this.target()), this.target()) }
-            } else {
-              if (this.target() === undefined) { this.Reports() }
-              else { this.ReportDetail(this.report(this.target()?.id ?? '')) }
-            }
-          }, (revision: number): string => String(revision))
-        }.width('100%').alignItems(HorizontalAlign.Start)
-      }.layoutWeight(1).width('100%').align(Alignment.TopStart)
+      if (this.rulerVisited) {
+        DesktopTimelineRuler({ host: this.host, active: this.active && this.rulerShown(), reports: this.view.reports,
+          onOpen: (id: string): void => { this.pushDetail('', id); } })
+          .visibility(this.rulerShown() ? Visibility.Visible : Visibility.None).layoutWeight(1)
+      }
+      if (!this.rulerShown()) {
+        Scroll(this.scroll) {
+          Column({ space: 9 }) {
+            ForEach([this.viewRevision], (_revision: number): void => {
+              if (this.tab === 'tasks') {
+                if (this.target() === undefined) { this.Tasks(this.selectedTree()) }
+                else { this.TaskDetail(this.task(this.target()), this.target()) }
+              } else {
+                this.ReportDetail(this.report(this.target()?.id ?? ''))
+              }
+            }, (revision: number): string => String(revision))
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }.layoutWeight(1).width('100%').align(Alignment.TopStart)
+      }
     }.key('desktopTimelinePane').width('100%').height('100%').padding(10).alignItems(HorizontalAlign.Start)
   }
 }
