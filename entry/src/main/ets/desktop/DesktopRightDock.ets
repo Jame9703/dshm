@@ -19,9 +19,23 @@ export interface DesktopDockPane {
   active: string;
 }
 
+export interface DesktopDockRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DesktopDockFloat {
+  tab: DesktopDockTab;
+  rect: DesktopDockRect;
+}
+
 export interface DesktopDockLayout {
   panes: DesktopDockPane[];
   focus: number;
+  floats: DesktopDockFloat[];
+  focusedFloat: string;
   expanded: boolean;
   fullscreen: boolean;
   width: number;
@@ -29,24 +43,26 @@ export interface DesktopDockLayout {
 }
 
 export function emptyDesktopDock(): DesktopDockLayout {
-  return { panes: [{ tabs: [], active: '' }], focus: 0, expanded: false, fullscreen: false, width: 0, fraction: 0.5 };
+  return { panes: [{ tabs: [], active: '' }], focus: 0, floats: [], focusedFloat: '', expanded: false,
+    fullscreen: false, width: 0, fraction: 0.5 };
 }
 
 function copyDock(layout: DesktopDockLayout): DesktopDockLayout {
   return { panes: layout.panes.map((pane: DesktopDockPane): DesktopDockPane =>
-    ({ tabs: pane.tabs.slice(), active: pane.active })), focus: layout.focus, expanded: layout.expanded,
+    ({ tabs: pane.tabs.slice(), active: pane.active })), focus: layout.focus, floats: layout.floats.slice(),
+    focusedFloat: layout.focusedFloat, expanded: layout.expanded,
     fullscreen: layout.fullscreen, width: layout.width, fraction: layout.fraction };
 }
 
 export function desktopDockPresentation(layout: DesktopDockLayout, focus: number, expanded: boolean,
-  fullscreen: boolean): DesktopDockLayout {
+  fullscreen: boolean, focusedFloat: string = layout.focusedFloat): DesktopDockLayout {
   return { panes: layout.panes, focus: focus, expanded: expanded, fullscreen: fullscreen,
-    width: layout.width, fraction: layout.fraction };
+    floats: layout.floats, focusedFloat: focusedFloat, width: layout.width, fraction: layout.fraction };
 }
 
 export function desktopDockResize(layout: DesktopDockLayout, width: number, fraction: number): DesktopDockLayout {
   return { panes: layout.panes, focus: layout.focus, expanded: layout.expanded, fullscreen: layout.fullscreen,
-    width: width, fraction: fraction };
+    floats: layout.floats, focusedFloat: '', width: width, fraction: fraction };
 }
 
 export function desktopDockSplitFraction(fraction: number): number {
@@ -59,6 +75,14 @@ export function desktopDockTab(layout: DesktopDockLayout, index: number = layout
 }
 
 export function desktopDockOpen(layout: DesktopDockLayout, tab: DesktopDockTab, update: boolean = true): DesktopDockLayout {
+  const floating = layout.floats.findIndex((item: DesktopDockFloat): boolean => item.tab.id === tab.id);
+  if (floating >= 0) {
+    const next = copyDock(layout);
+    const existing = next.floats.splice(floating, 1)[0];
+    next.floats.push({ tab: update ? tab : existing.tab, rect: existing.rect });
+    next.focusedFloat = tab.id;
+    return next;
+  }
   const next = copyDock(layout);
   const existing = next.panes.findIndex((pane: DesktopDockPane): boolean =>
     pane.tabs.some((item: DesktopDockTab): boolean => item.id === tab.id));
@@ -74,6 +98,7 @@ export function desktopDockOpen(layout: DesktopDockLayout, tab: DesktopDockTab, 
     pane.active = tab.id;
   }
   next.expanded = true;
+  next.focusedFloat = '';
   return next;
 }
 
@@ -81,6 +106,7 @@ export function desktopDockSelect(layout: DesktopDockLayout, pane: number, tab: 
   if (!layout.panes[pane]?.tabs.some((item: DesktopDockTab): boolean => item.id === tab)) { return layout; }
   const next = copyDock(layout);
   next.focus = pane;
+  next.focusedFloat = '';
   next.panes[pane].active = tab;
   return next;
 }
@@ -96,11 +122,7 @@ export function desktopDockCloseTab(layout: DesktopDockLayout, pane: number, tab
   if (index < 0) { return layout; }
   const next = copyDock(layout);
   removeTab(next.panes[pane], index);
-  if (next.panes.length > 1 && next.panes[pane].tabs.length === 0) {
-    next.panes.splice(pane, 1);
-    next.focus = 0;
-    next.fraction = 0.5;
-  }
+  settleEmptyPane(next, pane);
   return next;
 }
 
@@ -109,6 +131,7 @@ export function desktopDockSplit(layout: DesktopDockLayout, side: number = 1): D
   const next = copyDock(layout);
   next.panes.splice(side, 0, { tabs: [], active: '' });
   next.focus = side;
+  next.focusedFloat = '';
   next.expanded = true;
   next.fraction = 0.5;
   return next;
@@ -123,6 +146,7 @@ export function desktopDockMerge(layout: DesktopDockLayout, target: number): Des
   if (!keep.active) { keep.active = from.active; }
   next.panes = [keep];
   next.focus = 0;
+  next.focusedFloat = '';
   next.fraction = 0.5;
   return next;
 }
@@ -138,5 +162,76 @@ export function desktopDockMoveTab(layout: DesktopDockLayout, from: number, id: 
   target.tabs.splice(insertion < 0 ? target.tabs.length : insertion, 0, tab);
   target.active = id;
   next.focus = to;
+  next.focusedFloat = '';
   return next;
+}
+
+function settleEmptyPane(layout: DesktopDockLayout, pane: number): void {
+  if (layout.panes.length > 1 && layout.panes[pane].tabs.length === 0) {
+    layout.panes.splice(pane, 1);
+    layout.focus = 0;
+    layout.fraction = 0.5;
+  }
+}
+
+export function desktopDockFloat(layout: DesktopDockLayout, pane: number, id: string,
+  rect: DesktopDockRect): DesktopDockLayout {
+  const index = layout.panes[pane]?.tabs.findIndex((tab: DesktopDockTab): boolean => tab.id === id) ?? -1;
+  if (index < 0) { return layout; }
+  const next = copyDock(layout);
+  next.floats.push({ tab: removeTab(next.panes[pane], index), rect: rect });
+  settleEmptyPane(next, pane);
+  next.focusedFloat = id;
+  return next;
+}
+
+export function desktopDockFocusFloat(layout: DesktopDockLayout, id: string): DesktopDockLayout {
+  const index = layout.floats.findIndex((item: DesktopDockFloat): boolean => item.tab.id === id);
+  if (index < 0 || layout.focusedFloat === id) { return layout; }
+  const next = copyDock(layout);
+  next.floats.push(next.floats.splice(index, 1)[0]);
+  next.focusedFloat = id;
+  return next;
+}
+
+export function desktopDockFloatPosition(layout: DesktopDockLayout, id: string, rect: DesktopDockRect): DesktopDockLayout {
+  const index = layout.floats.findIndex((item: DesktopDockFloat): boolean => item.tab.id === id);
+  if (index < 0) { return layout; }
+  const next = copyDock(layout);
+  next.floats[index] = { tab: next.floats[index].tab, rect: rect };
+  return next;
+}
+
+export function desktopDockCloseFloat(layout: DesktopDockLayout, id: string): DesktopDockLayout {
+  const index = layout.floats.findIndex((item: DesktopDockFloat): boolean => item.tab.id === id);
+  if (index < 0) { return layout; }
+  const next = copyDock(layout);
+  next.floats.splice(index, 1);
+  if (next.focusedFloat === id) { next.focusedFloat = next.floats[next.floats.length - 1]?.tab.id ?? ''; }
+  return next;
+}
+
+export function desktopDockSeatFloat(layout: DesktopDockLayout, id: string, pane: number = layout.focus,
+  before: string = ''): DesktopDockLayout {
+  const index = layout.floats.findIndex((item: DesktopDockFloat): boolean => item.tab.id === id);
+  if (index < 0 || layout.panes[pane] === undefined) { return layout; }
+  const next = copyDock(layout);
+  const tab = next.floats.splice(index, 1)[0].tab;
+  const target = next.panes[pane];
+  const insertion = target.tabs.findIndex((item: DesktopDockTab): boolean => item.id === before);
+  target.tabs.splice(insertion < 0 ? target.tabs.length : insertion, 0, tab);
+  target.active = id;
+  next.focus = pane;
+  next.focusedFloat = '';
+  next.expanded = true;
+  return next;
+}
+
+export function desktopDockFloatRect(rect: DesktopDockRect, width: number, height: number): DesktopDockRect {
+  const maxWidth = Math.max(1, width - 12);
+  const maxHeight = Math.max(1, height - 50);
+  const panelWidth = Math.min(maxWidth, Math.max(Math.min(240, maxWidth), rect.width));
+  const panelHeight = Math.min(maxHeight, Math.max(Math.min(180, maxHeight), rect.height));
+  return { x: Math.max(6, Math.min(width - panelWidth - 6, rect.x)),
+    y: Math.max(44, Math.min(height - panelHeight - 6, rect.y)), width: panelWidth, height: panelHeight };
 }

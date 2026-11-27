@@ -1,8 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { getArray, getBoolean, getNumber, getString, parseJson } from 'connection';
+import { getArray, getBoolean, getNumber, getRecord, getString, parseJson } from 'connection';
 import { desktopDockSplitFraction, DesktopDockKind, emptyDesktopDock } from './DesktopRightDock';
-import type { DesktopDockLayout, DesktopDockPane, DesktopDockTab } from './DesktopRightDock';
+import type { DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from './DesktopRightDock';
 
 const PREFS: string = 'dshm_desktop_dock';
 
@@ -22,10 +22,17 @@ interface SavedDockPane {
   active: string;
 }
 
+interface SavedDockFloat {
+  tab: SavedDockTab;
+  rect: DesktopDockRect;
+}
+
 interface SavedDock {
   version: number;
   panes: SavedDockPane[];
   focus: number;
+  floats: SavedDockFloat[];
+  focusedFloat: string;
   expanded: boolean;
   fullscreen: boolean;
   width: number;
@@ -54,12 +61,15 @@ export function encodeDesktopDock(layout: DesktopDockLayout): string {
       active: saved.some((tab: DesktopDockTab): boolean => tab.id === pane.active) ? pane.active : saved[0]?.id ?? '' });
   });
   const layoutSurvives = panes.length > 0;
-  const stored: SavedDock = { version: 1, panes: panes, focus: focus, expanded: layoutSurvives && layout.expanded,
+  const floats = layout.floats.filter((panel: DesktopDockFloat): boolean => restorable(panel.tab))
+    .map((panel: DesktopDockFloat): SavedDockFloat => ({ tab: saveTab(panel.tab), rect: panel.rect }));
+  const stored: SavedDock = { version: 1, panes: panes, focus: focus, floats: floats, focusedFloat: layout.focusedFloat,
+    expanded: layoutSurvives && layout.expanded,
     fullscreen: layoutSurvives && layout.fullscreen, width: layout.width, fraction: panes.length === 2 ? layout.fraction : 0.5 };
   return JSON.stringify(stored);
 }
 
-function restoreTab(row: Object): DesktopDockTab | undefined {
+function restoreTab(row: Object | undefined): DesktopDockTab | undefined {
   const kind = getString(row, 'kind');
   if (kind === DesktopDockKind.FILES) { return { id: kind, kind: kind, title: '工作区文件' }; }
   if (kind === DesktopDockKind.TERMINAL) { return { id: kind, kind: kind, title: '终端' }; }
@@ -83,6 +93,18 @@ function restoreTab(row: Object): DesktopDockTab | undefined {
       wrap: getBoolean(row, 'wrap') } };
   }
   return undefined;
+}
+
+function restoreFloat(row: Object): DesktopDockFloat | undefined {
+  const tab = restoreTab(getRecord(row, 'tab'));
+  const rect = getRecord(row, 'rect');
+  const x = getNumber(rect, 'x') ?? NaN;
+  const y = getNumber(rect, 'y') ?? NaN;
+  const width = getNumber(rect, 'width') ?? 0;
+  const height = getNumber(rect, 'height') ?? 0;
+  if (tab === undefined || !Number.isFinite(x) || !Number.isFinite(y) ||
+    !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) { return undefined; }
+  return { tab: tab, rect: { x: x, y: y, width: width, height: height } };
 }
 
 export function decodeDesktopDock(text: string): DesktopDockLayout {
@@ -110,6 +132,17 @@ export function decodeDesktopDock(text: string): DesktopDockLayout {
     layout.expanded = getBoolean(state, 'expanded') === true;
     layout.fullscreen = layout.expanded && getBoolean(state, 'fullscreen') === true;
     layout.fraction = rows.length === 2 ? desktopDockSplitFraction(getNumber(state, 'fraction') ?? 0.5) : 0.5;
+  }
+  for (const row of getArray(state, 'floats') ?? []) {
+    const panel = restoreFloat(row);
+    if (panel !== undefined && !seen.has(panel.tab.id)) {
+      seen.add(panel.tab.id);
+      layout.floats.push(panel);
+    }
+  }
+  const focusedFloat = getString(state, 'focusedFloat') ?? '';
+  if (layout.floats.some((panel: DesktopDockFloat): boolean => panel.tab.id === focusedFloat)) {
+    layout.focusedFloat = focusedFloat;
   }
   const width = getNumber(state, 'width') ?? 0;
   layout.width = Number.isFinite(width) ? Math.max(0, width) : 0;
