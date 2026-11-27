@@ -309,6 +309,54 @@
       "value": "将 WebUI 设为默认"
     },
     {
+      "name": "desktop_sidebar_sessions",
+      "value": "会话"
+    },
+    {
+      "name": "desktop_sidebar_group_by",
+      "value": "分组方式"
+    },
+    {
+      "name": "desktop_sidebar_group_workspace",
+      "value": "按工作区"
+    },
+    {
+      "name": "desktop_sidebar_group_tree",
+      "value": "按工作区树"
+    },
+    {
+      "name": "desktop_sidebar_group_flat",
+      "value": "单列表"
+    },
+    {
+      "name": "desktop_sidebar_order_by",
+      "value": "排序方式"
+    },
+    {
+      "name": "desktop_sidebar_order_manual",
+      "value": "手动排序"
+    },
+    {
+      "name": "desktop_sidebar_order_updated",
+      "value": "最近更新"
+    },
+    {
+      "name": "desktop_sidebar_filter_by",
+      "value": "筛选方式"
+    },
+    {
+      "name": "desktop_sidebar_filter_hidden",
+      "value": "隐藏已归档"
+    },
+    {
+      "name": "desktop_sidebar_filter_all",
+      "value": "全部对话（显示已归档）"
+    },
+    {
+      "name": "desktop_sidebar_filter_only",
+      "value": "仅显示已归档"
+    },
+    {
       "name": "desktop_experiment_workspaces",
       "value": "工作区"
     },

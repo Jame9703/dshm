@@ -289,6 +289,54 @@
       "value": "Use WebUI by default"
     },
     {
+      "name": "desktop_sidebar_sessions",
+      "value": "Sessions"
+    },
+    {
+      "name": "desktop_sidebar_group_by",
+      "value": "Group by"
+    },
+    {
+      "name": "desktop_sidebar_group_workspace",
+      "value": "Workspace"
+    },
+    {
+      "name": "desktop_sidebar_group_tree",
+      "value": "Workspace Tree"
+    },
+    {
+      "name": "desktop_sidebar_group_flat",
+      "value": "In one list"
+    },
+    {
+      "name": "desktop_sidebar_order_by",
+      "value": "Order by"
+    },
+    {
+      "name": "desktop_sidebar_order_manual",
+      "value": "Manual"
+    },
+    {
+      "name": "desktop_sidebar_order_updated",
+      "value": "Last updated"
+    },
+    {
+      "name": "desktop_sidebar_filter_by",
+      "value": "Filter by"
+    },
+    {
+      "name": "desktop_sidebar_filter_hidden",
+      "value": "Hide archived"
+    },
+    {
+      "name": "desktop_sidebar_filter_all",
+      "value": "All conversations (show archived)"
+    },
+    {
+      "name": "desktop_sidebar_filter_only",
+      "value": "Only archived"
+    },
+    {
       "name": "desktop_experiment_workspaces",
       "value": "Workspaces"
     },

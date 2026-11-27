@@ -56,18 +56,17 @@ import type { DesktopConversation, DesktopConversationSnapshot } from '../deskto
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
+import { DesktopSessionGrouping, DesktopSessionOrdering, desktopReorderSessions, desktopSessionAccount,
+  desktopSessionOrder, desktopSessionOrdersEqual, desktopSessionRows, desktopSidebarSections,
+  desktopWorkspaceParents } from '../desktop/DesktopSessionOrder';
+import type { DesktopSessionInsertion, DesktopSidebarSection, DesktopWorkspaceGroup } from '../desktop/DesktopSessionOrder';
+import { readDesktopSidebarView, saveDesktopSidebarView } from '../desktop/DesktopSidebarPreference';
 
 const DOMAIN: number = 0xD000;
 const TAG: string = 'DshDesktopWorkspace';
 const DOCK_HANDLE_WIDTH: number = 7;
 const DOCK_MIN_WIDTH: number = 220;
 const DOCK_SPLIT_MIN_WIDTH: number = 540;
-
-interface DesktopWorkspaceGroup {
-  id: string;
-  title: ResourceStr;
-  sessions: SessionListItem[];
-}
 
 interface DesktopDockDrag {
   session: string;
@@ -77,6 +76,7 @@ interface DesktopDockDrag {
 
 interface DesktopSessionDrag {
   owner: string;
+  groupId: string;
   session: SessionListItem;
 }
 
@@ -101,6 +101,10 @@ struct DesktopWorkspace {
 
   @State private visibleGroups: DesktopWorkspaceGroup[] = [];
   @State private expandedIds: string[] = [];
+  @State private sidebarGrouping: DesktopSessionGrouping = DesktopSessionGrouping.WORKSPACE;
+  @State private sidebarOrdering: DesktopSessionOrdering = DesktopSessionOrdering.UPDATED;
+  private manualOrders: Map<string, string[]> = new Map<string, string[]>();
+  private sidebarExpansionLoaded: boolean = false;
   @State private sidebarCollapsed: boolean = false;
   @State private sidebarWidth: number = 280;
   @State private defaultDockWidth: number = 340;
@@ -121,6 +125,9 @@ struct DesktopWorkspace {
   private sessionContentBounds?: Area;
   @State private sessionDrag?: DesktopSessionDrag = undefined;
   @State private sessionDropPane: number = -1;
+  @State private sessionInsertion?: DesktopSessionInsertion = undefined;
+  private sidebarListBounds?: Area;
+  private readonly sessionRowBounds: Map<string, Area> = new Map<string, Area>();
   private dockDrag?: DesktopDockDrag;
   private dockDrop?: DesktopDockDrop;
   private dockPanActive: boolean = false;
@@ -217,6 +224,13 @@ struct DesktopWorkspace {
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
       this.appearance = desktopWorkspaceAppearance(context);
+      const view = readDesktopSidebarView(context);
+      this.sidebarGrouping = view.grouping;
+      this.sidebarOrdering = view.ordering;
+      this.archiveFilter = view.archiveFilter;
+      this.manualOrders = view.orders;
+      this.sidebarExpansionLoaded = view.expanded !== undefined;
+      this.expandedIds = view.expanded ?? [];
     }
     this.onHostChanged();
   }
@@ -330,9 +344,11 @@ struct DesktopWorkspace {
       if (!snapshot.ready) {
         return;
       }
+      const priorPins = new Set<string>(this.pinned);
+      const newPins = this.ready ? snapshot.pinned.filter((id: string): boolean => !priorPins.has(id)) : [];
       this.archivedIds = snapshot.archivedIds;
       this.pinned = snapshot.pinned;
-      this.updateGroups(snapshot.workspaces, snapshot.sessions);
+      this.updateGroups(snapshot.workspaces, snapshot.sessions, newPins);
       this.ready = true;
     }, (snapshot: DesktopConversationSnapshot): void => {
       this.chat = snapshot;
@@ -355,12 +371,12 @@ struct DesktopWorkspace {
     this.data.start(this.hostUrl);
   }
 
-  private updateGroups(workspaces: DesktopWorkspaceRow[], sessions: SessionListItem[]): void {
+  private updateGroups(workspaces: DesktopWorkspaceRow[], sessions: SessionListItem[], newPins: string[]): void {
     this.sessionSummaries = sessions;
     const byMember = new Map<string, DesktopWorkspaceGroup>();
     const byPath = new Map<string, DesktopWorkspaceGroup>();
     this.groups = workspaces.map((row: DesktopWorkspaceRow): DesktopWorkspaceGroup => {
-      const group: DesktopWorkspaceGroup = { id: row.id, title: row.title || row.path, sessions: [] };
+      const group: DesktopWorkspaceGroup = { id: row.id, path: row.path, title: row.title || row.path, sessions: [] };
       row.sessionIds.forEach((id: string): void => { byMember.set(id, group); });
       if (row.path.length > 0) {
         byPath.set(row.path, group);
@@ -368,18 +384,13 @@ struct DesktopWorkspace {
       return group;
     });
     const ungrouped: DesktopWorkspaceGroup = {
-      id: '', title: $r('app.string.desktop_experiment_ungrouped'), sessions: []
+      id: '', path: '', title: $r('app.string.desktop_experiment_ungrouped'), sessions: []
     };
     for (const session of sessions) {
       const group = byMember.get(session.id) ?? byPath.get(session.cwd) ?? ungrouped;
       group.sessions.push(session);
       if (session.id === this.sessionId && this.selectedSubagent === undefined && !this.archivedIds.includes(session.id)) {
         this.selectSession(group, session);
-      }
-    }
-    for (const group of [...this.groups, ungrouped]) {
-      if (this.pinned.length > 0) {
-        group.sessions.sort((a: SessionListItem, b: SessionListItem): number => this.pinRank(a.id) - this.pinRank(b.id));
       }
     }
     if (ungrouped.sessions.length > 0) {
@@ -391,23 +402,18 @@ struct DesktopWorkspace {
       this.selectedWorkspaceTitle =
         this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
     }
-    if (!this.ready) {
+    if (!this.ready && !this.sidebarExpansionLoaded) {
       const first = this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId) ??
         this.groups[0];
       this.expandedIds = first === undefined ? [] : [first.id];
     }
+    if (this.sidebarOrdering === DesktopSessionOrdering.MANUAL) { this.reconcileSessionOrders(newPins); }
     this.filterGroups(this.query);
     if (this.pendingForkId && (this.sessionId !== this.pendingForkSource || this.panel !== 'session' ||
       this.openSessionById(this.pendingForkId, false))) {
       this.pendingForkId = '';
       this.pendingForkSource = '';
     }
-  }
-
-  private pinRank(id: string): number {
-    if (this.archivedIds.includes(id)) { return this.pinned.length; }
-    const index = this.pinned.indexOf(id);
-    return index < 0 ? this.pinned.length : index;
   }
 
   private showRename(id: string, workspace: boolean, title: ResourceStr): void {
@@ -614,24 +620,33 @@ struct DesktopWorkspace {
     this.archiveFilter = filter;
     const group = sessionId ? this.groups.find((item: DesktopWorkspaceGroup): boolean =>
       item.sessions.some((row: SessionListItem): boolean => row.id === sessionId)) : undefined;
-    if (group !== undefined && !this.expandedIds.includes(group.id)) {
-      this.expandedIds = [...this.expandedIds, group.id];
-    }
+    if (group !== undefined) { this.revealWorkspace(group.id); }
     this.filterGroups(this.query);
+    this.saveSidebarView();
   }
 
-  private archiveFilterActions(): MenuElement[] {
-    return [
-      { value: (this.archiveFilter === DesktopArchiveFilter.HIDE ? '✓ ' : '') + '隐藏已归档',
-        icon: $r('app.media.dsh_session_archive_off_outline'),
-        action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.HIDE); } },
-      { value: (this.archiveFilter === DesktopArchiveFilter.ALL ? '✓ ' : '') + '全部对话（显示已归档）',
-        icon: $r('app.media.dsh_queue_queue_outline'),
-        action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ALL); } },
-      { value: (this.archiveFilter === DesktopArchiveFilter.ONLY ? '✓ ' : '') + '仅显示已归档',
-        icon: $r('app.media.dsh_session_archive_check_outline'),
-        action: (): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); } }
-    ];
+  private saveSidebarView(): void {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) { return; }
+    this.sidebarExpansionLoaded = true;
+    saveDesktopSidebarView(context, { grouping: this.sidebarGrouping, ordering: this.sidebarOrdering,
+      archiveFilter: this.archiveFilter, expanded: this.expandedIds, orders: this.manualOrders });
+  }
+
+  private setSidebarGrouping(grouping: DesktopSessionGrouping): void {
+    if (grouping === this.sidebarGrouping) { return; }
+    this.clearSessionDrag();
+    this.sidebarGrouping = grouping;
+    this.filterGroups(this.query);
+    this.saveSidebarView();
+  }
+
+  private setSidebarOrdering(ordering: DesktopSessionOrdering): void {
+    if (ordering === this.sidebarOrdering) { return; }
+    this.manualOrders = ordering === DesktopSessionOrdering.MANUAL ? this.snapshotSessionOrders() : new Map<string, string[]>();
+    this.sidebarOrdering = ordering;
+    this.filterGroups(this.query);
+    this.saveSidebarView();
   }
 
   private showArchiveNotice(id: string, stopped: boolean): void {
@@ -771,22 +786,84 @@ struct DesktopWorkspace {
       DesktopShortcut.CLOSE_DOCK_TAB].includes(row.id) && this.workspaceShortcut(row.id);
   }
 
+  private eligibleSidebarSessions(sessions: SessionListItem[]): SessionListItem[] {
+    return sessions.filter((row: SessionListItem): boolean => getString(row.raw, 'origin') !== 'subagent' &&
+      (!row.blank || row.id === this.sessionId));
+  }
+
+  private orderedSidebarSessions(sessions: SessionListItem[], account: string, archived: Set<string>,
+    sectioned: boolean = false): SessionListItem[] {
+    const saved = this.sidebarOrdering === DesktopSessionOrdering.MANUAL ? this.manualOrders.get(account) ?? [] : undefined;
+    return sectioned ? desktopSessionRows(sessions, saved, this.pinned, archived, this.sessionId) :
+      desktopSessionOrder(sessions, saved, this.pinned, archived, this.sessionId);
+  }
+
+  private snapshotSessionOrders(): Map<string, string[]> {
+    const orders = new Map<string, string[]>();
+    const archived = new Set<string>(this.archivedIds);
+    for (const group of this.groups) {
+      const account = desktopSessionAccount(DesktopSessionGrouping.WORKSPACE, group.id);
+      const members = this.eligibleSidebarSessions(group.sessions);
+      orders.set(account, this.orderedSidebarSessions(members, account, archived).map((row: SessionListItem): string => row.id));
+    }
+    const flat = desktopSessionAccount(DesktopSessionGrouping.FLAT, '');
+    const visible = this.eligibleSidebarSessions(this.sessionSummaries);
+    orders.set(flat, this.orderedSidebarSessions(visible, flat, archived).map((row: SessionListItem): string => row.id));
+    return orders;
+  }
+
+  private reconcileSessionOrders(newPins: string[]): void {
+    const orders = this.snapshotSessionOrders();
+    if (newPins.length > 0) {
+      const pinned = new Set<string>(newPins);
+      orders.forEach((rows: string[], account: string): void => {
+        const members = new Set<string>(rows);
+        const leading = newPins.filter((id: string): boolean => members.has(id));
+        orders.set(account, leading.concat(rows.filter((id: string): boolean => !pinned.has(id))));
+      });
+    }
+    if (!desktopSessionOrdersEqual(this.manualOrders, orders)) {
+      this.manualOrders = orders;
+      this.saveSidebarView();
+    }
+  }
+
   private filterGroups(value: string): void {
     this.query = value;
     const needle = value.trim().toLowerCase();
     const archived = new Set<string>(this.archivedIds);
     const matches: DesktopWorkspaceGroup[] = [];
-    this.groups.forEach((group: DesktopWorkspaceGroup): void => {
-      const sessions = group.sessions.filter((row: SessionListItem): boolean => {
+    const flat = this.sidebarGrouping === DesktopSessionGrouping.FLAT;
+    const single: DesktopWorkspaceGroup = { id: '', path: '', title: $r('app.string.desktop_sidebar_sessions'),
+      sessions: this.sessionSummaries };
+    const groups = flat ? [single] : this.groups;
+    for (const group of groups) {
+      const account = desktopSessionAccount(this.sidebarGrouping, group.id);
+      const visible = this.eligibleSidebarSessions(group.sessions).filter((row: SessionListItem): boolean => {
         const isArchived = archived.has(row.id);
         return (this.archiveFilter === DesktopArchiveFilter.ALL ||
-          isArchived === (this.archiveFilter === DesktopArchiveFilter.ONLY)) && row.title.toLowerCase().includes(needle);
+          isArchived === (this.archiveFilter === DesktopArchiveFilter.ONLY)) &&
+          (!needle || (!row.blank && row.title.toLowerCase().includes(needle)));
       });
-      if (sessions.length > 0 || (!needle && this.archiveFilter !== DesktopArchiveFilter.ONLY && group.id)) {
-        matches.push({ id: group.id, title: group.title, sessions: sessions });
+      if (visible.length > 0 || (!needle && this.archiveFilter !== DesktopArchiveFilter.ONLY && group.id)) {
+        const sessions = this.orderedSidebarSessions(visible, account, archived, true);
+        matches.push({ id: group.id, path: group.path, title: group.title, sessions: sessions });
       }
-    });
+    }
     this.visibleGroups = matches;
+  }
+
+  private sidebarSections(): DesktopSidebarSection[] {
+    return desktopSidebarSections(this.visibleGroups, this.sidebarGrouping, this.expandedIds, !!this.query.trim());
+  }
+
+  private revealWorkspace(id: string): void {
+    const parents = this.sidebarGrouping === DesktopSessionGrouping.TREE ? desktopWorkspaceParents(this.groups) : undefined;
+    const expanded = new Set<string>(this.expandedIds);
+    for (let current: string | undefined = id; current !== undefined; current = parents?.get(current)) {
+      expanded.add(current);
+    }
+    if (expanded.size !== this.expandedIds.length) { this.expandedIds = Array.from(expanded); }
   }
 
   private isExpanded(id: string): boolean {
@@ -796,6 +873,7 @@ struct DesktopWorkspace {
   private toggleWorkspace(id: string): void {
     this.expandedIds = this.expandedIds.includes(id) ? this.expandedIds.filter((item: string): boolean => item !== id) :
       [...this.expandedIds, id];
+    this.saveSidebarView();
   }
 
   private sessionLabel(session: SessionListItem): ResourceStr {
@@ -810,7 +888,8 @@ struct DesktopWorkspace {
       this.rightDock = this.docks.get(session.id) ?? readDesktopDock(this.getUIContext().getHostContext(), session.id);
       this.docks.set(session.id, this.rightDock);
     }
-    if (this.sessionId !== session.id) {
+    const changing = this.sessionId !== session.id;
+    if (changing) {
       this.terminalCreateSession = '';
       this.referenceOffer = undefined;
       this.closeFeedback();
@@ -826,6 +905,7 @@ struct DesktopWorkspace {
     this.selectedSessionDirectory = session.cwd;
     this.selectedWorkspaceTitle = group.title;
     this.data?.conversation.open(session.id, subagent);
+    if (changing && this.ready) { this.filterGroups(this.query); }
   }
 
   private openSubagent(entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean = false): void {
@@ -1597,9 +1677,7 @@ struct DesktopWorkspace {
     this.sidebarCollapsed = false;
     this.searchOpen = false;
     this.filterGroups('');
-    if (!this.expandedIds.includes(group.id)) {
-      this.expandedIds = [...this.expandedIds, group.id];
-    }
+    this.revealWorkspace(group.id);
   }
 
   private async addWorkspace(): Promise<void> {
@@ -1698,7 +1776,7 @@ struct DesktopWorkspace {
       if (row !== undefined) {
         this.selectSession(group, row);
         this.panel = 'session';
-        if (!this.expandedIds.includes(group.id)) { this.expandedIds = [...this.expandedIds, group.id]; }
+        this.revealWorkspace(group.id);
         return true;
       }
     }
@@ -1897,7 +1975,7 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private WorkspaceRow(group: DesktopWorkspaceGroup) {
+  private WorkspaceRow(group: DesktopWorkspaceGroup, depth: number) {
     Row() {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 8 }) {
@@ -1917,52 +1995,102 @@ struct DesktopWorkspace {
         this.RowMenu('管理工作区 ' + this.accessibilityLabel(group.title), this.workspaceActions(group))
       }
     }
-    .width('100%')
+    .width('100%').padding({ left: Math.min(7, depth) * 12 })
   }
 
   private canDragSession(session: SessionListItem, archived: boolean): boolean {
-    return this.panel === 'session' && this.ready && !!this.sessionId && this.sessionId !== session.id &&
-      !session.blank && !archived;
+    return this.ready && !session.blank && !archived;
   }
 
-  private beginSessionDrag(event: GestureEvent, session: SessionListItem, archived: boolean): void {
+  private beginSessionDrag(event: GestureEvent, groupId: string, session: SessionListItem, archived: boolean): void {
     if (!this.canDragSession(session, archived)) { return; }
-    this.sessionDrag = { owner: this.sessionId, session: session };
+    this.sessionDrag = { owner: this.sessionId, groupId: groupId, session: session };
     this.updateSessionDrag(event);
   }
 
   private updateSessionDrag(event: GestureEvent): void {
-    if (this.sessionDrag?.owner !== this.sessionId || this.panel !== 'session') { return; }
+    const drag = this.sessionDrag;
+    if (drag === undefined || drag.owner !== this.sessionId) { return; }
     const pointer = event.fingerInfos?.[0] ?? event.fingerList[0];
     if (pointer === undefined) { return; }
     const x = pointer.globalX - Number(this.workbenchBounds?.globalPosition.x ?? 0);
     const y = pointer.globalY - Number(this.workbenchBounds?.globalPosition.y ?? 0);
     this.dockDragX = Math.max(0, Math.min(this.workbenchWidth - 160, x + 12));
     this.dockDragY = Math.max(0, Math.min(this.workbenchHeight - 28, y + 9));
-    if (this.rightDock.expanded) {
-      this.sessionDropPane = this.rightDock.panes.findIndex((_pane: DesktopDockPane, index: number): boolean =>
-        this.dockAreaContains(this.dockPaneBounds.get(index), pointer.globalX, pointer.globalY));
-    } else {
-      const rect = this.sessionDropRect(this.sessionContentBounds, true);
-      this.sessionDropPane = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height ?
-        this.rightDock.focus : -1;
+    this.sessionDropPane = this.sessionRightDrop(drag, pointer.globalX, pointer.globalY, x, y);
+    const insert = this.sidebarSessionDrop(drag, pointer.globalX, pointer.globalY);
+    if (insert?.id !== this.sessionInsertion?.id || insert?.after !== this.sessionInsertion?.after) {
+      this.sessionInsertion = insert;
     }
+  }
+
+  private canDropSessionRight(drag: DesktopSessionDrag): boolean {
+    return this.panel === 'session' && !!drag.owner && drag.owner !== drag.session.id;
+  }
+
+  private sessionRightDrop(drag: DesktopSessionDrag, globalX: number, globalY: number, x: number, y: number): number {
+    if (!this.canDropSessionRight(drag)) { return -1; }
+    if (this.rightDock.expanded) {
+      return this.rightDock.panes.findIndex((_pane: DesktopDockPane, index: number): boolean =>
+        this.dockAreaContains(this.dockPaneBounds.get(index), globalX, globalY));
+    }
+    const rect = this.sessionDropRect(this.sessionContentBounds, true);
+    return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height ? this.rightDock.focus : -1;
+  }
+
+  private sidebarSessionDrop(drag: DesktopSessionDrag, x: number, y: number): DesktopSessionInsertion | undefined {
+    if (this.query.trim() || !this.dockAreaContains(this.sidebarListBounds, x, y)) { return undefined; }
+    const group = this.visibleGroups.find((item: DesktopWorkspaceGroup): boolean => item.id === drag.groupId);
+    if (group === undefined) { return undefined; }
+    const pinned = this.pinned.includes(drag.session.id);
+    for (const target of group.sessions) {
+      const bounds = this.sessionRowBounds.get(target.id);
+      const targetPinned = this.pinned.includes(target.id) && !this.archivedIds.includes(target.id);
+      if (target.id === drag.session.id || targetPinned !== pinned || bounds === undefined ||
+        !this.dockAreaContains(bounds, x, y)) { continue; }
+      return { id: target.id, after: target.blank || y >= Number(bounds.globalPosition.y) + Number(bounds.height) / 2 };
+    }
+    return undefined;
   }
 
   private clearSessionDrag(): void {
     this.sessionDrag = undefined;
     this.sessionDropPane = -1;
+    this.sessionInsertion = undefined;
   }
 
   private dropSession(event: GestureEvent): void {
     this.updateSessionDrag(event);
     const drag = this.sessionDrag;
     const pane = this.sessionDropPane;
+    const insert = this.sessionInsertion;
     this.clearSessionDrag();
-    if (drag === undefined || drag.owner !== this.sessionId || this.panel !== 'session' ||
-      this.rightDock.panes[pane] === undefined || this.archivedIds.includes(drag.session.id)) { return; }
-    const session = drag.session;
-    this.showDockChat({ id: session.id, subagent: desktopSubagentFromSummary(session) }, session.title, pane);
+    if (drag === undefined || drag.owner !== this.sessionId || this.archivedIds.includes(drag.session.id)) { return; }
+    const session = this.sessionSummaries.find((row: SessionListItem): boolean => row.id === drag.session.id);
+    if (session === undefined || session.blank) { return; }
+    if (pane >= 0 && this.canDropSessionRight(drag)) {
+      this.showDockChat({ id: session.id, subagent: desktopSubagentFromSummary(session) }, session.title, pane);
+    } else if (insert !== undefined) {
+      this.reorderSidebarSession(drag, insert);
+    }
+  }
+
+  private reorderSidebarSession(drag: DesktopSessionDrag, insert: DesktopSessionInsertion): void {
+    const group = this.visibleGroups.find((item: DesktopWorkspaceGroup): boolean => item.id === drag.groupId);
+    const flat = this.sidebarGrouping === DesktopSessionGrouping.FLAT;
+    const members = flat ? this.sessionSummaries : this.groups.find((item: DesktopWorkspaceGroup): boolean =>
+      item.id === drag.groupId)?.sessions;
+    if (group === undefined || members === undefined) { return; }
+    const archived = new Set<string>(this.archivedIds);
+    const account = desktopSessionAccount(this.sidebarGrouping, drag.groupId);
+    const order = this.orderedSidebarSessions(this.eligibleSidebarSessions(members), account, archived);
+    const next = desktopReorderSessions(order, group.sessions, drag.session.id, insert, new Set<string>(this.pinned), archived);
+    if (next === undefined) { return; }
+    if (this.sidebarOrdering !== DesktopSessionOrdering.MANUAL) { this.manualOrders = this.snapshotSessionOrders(); }
+    this.manualOrders.set(account, next);
+    this.sidebarOrdering = DesktopSessionOrdering.MANUAL;
+    this.filterGroups(this.query);
+    this.saveSidebarView();
   }
 
   private sessionDropRect(bounds: Area | undefined, collapsed: boolean): DesktopDockRect {
@@ -2001,7 +2129,7 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private SessionRow(group: DesktopWorkspaceGroup, session: SessionListItem, archived: boolean) {
+  private SessionRow(groupId: string, depth: number, session: SessionListItem, archived: boolean) {
     Row() {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 6 }) {
@@ -2029,16 +2157,20 @@ struct DesktopWorkspace {
       .accessibilityText(this.accessibilityLabel(this.sessionLabel(session)))
       .accessibilityDescription(archived ? '已归档' : '')
       .accessibilitySelected(this.sessionId === session.id)
-      .priorityGesture(PanGesture({ direction: PanDirection.Horizontal, distance: 10 })
-        .onActionStart((event: GestureEvent): void => { this.beginSessionDrag(event, session, archived); })
-        .onActionUpdate((event: GestureEvent): void => { this.updateSessionDrag(event); })
-        .onActionEnd((event: GestureEvent): void => { this.dropSession(event); })
-        .onActionCancel((): void => { this.clearSessionDrag(); }))
-      .onClick((): void => {
-        if (archived) { this.openSessionById(session.id); return; }
-        this.selectSession(group, session);
-        this.panel = 'session';
-      })
+      .priorityGesture(GestureGroup(GestureMode.Exclusive,
+        PanGesture({ direction: PanDirection.All, distance: 8 }).allowedTypes([SourceTool.MOUSE, SourceTool.TOUCHPAD])
+          .onActionStart((event: GestureEvent): void => { this.beginSessionDrag(event, groupId, session, archived); })
+          .onActionUpdate((event: GestureEvent): void => { this.updateSessionDrag(event); })
+          .onActionEnd((event: GestureEvent): void => { this.dropSession(event); })
+          .onActionCancel((): void => { this.clearSessionDrag(); }),
+        GestureGroup(GestureMode.Sequence,
+          LongPressGesture({ duration: 320 }).allowedTypes([SourceTool.Finger, SourceTool.Pen]),
+          PanGesture({ direction: PanDirection.All, distance: 8 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+            .onActionStart((event: GestureEvent): void => { this.beginSessionDrag(event, groupId, session, archived); })
+            .onActionUpdate((event: GestureEvent): void => { this.updateSessionDrag(event); })
+            .onActionEnd((event: GestureEvent): void => { this.dropSession(event); })
+            .onActionCancel((): void => { this.clearSessionDrag(); }))))
+      .onClick((): void => { this.openSessionById(session.id); })
       if (archived) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_session_unarchive_outline')).width(14).height(14).supportSvg2(true)
@@ -2054,8 +2186,13 @@ struct DesktopWorkspace {
       .focusOnTouch(false).accessibilityText('管理会话 ' + this.accessibilityLabel(this.sessionLabel(session)))
       .enabled(!this.workspaceBusy).bindMenu(this.sessionActions(session), desktopMenuOptions(Placement.BottomRight))
     }
-    .width('100%').borderRadius(8)
+    .width('100%').borderRadius(8).padding({ left: Math.min(7, depth) * 12 })
+    .border({ width: { top: this.sessionInsertion?.id === session.id && !this.sessionInsertion?.after ? 2 : 0,
+      bottom: this.sessionInsertion?.id === session.id && this.sessionInsertion?.after ? 2 : 0 },
+      color: $r('sys.color.ohos_id_color_activated') })
     .backgroundColor(this.sessionId === session.id ? $r('app.color.workspace_selection') : Color.Transparent)
+    .onAreaChange((_, area: Area): void => { this.sessionRowBounds.set(session.id, area); })
+    .onDisAppear((): void => { this.sessionRowBounds.delete(session.id); })
   }
 
   @Builder
@@ -2086,16 +2223,53 @@ struct DesktopWorkspace {
   }
 
   @Builder
+  private SidebarViewMenu() {
+    Menu() {
+      MenuItemGroup({ header: $r('app.string.desktop_sidebar_group_by') }) {
+        MenuItem({ content: $r('app.string.desktop_sidebar_group_workspace'), startIcon: $r('app.media.dsh_sidebar_workspace') })
+          .key('desktopSidebarGroupWorkspace').selectIcon(true).selected(this.sidebarGrouping === DesktopSessionGrouping.WORKSPACE)
+          .onChange((): void => { this.setSidebarGrouping(DesktopSessionGrouping.WORKSPACE); })
+        MenuItem({ content: $r('app.string.desktop_sidebar_group_tree'), startIcon: $r('app.media.dsh_sidebar_tree') })
+          .key('desktopSidebarGroupTree').selectIcon(true).selected(this.sidebarGrouping === DesktopSessionGrouping.TREE)
+          .onChange((): void => { this.setSidebarGrouping(DesktopSessionGrouping.TREE); })
+        MenuItem({ content: $r('app.string.desktop_sidebar_group_flat'), startIcon: $r('app.media.dsh_sidebar_flat') })
+          .key('desktopSidebarGroupFlat').selectIcon(true).selected(this.sidebarGrouping === DesktopSessionGrouping.FLAT)
+          .onChange((): void => { this.setSidebarGrouping(DesktopSessionGrouping.FLAT); })
+      }
+      MenuItemGroup({ header: $r('app.string.desktop_sidebar_order_by') }) {
+        MenuItem({ content: $r('app.string.desktop_sidebar_order_manual'), startIcon: $r('app.media.dsh_sidebar_manual') })
+          .key('desktopSidebarOrderManual').selectIcon(true).selected(this.sidebarOrdering === DesktopSessionOrdering.MANUAL)
+          .onChange((): void => { this.setSidebarOrdering(DesktopSessionOrdering.MANUAL); })
+        MenuItem({ content: $r('app.string.desktop_sidebar_order_updated'), startIcon: $r('app.media.dsh_sidebar_updated') })
+          .key('desktopSidebarOrderUpdated').selectIcon(true).selected(this.sidebarOrdering === DesktopSessionOrdering.UPDATED)
+          .onChange((): void => { this.setSidebarOrdering(DesktopSessionOrdering.UPDATED); })
+      }
+      MenuItemGroup({ header: $r('app.string.desktop_sidebar_filter_by') }) {
+        MenuItem({ content: $r('app.string.desktop_sidebar_filter_hidden'), startIcon: $r('app.media.dsh_session_archive_off_outline') })
+          .key('desktopSidebarArchiveHide').selectIcon(true).selected(this.archiveFilter === DesktopArchiveFilter.HIDE)
+          .onChange((): void => { this.setArchiveFilter(DesktopArchiveFilter.HIDE); })
+        MenuItem({ content: $r('app.string.desktop_sidebar_filter_all'), startIcon: $r('app.media.dsh_queue_queue_outline') })
+          .key('desktopSidebarArchiveAll').selectIcon(true).selected(this.archiveFilter === DesktopArchiveFilter.ALL)
+          .onChange((): void => { this.setArchiveFilter(DesktopArchiveFilter.ALL); })
+        MenuItem({ content: $r('app.string.desktop_sidebar_filter_only'), startIcon: $r('app.media.dsh_session_archive_check_outline') })
+          .key('desktopSidebarArchiveOnly').selectIcon(true).selected(this.archiveFilter === DesktopArchiveFilter.ONLY)
+          .onChange((): void => { this.setArchiveFilter(DesktopArchiveFilter.ONLY); })
+      }
+    }
+  }
+
+  @Builder
   private WorkspaceTree() {
     Row() {
-      Text($r('app.string.desktop_experiment_workspaces'))
+      Text(this.sidebarGrouping === DesktopSessionGrouping.FLAT ? $r('app.string.desktop_sidebar_sessions') :
+        $r('app.string.desktop_experiment_workspaces'))
         .fontSize(14).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Image($r('app.media.dsh_session_sliders_two_outline')).width(16).height(16)
           .supportSvg2(true).accessibilityLevel('no')
       }.key('desktopWorkspaceArchiveFilter').width(32).height(32).padding(0).borderRadius(7)
         .focusOnTouch(false).accessibilityText('视图选项').enabled(this.ready)
-        .bindMenu(this.archiveFilterActions(), desktopMenuOptions(Placement.BottomRight))
+        .bindMenu(this.SidebarViewMenu, desktopMenuOptions(Placement.BottomRight))
       this.IconButton($r('sys.symbol.magnifyingglass'), $r('app.string.desktop_experiment_search'),
         (): void => {
           this.searchOpen = !this.searchOpen;
@@ -2115,18 +2289,18 @@ struct DesktopWorkspace {
     }
     if (this.ready) {
       List({ space: 2 }) {
-        ForEach(this.visibleGroups, (group: DesktopWorkspaceGroup) => {
-          ListItem() {
-            this.WorkspaceRow(group)
-          }
-          if (this.isExpanded(group.id)) {
-            ForEach(group.sessions, (session: SessionListItem): void => {
+        ForEach(this.sidebarSections(), (section: DesktopSidebarSection): void => {
+          if (section.header) {
+            ListItem() { this.WorkspaceRow(section.group, section.depth) }
+          } else {
+            ForEach(section.group.sessions, (session: SessionListItem): void => {
               ListItem() {
-                this.SessionRow(group, session, this.archivedIds.includes(session.id))
+                this.SessionRow(section.group.id, section.depth, session, this.archivedIds.includes(session.id))
               }
             }, (session: SessionListItem): string => session.id)
           }
-        }, (group: DesktopWorkspaceGroup): string => this.groupKey(group))
+        }, (section: DesktopSidebarSection): string =>
+          JSON.stringify([section.depth, section.header, this.groupKey(section.group)]))
         if (this.visibleGroups.length === 0) {
           ListItem() {
             Column({ space: 8 }) {
@@ -2145,6 +2319,8 @@ struct DesktopWorkspace {
         }
       }
       .width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+      .enableScrollInteraction(this.sessionDrag === undefined)
+      .onAreaChange((_, area: Area): void => { this.sidebarListBounds = area; })
       .onVisibleAreaChange([0], (visible: boolean): void => this.markSidebarVisible(visible))
     } else {
       Text(this.error || this.hostError || $r('app.string.desktop_experiment_loading'))
@@ -2930,7 +3106,7 @@ struct DesktopWorkspace {
             this.FloatingDockPane(panel)
           }, (panel: DesktopDockFloat): string => this.sessionId + ':' + panel.tab.id)
         }
-        if (this.sessionDrag !== undefined && this.panel === 'session') {
+        if (this.sessionDrag !== undefined && this.canDropSessionRight(this.sessionDrag)) {
           if (this.rightDock.expanded) {
             this.SessionDropZone(0, this.sessionDropRect(this.dockPaneBounds.get(0), false),
               this.rightDock.panes.length > 1)
