@@ -1,5 +1,7 @@
 import { Speaker, TrajectoryItem } from 'appstate';
 import { KeyCode } from '@kit.InputKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { resourceManager } from '@kit.LocalizationKit';
 import { DESKTOP_ATTACHMENT_DROP_TYPES, desktopClipboardHasAttachments, desktopClipboardHasText,
   desktopDroppedFiles } from './DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
@@ -32,6 +34,10 @@ import { DesktopQueueDock } from './DesktopQueueDock';
 import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
 import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
 import type { QueueActionBody } from 'appstate';
+import { DesktopDraftEditor } from './DesktopDraftEditor';
+import { desktopDraftEditorOffset, desktopDraftTriggerText, desktopDraftWireOffset, EMPTY_DESKTOP_DRAFT,
+  replaceDesktopDraftRange, sameDesktopDraft } from './DesktopDraftReferences';
+import type { DesktopComposerDraft, DesktopDraftReference } from './DesktopDraftReferences';
 
 @Component
 export struct DesktopConversationPane {
@@ -40,7 +46,8 @@ export struct DesktopConversationPane {
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
   @Prop sessionDirectory: string = '';
-  @Prop draft: string = '';
+  @Prop @Watch('scheduleComposerSync') draft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
+  @Prop @Watch('scheduleComposerSync') appearance: string = 'system';
   @Prop @Watch('insertFileReference') referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
   @Prop interactions: DesktopInteraction[] = [];
   @Prop attachments: DesktopDraftAttachment[] = [];
@@ -54,7 +61,7 @@ export struct DesktopConversationPane {
   @Prop choosingFeedback: boolean = false;
   @Prop forking: boolean = false;
   onFork: (sessionId: string, atSeq: number) => void = (_sessionId: string, _atSeq: number): void => {};
-  onDraft: (value: string) => void = () => {};
+  onDraft: (session: string, value: DesktopComposerDraft) => void = () => {};
   onAddAttachment: () => void = () => {};
   onDropAttachments: (files: DesktopDroppedFiles) => void = (_files: DesktopDroppedFiles): void => {};
   onPasteAttachments: () => void = (): void => {};
@@ -110,12 +117,15 @@ export struct DesktopConversationPane {
   @State private expandedProcesses: string[] = [];
   @State private expandedReasoning: string[] = [];
   @State private inspectedTool: string = '';
-  private readonly composer: TextAreaController = new TextAreaController();
+  private readonly composer = new DesktopDraftEditor();
+  private composerReady: boolean = false;
+  private composerSession: string = '';
+  private composerDraft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
+  private composerDark: boolean = false;
+  private composerSyncTimer: number = -1;
   private composerSelectionEnd: number = -1;
   private readonly paletteScroller: Scroller = new Scroller();
   private slashFrame: number = -1;
-  private triggerText?: string;
-  private triggerCaret?: number;
   private slashToken?: DesktopSlashToken;
   private referenceToken?: DesktopReferenceToken;
   private referenceTimer: number = -1;
@@ -136,6 +146,8 @@ export struct DesktopConversationPane {
   @State private paletteNotice: string = '';
 
   aboutToDisappear(): void {
+    this.composerReady = false;
+    if (this.composerSyncTimer !== -1) { clearTimeout(this.composerSyncTimer); this.composerSyncTimer = -1; }
     this.cancelSlashRefresh();
     this.cancelReferenceLookup();
     if (this.scrollTimer !== -1) {
@@ -151,6 +163,7 @@ export struct DesktopConversationPane {
     if (id !== this.sessionId) {
       this.sessionId = id;
       this.composerSelectionEnd = -1;
+      this.scheduleComposerSync();
       this.following = true;
       this.expandedProcesses = [];
       this.expandedReasoning = [];
@@ -235,8 +248,8 @@ export struct DesktopConversationPane {
 
   private referenceInDraft(): DesktopReferenceToken | undefined {
     const previous = this.referenceToken;
-    if (previous === undefined || this.paletteDraft === this.draft) { return previous; }
-    const current = activeDesktopReference(this.draft, this.composer.getCaretOffset().index);
+    if (previous === undefined || this.paletteDraft === this.draft.text) { return previous; }
+    const current = activeDesktopReference(desktopDraftTriggerText(this.composerDraft), this.composerCaret());
     return current?.start === previous.start ? current : undefined;
   }
 
@@ -250,15 +263,17 @@ export struct DesktopConversationPane {
     }
     const mention = desktopSettledReference(row, this.sessionDirectory, token.quoted);
     if (!mention) { return; }
-    const original = this.draft;
+    const original = this.draft.text;
     const spacer = /^\s/u.test(original.slice(token.end)) ? '' : ' ';
     this.closePalette();
-    this.replaceComposerRange(original, token.start, token.end, mention + spacer, true);
+    const reference: DesktopDraftReference = { start: token.start, end: token.start + mention.length,
+      kind: row.kind, label: row.label };
+    this.replaceComposerRange(original, token.start, token.end, mention + spacer, true, false, reference);
   }
 
   private drillReference(replacement: string): void {
     const token = this.referenceInDraft();
-    const original = this.draft;
+    const original = this.draft.text;
     if (!replacement || token === undefined || this.busy) { return; }
     const next = original.slice(0, token.start) + replacement + original.slice(token.end);
     const nextToken = activeDesktopReference(next, token.start + replacement.length);
@@ -270,23 +285,18 @@ export struct DesktopConversationPane {
 
   private cancelSlashRefresh(): void {
     if (this.slashFrame !== -1) { clearTimeout(this.slashFrame); this.slashFrame = -1; }
-    this.triggerText = undefined;
-    this.triggerCaret = undefined;
   }
 
-  private refreshSlash(text?: string, caret?: number): void {
+  private refreshSlash(): void {
     if (this.palette === 'model' || this.palette === 'permission') { return; }
-    if (text !== undefined) { this.triggerText = text; }
-    if (caret !== undefined) { this.triggerCaret = caret; }
     if (this.slashFrame !== -1) { return; }
-    // The input event carries the updated text before the bound prop is refreshed.
     this.slashFrame = setTimeout((): void => {
       this.slashFrame = -1;
-      const next = this.triggerText ?? this.draft;
-      const position = Math.min(next.length, this.triggerCaret ?? this.composer.getCaretOffset().index);
-      this.triggerText = undefined;
-      this.triggerCaret = undefined;
-      this.detectTrigger(next, position);
+      if (!this.composerReady || this.composerSession !== this.sessionId) { return; }
+      const selection = this.composer.controller.getSelection();
+      if (selection?.start === selection?.end) {
+        this.detectTrigger(this.composerDraft.text, this.composerCaret());
+      }
     }, 16);
   }
 
@@ -296,13 +306,14 @@ export struct DesktopConversationPane {
       this.closePalette();
       return;
     }
-    const reference = activeDesktopReference(text, caret);
+    const triggerText = desktopDraftTriggerText(this.composerDraft);
+    const reference = activeDesktopReference(triggerText, caret);
     if (reference !== undefined) {
       this.showReferences(text, reference);
       return;
     }
     this.closeReferences();
-    const token = activeDesktopSlash(text, caret);
+    const token = activeDesktopSlash(triggerText, caret);
     if (token === undefined) { this.closePalette(); return; }
     const refresh = this.palette !== 'commands' || this.query !== token.query || this.leading !== token.leading;
     this.slashToken = token;
@@ -361,11 +372,15 @@ export struct DesktopConversationPane {
     if (offer === undefined) { return; }
     setTimeout((): void => {
       if (offer.sessionId !== this.sessionId || !this.acceptsAttachments()) { return; }
-      const original = this.draft;
+      const original = this.draft.text;
       const insert = desktopFileReferenceInsertion(original, this.composerSelectionEnd, offer.path);
       if (insert === undefined) { return; }
+      const start = insert.position + insert.text.indexOf('@');
+      const end = insert.position + insert.text.trimEnd().length;
+      const reference: DesktopDraftReference = { start: start, end: end, kind: 'file',
+        label: offer.path.slice(offer.path.lastIndexOf('/') + 1) };
       this.closePalette();
-      this.replaceComposerRange(original, insert.position, insert.position, insert.text, true);
+      this.replaceComposerRange(original, insert.position, insert.position, insert.text, true, false, reference);
     }, 0);
   }
 
@@ -374,19 +389,97 @@ export struct DesktopConversationPane {
   }
 
   private replaceComposerRange(original: string, start: number, end: number, replacement: string, refocus: boolean,
-    keepOpen: boolean = false): void {
-    if (this.draft !== original) { return; }
-    const text = original.slice(0, start) + replacement + original.slice(end);
-    this.dismissedDraft = keepOpen ? undefined : text;
-    this.onDraft(text);
+    keepOpen: boolean = false, reference?: DesktopDraftReference): void {
+    if (!this.composerReady || this.composerSession !== this.sessionId || this.composerDraft.text !== original) { return; }
+    const draft = replaceDesktopDraftRange(this.composerDraft, start, end, replacement, reference);
+    this.dismissedDraft = keepOpen ? undefined : draft.text;
+    this.renderComposer(draft);
+    this.onDraft(this.composerSession, draft);
+    this.composerSelectionEnd = start + replacement.length;
+    const caret = desktopDraftEditorOffset(draft, this.composerSelectionEnd);
+    this.composer.controller.setCaretOffset(caret);
     if (!refocus) { return; }
     const session = this.sessionId;
     this.getUIContext().getFocusController().requestFocus('desktopSlashComposer');
     setTimeout((): void => {
-      if (session === this.sessionId && text === this.draft) {
-        this.composer.caretPosition(start + replacement.length);
+      if (this.composerReady && session === this.sessionId && sameDesktopDraft(this.composerDraft, draft)) {
+        this.composer.controller.setCaretOffset(caret);
       }
     }, 0);
+  }
+
+  private composerCaret(): number {
+    const offset = this.composer.controller.getCaretOffset();
+    return offset < 0 ? this.composerDraft.text.length : desktopDraftWireOffset(this.composerDraft, offset);
+  }
+
+  private scheduleComposerSync(): void {
+    if (!this.composerReady || this.composerSyncTimer !== -1) { return; }
+    this.composerSyncTimer = setTimeout((): void => {
+      this.composerSyncTimer = -1;
+      this.syncComposer();
+    }, 0);
+  }
+
+  private syncComposer(): void {
+    const dark = this.appearance === 'dark' || (this.appearance === 'system' &&
+      this.getUIContext().getHostContext()?.resourceManager.getConfigurationSync().colorMode === resourceManager.ColorMode.DARK);
+    if (this.composerSession === this.sessionId && this.composerDark === dark &&
+      sameDesktopDraft(this.composerDraft, this.draft)) { return; }
+    const sampleCaret = this.composerSession === this.sessionId && sameDesktopDraft(this.composerDraft, this.draft);
+    const caret = sampleCaret ? this.composerCaret() : this.draft.text.length;
+    this.composerSession = this.sessionId;
+    this.composerDark = dark;
+    this.renderComposer(this.draft);
+    this.composerSelectionEnd = caret;
+    this.composer.controller.setCaretOffset(desktopDraftEditorOffset(this.draft, caret));
+  }
+
+  private renderComposer(draft: DesktopComposerDraft): void {
+    this.composerDraft = draft;
+    this.composer.controller.setStyledString(this.composer.format(draft, this.getUIContext(), this.composerDark));
+  }
+
+  private prepareComposer(): void {
+    this.composerReady = true;
+    this.syncComposer();
+    this.composer.controller.onContentChanged({ onDidChange: (): void => {
+      if (this.composerSession !== this.sessionId) { return; }
+      const draft = this.composer.read();
+      if (sameDesktopDraft(this.composerDraft, draft)) { return; }
+      this.composerDraft = draft;
+      this.composerSelectionEnd = this.composerCaret();
+      this.paletteNotice = '';
+      if (draft.text !== this.dismissedDraft) { this.dismissedDraft = undefined; }
+      this.onDraft(this.composerSession, draft);
+      this.refreshSlash();
+    } });
+  }
+
+  private composerSelectionChanged(range: RichEditorRange): void {
+    if (range.end === undefined || range.end < 0 || !this.composerReady || this.composerSession !== this.sessionId) { return; }
+    this.composerSelectionEnd = desktopDraftWireOffset(this.composerDraft, range.end);
+    if (range.start === range.end) { this.refreshSlash(); }
+    else if (this.palette === 'reference') { this.closePalette(); }
+  }
+
+  private copyComposerSelection(event: CopyEvent, cut: boolean): void {
+    if (this.composerDraft.references.length === 0 || event.preventDefault === undefined) { return; }
+    const range = this.composer.controller.getSelection();
+    if (range?.start === undefined || range.end === undefined || range.start === range.end) { return; }
+    const start = desktopDraftWireOffset(this.composerDraft, Math.min(range.start, range.end));
+    const end = desktopDraftWireOffset(this.composerDraft, Math.max(range.start, range.end));
+    if (!this.composerDraft.references.some((reference: DesktopDraftReference): boolean =>
+      reference.start >= start && reference.end <= end)) { return; }
+    try {
+      pasteboard.getSystemPasteboard().setDataSync(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN,
+        this.composerDraft.text.slice(start, end)));
+    } catch (_) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    if (cut) { this.replaceComposerRange(this.composerDraft.text, start, end, '', false); }
   }
 
   private openChoice(kind: string): void {
@@ -402,7 +495,7 @@ export struct DesktopConversationPane {
     if (this.palette === 'reference') { this.pickReference(id); return; }
     const token = this.slashToken;
     const original = this.paletteDraft;
-    if (token === undefined || original !== this.draft || this.busy) { return; }
+    if (token === undefined || original !== this.draft.text || this.busy) { return; }
     const session = this.sessionId;
     const view = this.palette;
     let problem = '';
@@ -456,7 +549,7 @@ export struct DesktopConversationPane {
   }
 
   private hasDraft(): boolean {
-    return this.draft.trim().length > 0 || this.attachments.length > 0;
+    return this.draft.text.trim().length > 0 || this.attachments.length > 0;
   }
 
   private primaryStops(): boolean {
@@ -469,7 +562,7 @@ export struct DesktopConversationPane {
 
   private handleSend(alternateDelivery: boolean = false): void {
     if (this.busy || this.snapshot?.loading !== false) { return; }
-    const command = commandInvocation(this.draft);
+    const command = commandInvocation(this.draft.text);
     if (command !== undefined && !command.suffix) {
       const choices = commandCandidates(this.snapshot.commands ?? [], '', true);
       const row = resolveDesktopCommand(choices, command.token);
@@ -479,8 +572,8 @@ export struct DesktopConversationPane {
           this.paletteNotice = `/${command.token} 不接受附件，请先移除附件`;
           return;
         }
-        this.slashToken = activeDesktopSlash(this.draft, this.draft.trimEnd().length);
-        this.paletteDraft = this.draft;
+        this.slashToken = activeDesktopSlash(this.draft.text, this.draft.text.trimEnd().length);
+        this.paletteDraft = this.draft.text;
         this.query = command.token;
         this.leading = true;
         this.palette = 'commands';
@@ -488,7 +581,7 @@ export struct DesktopConversationPane {
         return;
       }
     }
-    this.dismissedDraft = this.draft;
+    this.dismissedDraft = this.draft.text;
     this.closePalette();
     this.following = true;
     this.onSend(alternateDelivery);
@@ -499,6 +592,18 @@ export struct DesktopConversationPane {
   }
 
   private composerKey(event: KeyEvent): boolean {
+    if (event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ENTER &&
+      event.getModifierKeyState?.(['Shift']) === true) {
+      const range = this.composer.controller.getSelection();
+      const caret = this.composerCaret();
+      const start = range?.start !== undefined && range.start >= 0 ?
+        desktopDraftWireOffset(this.composerDraft, range.start) : caret;
+      const end = range?.end !== undefined && range.end >= 0 ?
+        desktopDraftWireOffset(this.composerDraft, range.end) : caret;
+      this.closePalette();
+      this.replaceComposerRange(this.composerDraft.text, Math.min(start, end), Math.max(start, end), '\n', true);
+      return true;
+    }
     if (this.acceptsAttachments() && event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_V &&
       event.getModifierKeyState?.(['Ctrl']) === true && desktopClipboardHasAttachments()) {
       this.onPasteAttachments();
@@ -541,7 +646,7 @@ export struct DesktopConversationPane {
     if (event.type !== KeyType.Down) { return false; }
     if (this.palette && event.keyCode === KeyCode.KEYCODE_ESCAPE) {
       if (this.riskPreset) { this.riskPreset = ''; this.agreed = false; }
-      else { this.dismissedDraft = this.draft; this.closePalette(); }
+      else { this.dismissedDraft = this.draft.text; this.closePalette(); }
       return true;
     }
     if (this.riskPreset) { return false; }
@@ -556,7 +661,7 @@ export struct DesktopConversationPane {
     const item = rows[this.highlight] ?? rows[0];
     if (this.palette === 'reference' && event.keyCode === KeyCode.KEYCODE_TAB) {
       if (event.getModifierKeyState?.(['Shift']) === true) {
-        this.dismissedDraft = this.draft;
+        this.dismissedDraft = this.draft.text;
         this.closePalette();
         return true;
       }
@@ -806,30 +911,29 @@ export struct DesktopConversationPane {
         }
         .scrollable(ScrollDirection.Horizontal).width('100%').padding({ left: 8, right: 8 })
       }
-      TextArea({ text: this.draft, controller: this.composer, placeholder: this.snapshot?.planMode === true ?
+      RichEditor({ controller: this.composer.controller })
+        .placeholder(this.snapshot?.planMode === true ?
         '描述你的任务以生成计划' : (this.canSteerQueue() ? '按 Ctrl+Enter 插话发送排队消息' :
-          $r('app.string.desktop_chat_placeholder')) })
+          $r('app.string.desktop_chat_placeholder')), { font: { size: 15 } })
         .key('desktopSlashComposer').enterKeyType(EnterKeyType.Send)
-        .width('100%').height(66).fontSize(15).borderRadius(16).padding({ left: 12, right: 12, top: 10 })
-        .fontColor($r('sys.color.font_primary')).backgroundColor(Color.Transparent)
-        .onChange((text: string): void => {
-          this.paletteNotice = '';
-          this.onDraft(text);
-          if (text !== this.dismissedDraft) { this.dismissedDraft = undefined; }
-          this.refreshSlash(text);
-        })
-        .onTextSelectionChange((start: number, end: number): void => {
-          this.composerSelectionEnd = end;
-          if (start === end) { this.refreshSlash(undefined, end); }
-          else if (this.palette === 'reference') { this.closePalette(); }
-        })
+        .width('100%').height(66).borderRadius(16).padding({ left: 12, right: 12, top: 10 })
+        .backgroundColor(Color.Transparent)
+        .allowDrop(null)
+        .accessibilityDescription(this.draft.references.map((item: DesktopDraftReference): string => item.label).join('、'))
+        .onReady((): void => this.prepareComposer())
+        .onSelectionChange((range: RichEditorRange): void => this.composerSelectionChanged(range))
+        .onCopy((event: CopyEvent): void => this.copyComposerSelection(event, false))
+        .onCut((event: CutEvent): void => this.copyComposerSelection(event, true))
         .onKeyPreIme((event: KeyEvent): boolean => this.composerKey(event))
-        .onSubmit((): void => { if (this.hasDraft()) { this.handleSend(); } })
+        .onSubmit((_key: EnterKeyType, event: SubmitEvent): void => {
+          event.keepEditableState();
+          if (this.hasDraft()) { this.handleSend(); }
+        })
         .bindPopup(this.palette !== '', { builder: this.CommandPopup(), placement: Placement.TopLeft,
           enableArrow: false, mask: false, focusable: this.palette === 'model' || this.palette === 'permission',
           systemMaterial: desktopMenuOptions(Placement.TopLeft).systemMaterial,
           onStateChange: (event): void => {
-            if (!event.isVisible && this.palette) { this.dismissedDraft = this.draft; this.closePalette(); }
+            if (!event.isVisible && this.palette) { this.dismissedDraft = this.draft.text; this.closePalette(); }
           } })
       Row({ space: 4 }) {
         this.ComposerControls()
@@ -850,7 +954,7 @@ export struct DesktopConversationPane {
             $r('app.string.desktop_chat_queue')) :
             $r('app.string.desktop_chat_send')))
         .enabled(!this.busy && (this.snapshot?.running === true ||
-          ((this.draft.trim().length > 0 || this.attachments.length > 0) &&
+          ((this.draft.text.trim().length > 0 || this.attachments.length > 0) &&
             this.snapshot?.loading === false)))
         .onClick((): void => {
           if (this.primaryStops()) {

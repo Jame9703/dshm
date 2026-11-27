@@ -28,6 +28,8 @@ import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import { EMPTY_DESKTOP_DRAFT } from '../desktop/DesktopDraftReferences';
+import type { DesktopComposerDraft } from '../desktop/DesktopDraftReferences';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
 import { desktopReferenceText } from '../desktop/DesktopReferences';
@@ -109,7 +111,7 @@ struct DesktopWorkspace {
   private renameWorkspace: boolean = false;
   @State private chat: DesktopConversationSnapshot | undefined = undefined;
   @State private interactions: DesktopInteraction[] = [];
-  @State private draft: string = '';
+  @State private draft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
   @State private chatError: string = '';
   @State private attachments: DesktopDraftAttachment[] = [];
   private readonly attachmentsBySession: Map<string, DesktopDraftAttachment[]> = new Map<string, DesktopDraftAttachment[]>();
@@ -128,7 +130,7 @@ struct DesktopWorkspace {
   private feedbackDialog: number = -1;
   private feedbackDialogVersion: number = 0;
   private openingFeedback: boolean = false;
-  private readonly drafts: Map<string, string> = new Map<string, string>();
+  private readonly drafts: Map<string, DesktopComposerDraft> = new Map<string, DesktopComposerDraft>();
 
   @State private groups: DesktopWorkspaceGroup[] = [];
   private data?: DesktopWorkspaceData;
@@ -709,7 +711,7 @@ struct DesktopWorkspace {
       this.referenceOffer = undefined;
       this.closeFeedback();
       this.closeImagePreview();
-      this.draft = this.drafts.get(session.id) ?? '';
+      this.draft = this.drafts.get(session.id) ?? EMPTY_DESKTOP_DRAFT;
       this.attachments = this.attachmentsBySession.get(session.id) ?? [];
       this.chatError = '';
     }
@@ -721,13 +723,13 @@ struct DesktopWorkspace {
     this.data?.conversation.open(session.id);
   }
 
-  private changeDraft(value: string): void {
-    if (this.sessionId.length > 0) {
+  private changeDraft(session: string, value: DesktopComposerDraft): void {
+    if (session && this.sessionId === session) {
       this.draft = value;
-      if (value.length > 0) {
-        this.drafts.set(this.sessionId, value);
+      if (value.text.length > 0) {
+        this.drafts.set(session, value);
       } else {
-        this.drafts.delete(this.sessionId);
+        this.drafts.delete(session);
       }
     }
   }
@@ -738,7 +740,7 @@ struct DesktopWorkspace {
     this.sessionId = '';
     this.referenceOffer = undefined;
     this.selectedTitle = '';
-    this.draft = '';
+    this.draft = EMPTY_DESKTOP_DRAFT;
     this.attachments = [];
     this.chatError = '';
     this.data?.conversation.open('');
@@ -792,10 +794,10 @@ struct DesktopWorkspace {
       return error;
     }
     this.busySessions = this.busySessions.filter((other: string): boolean => other !== id);
-    if (error.length === 0 && sentDraft !== undefined && this.drafts.get(id) === sentDraft) {
+    if (error.length === 0 && sentDraft !== undefined && this.drafts.get(id)?.text === sentDraft) {
       this.drafts.delete(id);
       if (this.sessionId === id) {
-        this.draft = '';
+        this.draft = EMPTY_DESKTOP_DRAFT;
       }
     }
     if (this.sessionId === id) {
@@ -1000,7 +1002,7 @@ struct DesktopWorkspace {
 
   private sendMessage(alternateDelivery: boolean): void {
     const conversation = this.data?.conversation;
-    const text = this.draft;
+    const text = this.draft.text;
     const files = this.attachments;
     if (conversation !== undefined && (text.trim().length > 0 || files.length > 0)) {
       this.chatAction(async (id: string): Promise<string> => {
@@ -1888,6 +1890,7 @@ struct DesktopWorkspace {
           workspaceTitle: this.selectedWorkspaceTitle,
           sessionDirectory: this.selectedSessionDirectory,
           draft: this.draft,
+          appearance: this.appearance,
           referenceOffer: this.referenceOffer,
           attachments: this.attachments,
           onAddAttachment: (): void => this.attachDocument(),
@@ -1901,7 +1904,7 @@ struct DesktopWorkspace {
           busy: this.busySessions.includes(this.sessionId),
           commandError: this.chatError,
           menuOptions: desktopMenuOptions(Placement.TopLeft),
-          onDraft: (value: string): void => this.changeDraft(value),
+          onDraft: (session: string, value: DesktopComposerDraft): void => this.changeDraft(session, value),
           onSend: (alternateDelivery: boolean): void => this.sendMessage(alternateDelivery),
           onQueueAction: (session: string, id: string, action: QueueActionBody): Promise<string> =>
             this.data?.conversation.updateQueue(session, id, action) ?? Promise.resolve('当前会话暂不可操作'),
