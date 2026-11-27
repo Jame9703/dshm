@@ -958,6 +958,8 @@
     { "name": "desktop_transcript_process_seconds", "value": "Completed in %ds" },
     { "name": "desktop_transcript_process_minutes", "value": "Completed in %1$dm %2$ds" },
     { "name": "desktop_transcript_process_hours", "value": "Completed in %1$dh %2$dm %3$ds" },
+    { "name": "desktop_history_repair_loading", "value": "Syncing conversation history…" },
+    { "name": "desktop_history_repair_failed", "value": "Some history could not be synced" },
     { "name": "desktop_transcript_retry_active", "value": "Retrying model request (%1$d/%2$s) · %3$ds" },
     { "name": "desktop_transcript_retry_cancelled", "value": "Model request retry cancelled (%1$d/%2$s) · %3$ds" },
     { "name": "desktop_transcript_retry_started", "value": "Retried model request (%1$d/%2$s) · %3$ds" },

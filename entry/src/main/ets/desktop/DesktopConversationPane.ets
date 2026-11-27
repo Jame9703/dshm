@@ -1967,6 +1967,22 @@ export struct DesktopConversationPane {
           loading: this.snapshot?.loading ?? false, codeFamily: this.typography.codeFamily,
           codeSize: this.typography.codeSize, onEarlier: this.onEarlier })
       }
+      if (!this.showTrajectory && this.snapshot?.historyRepair !== undefined) {
+        Row() {
+          Row({ space: 8 }) {
+            if (this.snapshot?.historyRepair === 'loading') {
+              LoadingProgress().width(14).height(14).accessibilityLevel('no')
+              Text($r('app.string.desktop_history_repair_loading')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+            } else {
+              Text($r('app.string.desktop_history_repair_failed')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+              Button($r('app.string.desktop_experiment_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+                .key('desktopHistoryRepairRetry').fontSize(13)
+                .onClick((): void => { this.snapshot?.retryHistoryRepair?.(); })
+            }
+          }.width('100%').constraintSize({ maxWidth: 712 })
+        }.key('desktopHistoryRepair').width('100%').padding({ left: 24, right: 24, bottom: 6 })
+          .justifyContent(FlexAlign.Center)
+      }
       if (this.questionReview() !== undefined) {
         Row() {
           DesktopQuestionHistoryView({ row: this.questionReview(), review: true,

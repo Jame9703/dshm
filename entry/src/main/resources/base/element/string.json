@@ -999,6 +999,8 @@
     { "name": "desktop_transcript_process_seconds", "value": "已完成，用时 %d秒" },
     { "name": "desktop_transcript_process_minutes", "value": "已完成，用时 %1$d分%2$d秒" },
     { "name": "desktop_transcript_process_hours", "value": "已完成，用时 %1$d小时%2$d分%3$d秒" },
+    { "name": "desktop_history_repair_loading", "value": "正在补齐断线期间的历史…" },
+    { "name": "desktop_history_repair_failed", "value": "部分历史未同步" },
     { "name": "desktop_transcript_retry_active", "value": "正在重试模型请求（%1$d/%2$s） · %3$ds" },
     { "name": "desktop_transcript_retry_cancelled", "value": "模型请求重试已取消（%1$d/%2$s） · %3$ds" },
     { "name": "desktop_transcript_retry_started", "value": "已重试模型请求（%1$d/%2$s） · %3$ds" },

@@ -116,6 +116,8 @@ export interface DesktopConversationSnapshot {
   wasPartialHistory: boolean;
   historyPaging: boolean;
   historyError: string;
+  historyRepair?: 'loading' | 'failed';
+  retryHistoryRepair?: () => void;
   partial: string;
   preparingTool: string;
   loading: boolean;
@@ -161,6 +163,18 @@ interface DesktopOpeningWindow {
   cursor: number;
   hasMore: boolean;
   records: Object[];
+}
+
+interface DesktopHistoryGap {
+  first: number;
+  before: number;
+  failed: boolean;
+}
+
+interface DesktopHistoryGapPage {
+  records: Object[];
+  before: number;
+  hasMore: boolean;
 }
 
 export class DesktopConversation {
@@ -241,6 +255,14 @@ export class DesktopConversation {
   private hasEarlier: boolean = false;
   private wasPartialHistory: boolean = false;
   private historyError: string = '';
+  private latestRecord: number = -1;
+  private readonly historyGaps: DesktopHistoryGap[] = [];
+  private historyGapTask?: Promise<void>;
+  private historyGapFollowVersion: number = -1;
+  private readonly retryHistoryRepair = (): void => {
+    if (this.clearFailedHistoryGaps()) { this.publish(); }
+    this.repairHistoryGaps(this.generation);
+  };
   private cursor: number = -1;
   private followCursor: number = -1;
   private earliest: number = -1;
@@ -352,6 +374,10 @@ export class DesktopConversation {
     this.hasEarlier = false;
     this.wasPartialHistory = false;
     this.historyError = '';
+    this.latestRecord = -1;
+    this.historyGaps.length = 0;
+    this.historyGapTask = undefined;
+    this.historyGapFollowVersion = -1;
     this.loading = sessionId.length > 0;
     this.pageLoading = false;
     this.latestPageLoading = false;
@@ -453,7 +479,13 @@ export class DesktopConversation {
 
   private async loadEarlierThrough(sequence: number, requested: () => boolean): Promise<boolean> {
     const generation = this.generation;
-    if (sequence < 0 || !this.current(generation)) { return false; }
+    if (sequence < 0 || !this.current(generation) || !requested()) { return false; }
+    const gap = this.historyGaps.find((range: DesktopHistoryGap): boolean => sequence >= range.first && sequence < range.before);
+    if (gap !== undefined) {
+      this.retryHistoryRepair();
+      await this.historyGapTask;
+      if (!this.current(generation) || (this.historyGaps.includes(gap) && sequence < gap.before)) { return false; }
+    }
     while (this.current(generation) && requested() && this.hasEarlier && !this.pageLoading && this.earliest > sequence) {
       const before = this.earliest;
       await this.loadPage(generation, true);
@@ -922,7 +954,6 @@ export class DesktopConversation {
         }
         if (earlier) {
           this.addRecords(page.records, true, page.hasMore);
-          this.cursor = Math.max(this.cursor, cursor);
         } else {
           this.applyLatestWindow(cursor, page.records, page.hasMore, this.waitingForFollowSnapshot);
         }
@@ -948,10 +979,82 @@ export class DesktopConversation {
       return;
     }
     const first = getNumber(getRecord(records[0], 'event'), 'seq') ?? -1;
+    if (this.latestRecord >= 0 && first > this.latestRecord + 1) {
+      this.historyGaps.push({ first: this.latestRecord + 1, before: first, failed: false });
+    }
+    this.latestRecord = Math.max(this.latestRecord, getNumber(getRecord(records[records.length - 1], 'event'), 'seq') ?? -1);
     const retainEarlier = this.earliest >= 0 && (first < 0 || first > this.earliest ||
       (first === this.earliest && !this.hasEarlier));
     this.addRecords(records, !this.loading, retainEarlier ? this.hasEarlier : hasMore);
     this.cursor = Math.max(this.cursor, cursor);
+    this.repairHistoryGaps(this.generation);
+  }
+
+  private clearFailedHistoryGaps(): boolean {
+    let changed = false;
+    for (const gap of this.historyGaps) {
+      if (gap.failed) {
+        gap.failed = false;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private repairHistoryGaps(generation: number): void {
+    if (this.historyGapTask !== undefined || !this.current(generation) ||
+      !this.historyGaps.some((gap: DesktopHistoryGap): boolean => !gap.failed)) { return; }
+    const task = this.fillHistoryGaps(generation);
+    this.historyGapTask = task;
+    task.then((): void => {
+      if (this.historyGapTask === task) { this.historyGapTask = undefined; }
+    });
+  }
+
+  private async fillHistoryGaps(generation: number): Promise<void> {
+    while (this.current(generation)) {
+      const gap = this.historyGaps.find((range: DesktopHistoryGap): boolean => !range.failed);
+      if (gap === undefined) { return; }
+      const followVersion = this.historyGapFollowVersion;
+      const request: Record<string, Object> = {
+        'address': this.address(), 'maxMessages': PAGE_MESSAGES, 'beforeSeq': gap.before
+      };
+      const args = argsFor(SESSION_PAGE_ENDPOINT, request);
+      const result = args === undefined ? undefined : await this.connection.call(SESSION_PAGE_ENDPOINT, args);
+      if (!this.current(generation)) { return; }
+      const page = result?.ok ? this.boundedHistoryPage(result.value, gap) : undefined;
+      if (page === undefined) {
+        // A healthy replacement stream can arrive while the failed request is in flight.
+        if (followVersion !== this.historyGapFollowVersion) { continue; }
+        gap.failed = true;
+      } else {
+        if (this.addRecords(page.records, true, this.hasEarlier)) { this.cordis?.refresh(); }
+        gap.before = page.before;
+        if (gap.before === gap.first) {
+          this.historyGaps.splice(this.historyGaps.indexOf(gap), 1);
+        } else if (!page.hasMore) {
+          gap.failed = true;
+        }
+      }
+      this.publish();
+    }
+  }
+
+  private boundedHistoryPage(value: Object | undefined, gap: DesktopHistoryGap): DesktopHistoryGapPage | undefined {
+    const records = getArray(value, 'records');
+    const hasMore = getBoolean(value, 'hasMore');
+    if (records === undefined || hasMore === undefined) { return undefined; }
+    let expected = gap.before - 1;
+    let start = records.length;
+    // Bounded page cursors can point past the page. Check the events themselves.
+    while (start > 0 && expected >= gap.first) {
+      const sequence = getNumber(getRecord(records[start - 1], 'event'), 'seq');
+      if (sequence !== expected) { return undefined; }
+      start--;
+      expected--;
+    }
+    if (start === records.length) { return undefined; }
+    return { records: records.slice(start), before: expected + 1, hasMore: hasMore };
   }
 
   private sameHistoryRecords(prior: Object[], records: Object[]): boolean {
@@ -1431,6 +1534,7 @@ export class DesktopConversation {
         eventType === 'plan/mode' || eventType === 'command/done' || eventType === 'goal/change') {
         this.loadSelection(this.generation);
       }
+      this.latestRecord = Math.max(this.latestRecord, sequence);
       this.cursor = Math.max(this.cursor, sequence);
       if (this.addRecords([frame], true, this.hasEarlier)) { this.cordis?.refresh(); }
       if (eventType === EVENT_TURN_END || (eventType !== undefined && mayChangeSessionTitle(eventType))) {
@@ -1500,7 +1604,12 @@ export class DesktopConversation {
     const hasMore = getBoolean(frame, 'hasMore');
     if (validCursor && records !== undefined && hasMore !== undefined) {
       if (cursor >= this.cursor) {
+        if (this.historyGapFollowVersion !== this.followVersion) {
+          this.historyGapFollowVersion = this.followVersion;
+          this.clearFailedHistoryGaps();
+        }
         this.applyLatestWindow(cursor, records, hasMore, this.latestPageLoading);
+        this.repairHistoryGaps(this.generation);
         this.historyLoaded = true;
         this.loading = false;
         this.error = '';
@@ -1563,6 +1672,9 @@ export class DesktopConversation {
       readQuestionHistory: this.readQuestionHistory,
       trajectoryHasEarlier: this.hasEarlier, wasPartialHistory: this.wasPartialHistory,
       historyPaging: this.pageLoading && !this.loading, historyError: this.historyError,
+      historyRepair: this.historyGaps.length === 0 ? undefined :
+        (this.historyGaps.some((gap: DesktopHistoryGap): boolean => !gap.failed) ? 'loading' : 'failed'),
+      retryHistoryRepair: this.retryHistoryRepair,
       preparingTool: this.preparingTool, loading: this.loading,
       hasEarlier: this.hasEarlier && !this.pageLoading, running: this.running, waitingForInput: this.waitingForInput,
       runningPaused: this.runningPaused || connectionState === ConnectionState.CONNECTING ||
