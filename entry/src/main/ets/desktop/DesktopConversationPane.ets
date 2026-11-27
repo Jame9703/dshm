@@ -1390,7 +1390,7 @@ export struct DesktopConversationPane {
         if (!this.showTrajectory) { this.following = last >= this.messageCount - 1; }
       })
       if (this.showTrajectory) {
-        DesktopTrajectoryPane({ readRecords: this.snapshot?.readTrajectory,
+        DesktopTrajectoryPane({ host: this.host, readRecords: this.snapshot?.readTrajectory,
           revision: this.snapshot?.trajectoryRevision ?? 0,
           sessionId: this.snapshot?.sessionId ?? '', hasEarlier: this.snapshot?.hasEarlier ?? false,
           loading: this.snapshot?.loading ?? false, codeFamily: this.typography.codeFamily,

@@ -5,6 +5,7 @@ interface ToolEntry {
   id: string;
   parentId: string;
   turn: number;
+  step: number;
   start: number;
   end: number;
   call?: TrajectoryItem;
@@ -16,6 +17,8 @@ export interface DesktopToolStep {
   id: string;
   item: TrajectoryItem;
   depth: number;
+  step: number;
+  resultSequence: number;
   interrupted: boolean;
   error: string;
 }
@@ -46,6 +49,7 @@ export class DesktopToolLog {
     const data = getRecord(event, 'data');
     const type = getString(event, 'type');
     const turn = getNumber(data, 'turn') ?? 0;
+    const step = getNumber(data, 'step') ?? 0;
     if (type === 'turn/end' && turn > 0) { this.closed.add(turn); return; }
     const child = type === 'tool/ptc-dispatch' || type === 'tool/ptc-dispatch-start';
     const done = type === 'tool/result' || type === 'tool/ptc-dispatch';
@@ -53,13 +57,16 @@ export class DesktopToolLog {
     const seq = getNumber(event, 'seq') ?? -1;
     const resultMessage = getRecord(data, 'message');
     const id = child ? getString(data, 'subCallId') : done ?
-      getString(getRecord(resultMessage, 'source'), 'callId') : getString(data, 'callId');
+      getString(resultMessage, 'toolCallId') || getString(getRecord(resultMessage, 'source'), 'callId') :
+      getString(data, 'callId');
     if (!id || seq < 0) { return; }
-    const entry: ToolEntry = this.entries.get(id) ?? { id: id, parentId: '', turn: 0, start: -1, end: -1, error: '' };
+    const entry: ToolEntry = this.entries.get(id) ??
+      { id: id, parentId: '', turn: 0, step: 0, start: -1, end: -1, error: '' };
     const name = getString(data, 'name') ?? '';
     const parentId = child ? getString(data, 'parentCallId') ?? '' : '';
     if (parentId && parentId !== id) { entry.parentId = parentId; }
     if (turn > 0) { entry.turn = turn; }
+    if (step > 0) { entry.step = step; }
     const args = getRecord(data, 'arguments');
     const item = (child ? undefined : projectWireRecord(record)) ??
       makeItem(id, TrajectoryKind.TOOL, getNumber(event, 'time') ?? 0);
@@ -86,7 +93,7 @@ export class DesktopToolLog {
     this.entries.set(id, entry);
   }
 
-  private step(entry: ToolEntry, depth: number, turn: number): DesktopToolStep {
+  private step(entry: ToolEntry, depth: number, turn: number, parentStep: number): DesktopToolStep {
     const call = entry.call;
     const result = entry.result;
     const item = makeItem(entry.id, TrajectoryKind.TOOL, call?.at ?? result?.at ?? 0);
@@ -95,7 +102,8 @@ export class DesktopToolLog {
     item.toolOutput = result?.toolOutput ?? '';
     item.toolState = result?.toolState ?? ToolState.RUNNING;
     item.elapsedMs = result === undefined ? 0 : Math.max(0, result.at - (call?.at ?? result.at));
-    return { id: entry.id, item: item, depth: depth, interrupted: result === undefined && this.closed.has(turn),
+    return { id: entry.id, item: item, depth: depth, step: entry.step || parentStep, resultSequence: entry.end,
+      interrupted: result === undefined && this.closed.has(turn),
       error: entry.error };
   }
 
@@ -113,7 +121,7 @@ export class DesktopToolLog {
       if (root.parentId && this.entries.has(root.parentId)) { continue; }
       const steps: DesktopToolStep[] = [];
       const stamps: string[] = [];
-      this.attach(root, 0, root.turn, children, seen, steps, stamps);
+      this.attach(root, 0, root.turn, root.step, children, seen, steps, stamps);
       if (steps.length > 0) {
         groups.push({ id: root.id, sequence: timestamp(root), turn: root.turn, version: stamps.join('|'), steps: steps });
       }
@@ -121,15 +129,16 @@ export class DesktopToolLog {
     return groups;
   }
 
-  private attach(row: ToolEntry, depth: number, turn: number, children: Map<string, ToolEntry[]>, seen: Set<string>,
+  private attach(row: ToolEntry, depth: number, turn: number, parentStep: number,
+    children: Map<string, ToolEntry[]>, seen: Set<string>,
     steps: DesktopToolStep[], stamps: string[]): void {
     if (seen.has(row.id) || depth > 24) { return; }
     seen.add(row.id);
-    const step = this.step(row, depth, turn);
+    const step = this.step(row, depth, turn, parentStep);
     steps.push(step);
     stamps.push(`${row.id}:${row.start}:${row.end}:${step.interrupted}`);
     for (const child of children.get(row.id) ?? []) {
-      this.attach(child, depth + 1, turn, children, seen, steps, stamps);
+      this.attach(child, depth + 1, turn, step.step, children, seen, steps, stamps);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { formatDuration } from 'appstate';
-import { copyText } from 'platform';
 import { StartupFrameCallback } from '../common/DesktopStartup';
+import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopTrajectoryInspector } from './DesktopTrajectoryInspector';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
 
 interface TraceLabelRow {
@@ -30,6 +31,7 @@ class TraceListSource implements IDataSource {
 
 @Component
 export struct DesktopTrajectoryPane {
+  host?: DesktopHostActions;
   readRecords?: () => DesktopTraceRow[];
   @Prop @Watch('reload') revision: number = 0;
   @Prop @Watch('reset') sessionId: string = '';
@@ -43,7 +45,10 @@ export struct DesktopTrajectoryPane {
   @State private actualDuration: boolean = false;
   @State private actualTime: boolean = false;
   @State private closedTurns: Set<number> = new Set();
-  @State private opened: Set<string> = new Set();
+  @State private callsCollapsed: boolean = false;
+  @State private subcallsCollapsed: boolean = false;
+  @State private selected: string = '';
+  @State private wide: boolean = true;
   @State private focused: string = '';
   @State private matchesView: DesktopTraceRow[] = [];
   private readonly ledger: TraceListSource = new TraceListSource();
@@ -54,7 +59,9 @@ export struct DesktopTrajectoryPane {
   private reset(): void {
     this.query = '';
     this.closedTurns = new Set();
-    this.opened = new Set();
+    this.callsCollapsed = false;
+    this.subcallsCollapsed = false;
+    this.selected = '';
     this.focused = '';
     this.reload();
   }
@@ -65,7 +72,7 @@ export struct DesktopTrajectoryPane {
   }
 
   private matches(row: DesktopTraceRow, query: string): boolean {
-    return query.length === 0 || [row.title, row.content, row.reasoning, row.argumentsText]
+    return query.length === 0 || [row.title, row.content, row.reasoning, row.argumentsText, row.request?.provider ?? '']
       .some((value: string): boolean => value.toLowerCase().includes(query)) ||
       (row.detail !== undefined && (JSON.stringify(row.detail) ?? '').toLowerCase().includes(query));
   }
@@ -80,12 +87,14 @@ export struct DesktopTrajectoryPane {
   private updateLedger(): void {
     const result: TraceLabelRow[] = [];
     let previous = -1;
+    const searching = this.query.trim().length > 0;
     for (const row of this.matchesView) {
+      if (!searching && this.hiddenCall(row)) { continue; }
       if (row.turn !== previous) {
         result.push({ id: 'turn-' + row.id, turn: row.turn });
         previous = row.turn;
       }
-      if (this.query.trim() || !this.closedTurns.has(row.turn)) {
+      if (searching || !this.closedTurns.has(row.turn)) {
         result.push({ id: row.id + ':' + row.revision, turn: row.turn, event: row });
       }
     }
@@ -96,11 +105,17 @@ export struct DesktopTrajectoryPane {
     return this.matchesView.slice(-50);
   }
 
+  private hiddenCall(row: DesktopTraceRow): boolean {
+    if (row.kind === 'subtool') { return this.callsCollapsed || this.subcallsCollapsed; }
+    return this.callsCollapsed && row.kind === 'tool' && row.step > 0;
+  }
+
   private widthUnits(row: DesktopTraceRow): number {
     return this.actualDuration ? Math.max(1, row.duration) : 1;
   }
 
   private focus(row: DesktopTraceRow): void {
+    if (this.hiddenCall(row)) { this.callsCollapsed = false; this.subcallsCollapsed = false; }
     const closed = new Set(this.closedTurns);
     closed.delete(row.turn);
     this.closedTurns = closed;
@@ -127,26 +142,33 @@ export struct DesktopTrajectoryPane {
     this.updateLedger();
   }
 
-  private toggleRow(id: string): void {
-    const next = new Set(this.opened);
-    if (!next.delete(id)) { next.add(id); }
-    this.opened = next;
+  private selectedRow(): DesktopTraceRow | undefined {
+    if (!this.selected) { return undefined; }
+    return this.rows.find((row: DesktopTraceRow): boolean => row.id === this.selected);
+  }
+
+  private openRelated(id: string): void {
+    const row = this.rows.find((candidate: DesktopTraceRow): boolean => candidate.id === id);
+    if (row === undefined) { return; }
+    if (!this.matches(row, this.query.trim().toLowerCase())) {
+      this.query = '';
+      this.applySearch();
+    }
+    this.selected = id;
+    this.focus(row);
   }
 
   private toggleCalls(kind: string): void {
-    const calls = this.matchesView.filter((row: DesktopTraceRow): boolean => row.kind === kind);
-    const open = !calls.every((row: DesktopTraceRow): boolean => this.opened.has(row.id));
-    const next = new Set(this.opened);
-    for (const row of calls) {
-      if (open) { next.add(row.id); } else { next.delete(row.id); }
-    }
-    this.opened = next;
+    if (kind === 'tool') { this.callsCollapsed = !this.callsCollapsed; }
+    else { this.subcallsCollapsed = !this.subcallsCollapsed; }
+    this.updateLedger();
   }
 
   private label(kind: string): Resource {
     switch (kind) {
       case 'user': return $r('app.string.desktop_trace_user');
       case 'assistant': return $r('app.string.desktop_trace_assistant');
+      case 'request': return $r('app.string.desktop_trace_request');
       case 'tool': return $r('app.string.desktop_trace_tool');
       case 'subtool': return $r('app.string.desktop_trace_subtool');
       case 'system': return $r('app.string.desktop_trace_system');
@@ -161,6 +183,7 @@ export struct DesktopTrajectoryPane {
     switch (row.kind) {
       case 'user': return '#6A9BE4';
       case 'assistant': return '#4777E8';
+      case 'request': return '#71AF98';
       case 'tool': return '#7F69C7';
       case 'subtool': return '#AE93DE';
       default: return $r('sys.color.font_tertiary');
@@ -211,27 +234,14 @@ export struct DesktopTrajectoryPane {
         Button($r('app.string.desktop_trace_turns'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopTraceToggleTurns').height(30).fontSize(12).onClick((): void => { this.toggleTurns(); })
         Button($r('app.string.desktop_trace_calls'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopTraceToggleCalls').height(30).fontSize(12).onClick((): void => { this.toggleCalls('tool'); })
+          .key('desktopTraceToggleCalls').height(30).fontSize(12).accessibilitySelected(this.callsCollapsed)
+          .onClick((): void => { this.toggleCalls('tool'); })
         Button($r('app.string.desktop_trace_subcalls'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopTraceToggleSubcalls').height(30).fontSize(12).onClick((): void => { this.toggleCalls('subtool'); })
+          .key('desktopTraceToggleSubcalls').height(30).fontSize(12).accessibilitySelected(this.subcallsCollapsed)
+          .onClick((): void => { this.toggleCalls('subtool'); })
       }.height(34)
-    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).constraintSize({ minWidth: 96 }).layoutWeight(1)
-  }
-
-  @Builder
-  private Details(label: Resource, content: string) {
-    if (content) {
-      Row({ space: 6 }) {
-        Text(label).fontSize(11).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
-        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          Image($r('app.media.dsh_session_copy')).width(14).height(14).supportSvg2(true)
-        }.width(28).height(26).padding(0).accessibilityText($r('app.string.desktop_trace_copy'))
-          .onClick((): void => { copyText(content); })
-      }.width('100%')
-      Text(content).fontSize(this.codeSize).fontFamily(this.codeFamily).copyOption(CopyOptions.LocalDevice)
-        .fontColor($r('sys.color.font_primary')).width('100%').padding(8).borderRadius(6)
-        .backgroundColor($r('app.color.workspace_panel'))
-    }
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
+      .constraintSize({ minWidth: 96 }).layoutWeight(1)
   }
 
   @Builder
@@ -240,8 +250,9 @@ export struct DesktopTrajectoryPane {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 8 }) {
           Image($r('app.media.dsh_queue_chevron_down_outline')).width(13).height(13).supportSvg2(true)
-            .rotate({ angle: this.opened.has(row.id) ? 0 : -90 }).accessibilityLevel('no')
-          Text(this.label(row.kind)).fontSize(12).fontColor(this.color(row))
+            .rotate({ angle: -90 }).accessibilityLevel('no')
+          Text(row.request === undefined ? this.label(row.kind) :
+            $r('app.string.desktop_trace_request_number', row.request.number)).fontSize(12).fontColor(this.color(row))
           if (row.step > 0) {
             Text($r('app.string.desktop_trace_step', row.step)).fontSize(11).fontColor($r('sys.color.font_tertiary'))
           }
@@ -250,20 +261,10 @@ export struct DesktopTrajectoryPane {
           Text(this.stamp(row)).fontSize(11).fontColor($r('sys.color.font_tertiary'))
         }.width('100%').padding({ left: 7 + Math.min(row.depth, 8) * 11, right: 7 })
       }.key('desktopTraceRow-' + row.id).width('100%').height(33).padding(0).borderRadius(6)
-        .accessibilitySelected(this.opened.has(row.id))
-        .backgroundColor(this.focused === row.id ? $r('app.color.workspace_selection') : Color.Transparent)
-        .onClick((): void => { this.toggleRow(row.id); })
-      if (this.opened.has(row.id)) {
-        Column({ space: 4 }) {
-          this.Details($r('app.string.desktop_trace_reasoning'), row.reasoning)
-          this.Details($r('app.string.desktop_trace_args'), row.argumentsText)
-          this.Details($r('app.string.desktop_trace_output'), row.content)
-          this.Details($r('app.string.desktop_trace_usage'), this.raw(row.usage))
-          if (row.detail !== undefined) {
-            this.Details($r('app.string.desktop_trace_raw'), this.raw(row.detail))
-          }
-        }.width('100%').padding({ left: 27, right: 6, bottom: 8 })
-      }
+        .accessibilitySelected(this.selected === row.id)
+        .backgroundColor(this.selected === row.id || this.focused === row.id ?
+          $r('app.color.workspace_selection') : Color.Transparent)
+        .onClick((): void => { this.selected = row.id; })
     }.width('100%').border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
   }
 
@@ -286,21 +287,30 @@ export struct DesktopTrajectoryPane {
         Text($r('app.string.desktop_trace_no_matches')).fontSize(13)
           .fontColor($r('sys.color.font_secondary')).padding(12)
       }
-      List({ scroller: this.scroller }) {
-        LazyForEach(this.ledger, (item: TraceLabelRow): void => {
-          ListItem() {
-            if (item.event !== undefined) {
-              this.EventRow(item.event)
-            } else {
-              Button(item.turn > 0 ? $r('app.string.desktop_trace_turn', item.turn) :
-                $r('app.string.desktop_trace_between'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-                .key('desktopTraceTurn-' + item.turn).height(34).width('100%').align(Alignment.Start)
-                .fontSize(13).fontWeight(FontWeight.Medium).accessibilitySelected(!this.closedTurns.has(item.turn))
-                .onClick((): void => { this.toggleTurn(item.turn); })
+      Flex({ direction: this.wide ? FlexDirection.Row : FlexDirection.Column }) {
+        List({ scroller: this.scroller }) {
+          LazyForEach(this.ledger, (item: TraceLabelRow): void => {
+            ListItem() {
+              if (item.event !== undefined) {
+                this.EventRow(item.event)
+              } else {
+                Button(item.turn > 0 ? $r('app.string.desktop_trace_turn', item.turn) :
+                  $r('app.string.desktop_trace_between'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+                  .key('desktopTraceTurn-' + item.turn).height(34).width('100%').align(Alignment.Start)
+                  .fontSize(13).fontWeight(FontWeight.Medium).accessibilitySelected(!this.closedTurns.has(item.turn))
+                  .onClick((): void => { this.toggleTurn(item.turn); })
+              }
             }
-          }
-        }, (item: TraceLabelRow): string => item.id)
-      }.key('desktopTraceLedger').width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+          }, (item: TraceLabelRow): string => item.id)
+        }.key('desktopTraceLedger').layoutWeight(1).scrollBar(BarState.Auto)
+        if (this.selectedRow() !== undefined) {
+          DesktopTrajectoryInspector({ host: this.host, row: this.selectedRow(), sessionId: this.sessionId,
+            codeFamily: this.codeFamily, codeSize: this.codeSize, onClose: (): void => { this.selected = ''; },
+            onRecord: (id: string): void => { this.openRelated(id); } })
+            .width(this.wide ? 352 : '100%').height(this.wide ? '100%' : '52%')
+        }
+      }.width('100%').layoutWeight(1)
     }.key('desktopTrajectoryView').width('100%').padding({ left: 20, right: 20, top: 6, bottom: 8 }).layoutWeight(1)
+      .onAreaChange((_previous: Area, next: Area): void => { this.wide = Number(next.width) >= 660; })
   }
 }
