@@ -1,8 +1,16 @@
 import type { DesktopChangeLocation, DesktopChangeTarget } from './DesktopArtifacts';
 import type { DesktopFileNavigation } from './DesktopFilesPane';
 import type { DesktopPlanDocument } from './DesktopPlan';
+import type { DesktopSubagentEntry } from './DesktopSubagents';
 
-export enum DesktopDockKind { FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes' }
+export enum DesktopDockKind {
+  FILES = 'files', TERMINAL = 'terminal', PREVIEW = 'preview', PLAN = 'plan', CHANGES = 'changes', CHAT = 'chat'
+}
+
+export interface DesktopDockChatTarget {
+  id: string;
+  subagent?: DesktopSubagentEntry;
+}
 
 export interface DesktopDockTab {
   id: string;
@@ -12,6 +20,16 @@ export interface DesktopDockTab {
   plan?: DesktopPlanDocument;
   changes?: DesktopChangeTarget;
   changeLocation?: DesktopChangeLocation;
+  chat?: DesktopDockChatTarget;
+  sourceSessionId?: string;
+}
+
+export function desktopDockChatTab(target: DesktopDockChatTarget, title: string): DesktopDockTab {
+  return { id: 'chat:' + target.id, kind: DesktopDockKind.CHAT, title: title || target.id, chat: target };
+}
+
+export function desktopDockResourceId(kind: string, resource: string, sourceSessionId?: string): string {
+  return kind + ':' + (sourceSessionId ? JSON.stringify([sourceSessionId, resource]) : resource);
 }
 
 export interface DesktopDockPane {

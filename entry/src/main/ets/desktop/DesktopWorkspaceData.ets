@@ -35,6 +35,12 @@ export interface DesktopWorkspaceSnapshot {
   error: string;
 }
 
+export interface DesktopDockConversation {
+  conversation: DesktopConversation;
+  interactions: DesktopInteractions;
+  close: () => void;
+}
+
 function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
   const id: string = getString(raw, 'workspaceId') ?? '';
   if (id.length === 0) {
@@ -66,6 +72,8 @@ export class DesktopWorkspaceData {
   private archivedIds: Set<string> = new Set<string>();
   private pinnedIds: string[] = [];
   private stopWorkspace?: () => void;
+  private dockConversations?: Set<DesktopDockConversation>;
+  private busyEnterSteers: boolean = false;
 
   constructor(listener: (snapshot: DesktopWorkspaceSnapshot) => void,
     onConversation: (snapshot: DesktopConversationSnapshot) => void,
@@ -76,6 +84,25 @@ export class DesktopWorkspaceData {
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.conversation = new DesktopConversation(this.connection, onConversation,
       (): void => { this.refreshSessions(); }, this.interactions, this.actions);
+  }
+
+  createDockConversation(onConversation: (snapshot: DesktopConversationSnapshot) => void,
+    onInteractions: (items: DesktopInteraction[]) => void): DesktopDockConversation | undefined {
+    if (!this.active) { return undefined; }
+    const conversations = this.dockConversations ?? new Set<DesktopDockConversation>();
+    this.dockConversations = conversations;
+    const interactions = this.interactions.createView(onInteractions);
+    const conversation = new DesktopConversation(this.connection, onConversation,
+      (): void => { this.refreshSessions(); }, interactions, this.actions);
+    const binding: DesktopDockConversation = { conversation: conversation, interactions: interactions,
+      close: (): void => {
+        if (!conversations.delete(binding)) { return; }
+        conversation.close();
+        interactions.closeView();
+      } };
+    conversations.add(binding);
+    conversation.setBusyEnter(this.busyEnterSteers);
+    return binding;
   }
 
   async start(url: string): Promise<void> {
@@ -94,14 +121,25 @@ export class DesktopWorkspaceData {
         this.conversation.invalidateCommands();
         this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
+        this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
+          binding.conversation.invalidateCommands();
+          binding.conversation.feedback.resync();
+          binding.conversation.readGoalActivation();
+        });
         this.readSubmitPreference();
         this.actions.modelCatalogChanged();
       },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
         const event = getString(frame, 'event');
-        if (event === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
-        if (event === EVENT_GOAL_ACTIVATION_CHANGED) { this.conversation.observeGoalActivation(frame); }
+        if (event === EVENT_COMMANDS_CHANGE) {
+          this.conversation.invalidateCommands();
+          this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.conversation.invalidateCommands());
+        }
+        if (event === EVENT_GOAL_ACTIVATION_CHANGED) {
+          this.conversation.observeGoalActivation(frame);
+          this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.conversation.observeGoalActivation(frame));
+        }
         if (event === EVENT_LLM_ADAPTERS_UPDATED) { this.actions.modelCatalogChanged(); }
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
@@ -135,7 +173,11 @@ export class DesktopWorkspaceData {
     if (!result.ok || !this.active || version !== this.submitPreferenceVersion) { return; }
     const settings = getArray(result.value, 'namespaces')?.find((row: Object): boolean =>
       getString(row, 'ns') === 'ui-conversation');
-    this.conversation.setBusyEnter(getString(getRecord(settings, 'value'), 'busyEnter') === 'steer');
+    this.busyEnterSteers = getString(getRecord(settings, 'value'), 'busyEnter') === 'steer';
+    this.conversation.setBusyEnter(this.busyEnterSteers);
+    this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
+      binding.conversation.setBusyEnter(this.busyEnterSteers);
+    });
   }
 
   private openWorkspaceStream(): void {
@@ -223,6 +265,7 @@ export class DesktopWorkspaceData {
 
   stop(): void {
     this.active = false;
+    this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();
     this.conversation.close();
     this.interactions.select('');

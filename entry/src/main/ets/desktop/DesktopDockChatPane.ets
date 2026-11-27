@@ -1,0 +1,246 @@
+import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
+import { DesktopConversationPane } from './DesktopConversationPane';
+import { getString } from 'connection';
+import { EMPTY_DESKTOP_DRAFT, sameDesktopDraft } from './DesktopDraftReferences';
+import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopReferenceAction } from './DesktopReferenceActions';
+import { desktopReferenceText } from './DesktopReferences';
+import type { DesktopFileReferenceOffer } from './DesktopReferenceActions';
+import type { DesktopConversation, DesktopConversationSnapshot } from './DesktopConversation';
+import type { DesktopDockConversation, DesktopWorkspaceData } from './DesktopWorkspaceData';
+import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAttachments';
+import type { DesktopComposerDraft } from './DesktopDraftReferences';
+import type { DesktopDockChatTarget } from './DesktopRightDock';
+import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
+import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
+import type { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
+import type { DesktopSubagentEntry } from './DesktopSubagents';
+import type { DesktopPlanDocument } from './DesktopPlan';
+import type { DesktopChangeTarget } from './DesktopArtifacts';
+import type { DesktopRating } from './DesktopFeedback';
+
+export interface DesktopDockChatActions {
+  run: (id: string, operation: (id: string) => Promise<string>) => Promise<string>;
+  readDraft: (id: string) => DesktopComposerDraft;
+  writeDraft: (id: string, draft: DesktopComposerDraft) => void;
+  readAttachments: (id: string) => DesktopDraftAttachment[];
+  writeAttachments: (id: string, files: DesktopDraftAttachment[]) => void;
+  pickAttachments: (id: string, conversation: DesktopConversation) => Promise<string>;
+  dropAttachments: (id: string, conversation: DesktopConversation, files: DesktopDroppedFiles) => Promise<string>;
+  pasteAttachments: (id: string, conversation: DesktopConversation) => Promise<string>;
+  openMain: (target: DesktopDockChatTarget, title: string) => void;
+  openChild: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean) => void;
+  openParent: (child: DesktopSubagentEntry) => void;
+  openImage: (id: string, image: DesktopMediaAttachment) => void;
+  openFile: (id: string, path: string, name: string) => void;
+  systemFile: (id: string, path: string, name: string, reveal: boolean) => void;
+  referenceFile: (id: string, action: DesktopReferenceAction, path: string, name: string) => void;
+  openPlan: (id: string, plan: DesktopPlanDocument) => void;
+  openChanges: (target: DesktopChangeTarget) => void;
+  openModels: () => void;
+  copy: (id: string) => void;
+  exportLog: (id: string) => Promise<string>;
+  feedback: (id: string, conversation: DesktopConversation) => Promise<string>;
+  rate: (id: string, messageId: string, rating: DesktopRating, conversation: DesktopConversation) => void;
+  fork: (id: string, sequence: number, conversation: DesktopConversation) => void;
+}
+
+@Component
+export struct DesktopDockChatPane {
+  data?: DesktopWorkspaceData;
+  actions?: DesktopDockChatActions;
+  @Prop target: DesktopDockChatTarget | undefined = undefined;
+  @Prop title: string = '';
+  @Prop directory: string = '';
+  @Prop appearance: string = 'system';
+  @Prop @Watch('syncVisibility') shown: boolean = false;
+  @Prop busy: boolean = false;
+  @Prop forking: boolean = false;
+  @Prop summaries: SessionListItem[] = [];
+  @State private snapshot?: DesktopConversationSnapshot = undefined;
+  @State private interactions: DesktopInteraction[] = [];
+  @State private draft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
+  @State private attachments: DesktopDraftAttachment[] = [];
+  @State private problem: string = '';
+  @State private referenceOffer?: DesktopFileReferenceOffer = undefined;
+  private binding?: DesktopDockConversation;
+  private generation: number = 0;
+
+  aboutToAppear(): void { this.syncVisibility(); }
+  aboutToDisappear(): void { this.release(); }
+
+  private release(): void {
+    this.generation++;
+    const binding = this.binding;
+    this.binding = undefined;
+    binding?.close();
+  }
+
+  private syncVisibility(): void {
+    const target = this.target;
+    if (!this.shown || target === undefined) {
+      this.release();
+      this.snapshot = undefined;
+      this.referenceOffer = undefined;
+      return;
+    }
+    if (this.binding !== undefined) { return; }
+    const generation = ++this.generation;
+    this.problem = '';
+    this.draft = this.actions?.readDraft(target.id) ?? EMPTY_DESKTOP_DRAFT;
+    this.attachments = this.actions?.readAttachments(target.id) ?? [];
+    this.binding = this.data?.createDockConversation((snapshot: DesktopConversationSnapshot): void => {
+      if (generation === this.generation && snapshot.sessionId === target.id) { this.snapshot = snapshot; }
+    }, (items: DesktopInteraction[]): void => {
+      if (generation === this.generation) { this.interactions = items; }
+    });
+    this.binding?.conversation.open(target.id, target.subagent);
+  }
+
+  private async run(operation: (binding: DesktopDockConversation, sessionId: string) => Promise<string>): Promise<string> {
+    const binding = this.binding;
+    const id = this.target?.id ?? '';
+    const actions = this.actions;
+    if (binding === undefined || !id || actions === undefined) { return '当前会话暂不可操作'; }
+    const generation = this.generation;
+    this.problem = '';
+    const problem = await actions.run(id, (session: string): Promise<string> => operation(binding, session));
+    if (generation === this.generation) {
+      this.problem = problem;
+      this.attachments = actions.readAttachments(id);
+    }
+    return problem;
+  }
+
+  private changeDraft(id: string, draft: DesktopComposerDraft): void {
+    if (id !== this.target?.id) { return; }
+    this.draft = draft;
+    this.actions?.writeDraft(id, draft);
+  }
+
+  private send(alternate: boolean): void {
+    const sent = this.draft;
+    const files = this.attachments;
+    const actions = this.actions;
+    if (actions === undefined || (!sent.text.trim() && files.length === 0)) { return; }
+    this.run(async (binding: DesktopDockConversation, id: string): Promise<string> => {
+      const generation = this.generation;
+      const result = await binding.conversation.send(id, sent.text, files, actions.exportLog,
+        (session: string): Promise<string> => actions.feedback(session, binding.conversation), alternate);
+      if (!result) {
+        if (sameDesktopDraft(actions.readDraft(id), sent)) {
+          actions.writeDraft(id, EMPTY_DESKTOP_DRAFT);
+          if (generation === this.generation) { this.draft = EMPTY_DESKTOP_DRAFT; }
+        }
+        const sentIds = new Set(files.map((file: DesktopDraftAttachment): string => file.receiptId));
+        actions.writeAttachments(id, actions.readAttachments(id)
+          .filter((file: DesktopDraftAttachment): boolean => !sentIds.has(file.receiptId)));
+      }
+      return result;
+    });
+  }
+
+  private async reference(action: DesktopReferenceAction, path: string, name: string): Promise<void> {
+    const id = this.target?.id;
+    if (!id || !this.shown) { return; }
+    if (action !== DesktopReferenceAction.ADD_TO_CHAT) {
+      this.actions?.referenceFile(id, action, path, name);
+      return;
+    }
+    const generation = this.generation;
+    const result = await this.data?.actions.call('workspaceFiles/stat', { 'workspaceFileScopeId': id, 'path': path });
+    if (generation !== this.generation) { return; }
+    const absolute = getString(result?.value, 'absolutePath') ?? '';
+    if (result?.ok === true && absolute.startsWith('/') && desktopReferenceText(absolute, false, true)) {
+      this.referenceOffer = { sessionId: id, path: absolute };
+    } else {
+      this.problem = '无法添加此文件引用';
+    }
+  }
+
+  build() {
+    Column() {
+      if (this.snapshot !== undefined && this.target !== undefined) {
+        DesktopConversationPane({ host: this.data?.actions, snapshot: this.snapshot, embedded: true,
+          title: this.title, sessionDirectory: this.directory, appearance: this.appearance,
+          sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, forking: this.forking,
+          referenceOffer: this.referenceOffer,
+          draft: this.draft, attachments: this.attachments, commandError: this.problem,
+          menuOptions: desktopMenuOptions(Placement.BottomLeft),
+          onOpenMain: (): void => { if (this.target !== undefined) { this.actions?.openMain(this.target, this.title); } },
+          onSubagent: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {
+            this.actions?.openChild(child, parents, false);
+          },
+          onSubagentAside: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {
+            this.actions?.openChild(child, parents, true);
+          },
+          onSubagentParent: (child: DesktopSubagentEntry): void => { this.actions?.openParent(child); },
+          onDraft: (id: string, draft: DesktopComposerDraft): void => this.changeDraft(id, draft),
+          onSend: (alternate: boolean): void => this.send(alternate),
+          onStop: (): void => { this.run((binding, id): Promise<string> => binding.conversation.cancel(id)); },
+          onEarlier: (): void => { this.binding?.conversation.loadEarlier(); },
+          onAddAttachment: (): void => { this.run((binding, id): Promise<string> =>
+            this.actions?.pickAttachments(id, binding.conversation) ?? Promise.resolve('')); },
+          onDropAttachments: (files: DesktopDroppedFiles): void => { this.run((binding, id): Promise<string> =>
+            this.actions?.dropAttachments(id, binding.conversation, files) ?? Promise.resolve('')); },
+          onPasteAttachments: (): void => { this.run((binding, id): Promise<string> =>
+            this.actions?.pasteAttachments(id, binding.conversation) ?? Promise.resolve('')); },
+          onRemoveAttachment: (receipt: string): void => {
+            this.attachments = this.attachments.filter((item: DesktopDraftAttachment): boolean => item.receiptId !== receipt);
+            this.actions?.writeAttachments(this.target?.id ?? '', this.attachments);
+          },
+          onOpenImage: (row: DesktopMediaAttachment): void => { this.actions?.openImage(this.target?.id ?? '', row); },
+          onArtifactFile: (path: string, name: string): void => { this.actions?.openFile(this.target?.id ?? '', path, name); },
+          onArtifactAction: (path: string, name: string, reveal: boolean): void => {
+            this.actions?.systemFile(this.target?.id ?? '', path, name, reveal);
+          },
+          onReferenceFileAction: (action: DesktopReferenceAction, path: string, name: string): void => {
+            this.reference(action, path, name);
+          },
+          onPlanPreview: (plan: DesktopPlanDocument): void => { this.actions?.openPlan(this.target?.id ?? '', plan); },
+          onChanges: (target: DesktopChangeTarget): void => { this.actions?.openChanges(target); },
+          onDecision: (request: string, allow: boolean): void => {
+            this.run((binding): Promise<string> => binding.interactions.approve(request, allow));
+          },
+          onAnswer: (request: string, answers: DesktopQuestionAnswer[]): void => {
+            this.run((binding): Promise<string> => binding.interactions.answer(request, answers));
+          },
+          onPlanDecision: (request: string, accept: boolean): void => { this.run((binding): Promise<string> =>
+            accept ? binding.interactions.approvePlanReview(request) : binding.interactions.dismissPlanReview(request)); },
+          onPlanResume: (request: string): void => { this.binding?.interactions.reopenPlanReview(request); },
+          onPlanMode: (enabled: boolean): void => {
+            this.run((binding, id): Promise<string> => binding.conversation.togglePlanMode(id, enabled));
+          },
+          onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string): Promise<string> =>
+            this.run((binding, id): Promise<string> => binding.conversation.mutateGoal(id, action, ref, objective)),
+          onQueueAction: (session: string, row: string, action: QueueActionBody): Promise<string> =>
+            this.run((binding): Promise<string> => binding.conversation.updateQueue(session, row, action)),
+          onSteerQueue: (): void => { this.run((binding, id): Promise<string> => binding.conversation.steerQueue(id)); },
+          onLoadModels: (): void => { this.binding?.conversation.loadModels(true); },
+          onModelsSettings: (): void => { this.actions?.openModels(); },
+          onLoadCommands: (): void => { this.binding?.conversation.loadCommands(this.target?.id ?? ''); },
+          onCommand: (command: string): Promise<string> => this.run((binding, id): Promise<string> =>
+            binding.conversation.runCommandChoice(id, command, (session: string): Promise<string> =>
+              this.actions?.exportLog(session) ?? Promise.resolve('当前会话暂不可导出'))),
+          onModel: (model: ModelSelection): void => { this.run((binding, id): Promise<string> => binding.conversation.selectModel(id, model)); },
+          onSlashModel: (model: ModelSelection): Promise<string> => this.run((binding, id): Promise<string> => binding.conversation.selectModel(id, model)),
+          onPermission: (preset: string): void => { this.run((binding, id): Promise<string> => binding.conversation.selectPermission(id, preset)); },
+          onSlashPermission: (preset: string): Promise<string> => this.run((binding, id): Promise<string> => binding.conversation.selectPermission(id, preset)),
+          onCopyTranscript: (): void => { this.actions?.copy(this.target?.id ?? ''); },
+          onExportLog: (): void => { this.run((_, id): Promise<string> => this.actions?.exportLog(id) ?? Promise.resolve('')); },
+          onSessionFeedback: (id: string): Promise<string> => this.run((binding): Promise<string> =>
+            this.actions?.feedback(id, binding.conversation) ?? Promise.resolve('当前会话暂不可反馈')),
+          onWarmFeedback: (id: string): void => { this.binding?.conversation.feedback.ensure(id); },
+          onReplyRating: (id: string, messageId: string, rating: DesktopRating): void => {
+            if (this.binding !== undefined) { this.actions?.rate(id, messageId, rating, this.binding.conversation); }
+          },
+          onFork: (id: string, sequence: number): void => {
+            if (this.binding !== undefined) { this.actions?.fork(id, sequence, this.binding.conversation); }
+          }
+        })
+      } else if (this.shown) {
+        LoadingProgress().width(24).height(24).color($r('sys.color.brand'))
+      }
+    }.key('desktopDockChat-' + (this.target?.id ?? '')).width('100%').height('100%')
+  }
+}

@@ -47,8 +47,11 @@ export struct DesktopConversationPane {
   host?: DesktopHostActions;
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop sessionSummaries: SessionListItem[] = [];
+  @Prop embedded: boolean = false;
   onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
+  onSubagentAside: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
   onSubagentParent: (child: DesktopSubagentEntry) => void = (): void => {};
+  onOpenMain: () => void = (): void => {};
   @Prop title: ResourceStr = '';
   @Prop workspaceTitle: ResourceStr = '';
   @Prop sessionDirectory: string = '';
@@ -1026,36 +1029,41 @@ export struct DesktopConversationPane {
         if ((this.snapshot?.subagents.length ?? 0) > 0 || this.snapshot?.subagent !== undefined) {
           DesktopSubagentsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
             child: this.snapshot?.subagent, entries: this.snapshot?.subagents ?? [],
-            summaries: this.sessionSummaries, onOpen: this.onSubagent })
+            summaries: this.sessionSummaries, onOpen: this.onSubagent, onOpenAside: this.onSubagentAside })
         }
         if (this.snapshot?.sessionId) {
           DesktopJobsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '' })
         }
-        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.folder')).fontSize(18).fontColor([$r('sys.color.font_primary')])
-        }
-          .key('desktopWorkspaceFiles').width(34).height(34).padding(0).focusOnTouch(false)
-          .accessibilityText('工作区文件').accessibilitySelected(this.filesOpen).onClick(this.onFiles)
-        Button('终端', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .width(44).height(34).padding(0).focusOnTouch(false)
-          .accessibilitySelected(this.terminalOpen)
-          .onClick(this.onTerminal)
-        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          Image($r('app.media.sidebar_toggle')).width(16).height(16).rotate({ angle: 180 })
-            .fillColor($r('sys.color.font_primary')).accessibilityLevel('no')
-        }.key('desktopToggleRightDock').width(34).height(34).padding(0).focusOnTouch(false)
-          .accessibilityText(this.rightDockOpen ? '收起右侧栏' : '展开右侧栏')
-          .accessibilitySelected(this.rightDockOpen).onClick(this.onRightDock)
-        if (this.compactHeader) {
-          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            SymbolGlyph($r('sys.symbol.link')).fontSize(16).fontColor([$r('sys.color.font_primary')])
-              .accessibilityLevel('no')
-          }.key('desktopOpenCompatSession').width(34).height(34).padding(0).focusOnTouch(false)
-            .accessibilityText($r('app.string.desktop_experiment_open_web')).onClick(this.onWeb)
+        if (this.embedded) {
+          Button('主区域', { buttonStyle: ButtonStyleMode.TEXTUAL }).fontSize(12).height(34).focusOnTouch(false)
+            .key('desktopDockChatPromote').accessibilityText('在主区域打开').onClick(this.onOpenMain)
         } else {
-          Button($r('app.string.desktop_experiment_open_web'),
-            { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopOpenCompatSession').height(34).focusOnTouch(false).onClick(this.onWeb)
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            SymbolGlyph($r('sys.symbol.folder')).fontSize(18).fontColor([$r('sys.color.font_primary')])
+          }
+            .key('desktopWorkspaceFiles').width(34).height(34).padding(0).focusOnTouch(false)
+            .accessibilityText('工作区文件').accessibilitySelected(this.filesOpen).onClick(this.onFiles)
+          Button('终端', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+            .width(44).height(34).padding(0).focusOnTouch(false)
+            .accessibilitySelected(this.terminalOpen)
+            .onClick(this.onTerminal)
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.sidebar_toggle')).width(16).height(16).rotate({ angle: 180 })
+              .fillColor($r('sys.color.font_primary')).accessibilityLevel('no')
+          }.key('desktopToggleRightDock').width(34).height(34).padding(0).focusOnTouch(false)
+            .accessibilityText(this.rightDockOpen ? '收起右侧栏' : '展开右侧栏')
+            .accessibilitySelected(this.rightDockOpen).onClick(this.onRightDock)
+          if (this.compactHeader) {
+            Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+              SymbolGlyph($r('sys.symbol.link')).fontSize(16).fontColor([$r('sys.color.font_primary')])
+                .accessibilityLevel('no')
+            }.key('desktopOpenCompatSession').width(34).height(34).padding(0).focusOnTouch(false)
+              .accessibilityText($r('app.string.desktop_experiment_open_web')).onClick(this.onWeb)
+          } else {
+            Button($r('app.string.desktop_experiment_open_web'),
+              { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+              .key('desktopOpenCompatSession').height(34).focusOnTouch(false).onClick(this.onWeb)
+          }
         }
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_session_ellipsis')).width(18).height(18).supportSvg2(true).draggable(false)

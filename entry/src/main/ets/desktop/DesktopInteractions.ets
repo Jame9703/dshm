@@ -96,16 +96,39 @@ export class DesktopInteractions {
   private readonly connection: Connection;
   private readonly actions: DesktopHostActions;
   private readonly onChange: (items: DesktopInteraction[]) => void;
-  private readonly events: Map<string, DesktopInteraction> = new Map<string, DesktopInteraction>();
+  private readonly events: Map<string, DesktopInteraction>;
+  private readonly owner?: DesktopInteractions;
+  private views?: Set<DesktopInteractions>;
   private continued: DesktopInteraction[] = [];
   private selected: string = '';
   private stopClaim?: () => void;
   private claimEvent: string = '';
 
-  constructor(connection: Connection, actions: DesktopHostActions, onChange: (items: DesktopInteraction[]) => void) {
+  constructor(connection: Connection, actions: DesktopHostActions, onChange: (items: DesktopInteraction[]) => void,
+    owner?: DesktopInteractions) {
     this.connection = connection;
     this.actions = actions;
     this.onChange = onChange;
+    this.owner = owner;
+    this.events = owner?.events ?? new Map<string, DesktopInteraction>();
+  }
+
+  createView(onChange: (items: DesktopInteraction[]) => void): DesktopInteractions {
+    const owner = this.owner ?? this;
+    const view = new DesktopInteractions(this.connection, this.actions, onChange, owner);
+    const views = owner.views ?? new Set<DesktopInteractions>();
+    views.add(view);
+    owner.views = views;
+    return view;
+  }
+
+  closeView(): void {
+    this.stopClaim?.();
+    this.stopClaim = undefined;
+    this.claimEvent = '';
+    this.selected = '';
+    this.continued = [];
+    if (this.owner?.views?.delete(this)) { this.owner.publish(); }
   }
 
   select(sessionId: string): void {
@@ -273,10 +296,17 @@ export class DesktopInteractions {
   }
 
   private publish(): void {
-    const all: DesktopInteraction[] = [];
-    this.events.forEach((row: DesktopInteraction): void => { all.push(row); });
+    if (this.owner !== undefined) { this.owner.publish(); return; }
+    const all = Array.from(this.events.values());
+    const claimed = new Set<string>();
+    this.publishView(all, claimed);
+    this.views?.forEach((view: DesktopInteractions): void => { view.publishView(all, claimed); });
+  }
+
+  private publishView(all: DesktopInteraction[], claimed: Set<string>): void {
     const claim = all.find((row: DesktopInteraction): boolean =>
-      row.sessionId === this.selected && row.timed && row.callId.length > 0);
+      row.sessionId === this.selected && row.timed && row.callId.length > 0 && !claimed.has(row.id));
+    if (claim !== undefined) { claimed.add(claim.id); }
     if ((claim?.id ?? '') !== this.claimEvent) {
       this.stopClaim?.();
       this.claimEvent = claim?.id ?? '';

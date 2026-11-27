@@ -24,6 +24,7 @@ export struct DesktopSubagentsControl {
   @Prop entries: DesktopSubagentEntry[] = [];
   @Prop summaries: SessionListItem[] = [];
   onOpen: (item: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
+  onOpenAside: (item: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
   @State private shown: boolean = false;
   @State private unfolded: boolean = false;
   @State private expanded: string[] = [];
@@ -172,6 +173,16 @@ export struct DesktopSubagentsControl {
           }.width('100%')
         }.key('desktopSubagentOpen-' + node.row.entry.id).layoutWeight(1).height(48).padding({ left: 6, right: 8 })
           .enabled(node.row.status !== 'external').focusOnTouch(false).onClick((): void => { this.open(node); })
+        if (node.row.status !== 'external' && node.row.entry.id !== this.sessionId) {
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.sidebar_toggle')).width(14).height(14).rotate({ angle: 180 })
+              .fillColor($r('sys.color.font_secondary')).accessibilityLevel('no')
+          }.key('desktopSubagentAside-' + node.row.entry.id).width(30).height(34).padding(0).focusOnTouch(false)
+            .accessibilityText('在右侧打开 ' + node.row.title).onClick((): void => {
+              this.shown = false;
+              this.onOpenAside(node.row.entry, node.parents);
+            })
+        }
       }.width('100%')
       if (this.expanded.includes(node.row.entry.id)) { this.BranchState(node.row.entry.id) }
     }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: Math.min(8, node.parents.length) * 14 })

@@ -16,7 +16,7 @@ import type { DesktopPlanDocument } from '../desktop/DesktopPlan';
 import { exportDesktopLog } from '../desktop/DesktopLogExport';
 import { DesktopLogStage, DesktopSessionLogDialog } from '../desktop/DesktopSessionLogDialog';
 import { DesktopGoalAction, DesktopGoalRef } from '../desktop/DesktopGoal';
-import { DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback';
+import { DesktopFeedback, DesktopFeedbackTarget, DesktopRating } from '../desktop/DesktopFeedback';
 import { DesktopFeedbackDialog } from '../desktop/DesktopFeedbackDialog';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
@@ -30,6 +30,8 @@ import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
+import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
+import type { DesktopDockChatActions } from '../desktop/DesktopDockChatPane';
 import { EMPTY_DESKTOP_DRAFT } from '../desktop/DesktopDraftReferences';
 import type { DesktopComposerDraft } from '../desktop/DesktopDraftReferences';
 import { DesktopShortcutDialog } from '../desktop/DesktopShortcutDialog';
@@ -39,8 +41,8 @@ import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDockFloatPosition, desktopDockFloatRect,
   desktopDockFocusFloat, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSeatFloat, desktopDockSelect,
   desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
-  DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
-import type { DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
+  desktopDockChatTab, desktopDockResourceId, DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
+import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
 import { readDesktopDock, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
@@ -50,7 +52,7 @@ import type { DesktopDraftAttachment, DesktopMediaAttachment } from '../desktop/
 import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
 import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } from '../desktop/DesktopSessionArchive';
 import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
-import type { DesktopConversationSnapshot } from '../desktop/DesktopConversation';
+import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, setDesktopWorkspaceEnabled, WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
@@ -499,6 +501,8 @@ struct DesktopWorkspace {
     const pinned = this.pinned.includes(session.id);
     const unread = this.unreadSession(session.id) !== undefined;
     return [
+      { value: '在右侧打开', icon: $r('app.media.sidebar_toggle'), enabled: !!this.sessionId && session.id !== this.sessionId,
+        action: (): void => { this.showDockChat({ id: session.id, subagent: desktopSubagentFromSummary(session) }, session.title); } },
       { value: pinned ? '取消置顶' : '置顶会话',
         icon: pinned ? $r('app.media.dsh_session_pin_fill') : $r('app.media.dsh_session_pin_outline'), action: (): void => {
         this.manage(pinned ? 'workspace/unpinSession' : 'workspace/pinSession', { 'sessionId': session.id });
@@ -814,11 +818,25 @@ struct DesktopWorkspace {
     this.data?.conversation.open(session.id, subagent);
   }
 
-  private openSubagent(entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void {
+  private openSubagent(entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean = false): void {
     if (entry.mode === 'external') { return; }
     for (const parent of parents) { this.subagentAddresses.set(parent.id, parent); }
     this.subagentAddresses.set(entry.id, entry);
-    this.openRelatedSession(entry.id, entry.label || entry.name, entry);
+    const title = entry.label || entry.name;
+    if (aside) { this.showDockChat({ id: entry.id, subagent: entry }, title); }
+    else { this.openRelatedSession(entry.id, title, entry); }
+  }
+
+  private showDockChat(target: DesktopDockChatTarget, title: string): void {
+    if (!this.sessionId || !target.id || target.id === this.sessionId) { return; }
+    const tab = desktopDockChatTab(target, title);
+    const exists = this.rightDock.panes.some((pane: DesktopDockPane): boolean =>
+      pane.tabs.some((item: DesktopDockTab): boolean => item.id === tab.id)) ||
+      this.rightDock.floats.some((panel: DesktopDockFloat): boolean => panel.tab.id === tab.id);
+    const layout = !exists && this.rightDock.panes[0].tabs.length > 0 && this.canSplitDock() &&
+      this.dockAvailableWidth() >= DOCK_SPLIT_MIN_WIDTH ?
+      desktopDockSplit(this.rightDock) : this.rightDock;
+    this.setDock(desktopDockOpen(layout, tab));
   }
 
   private openSubagentParent(child: DesktopSubagentEntry): void {
@@ -841,13 +859,15 @@ struct DesktopWorkspace {
 
   private changeDraft(session: string, value: DesktopComposerDraft): void {
     if (session && this.sessionId === session) {
-      this.draft = value;
-      if (value.text.length > 0) {
-        this.drafts.set(session, value);
-      } else {
-        this.drafts.delete(session);
-      }
+      this.storeDraft(session, value);
     }
+  }
+
+  private storeDraft(session: string, value: DesktopComposerDraft): void {
+    if (!session) { return; }
+    if (value.text.length > 0) { this.drafts.set(session, value); }
+    else { this.drafts.delete(session); }
+    if (this.sessionId === session) { this.draft = value; }
   }
 
   private clearSession(): void {
@@ -902,15 +922,16 @@ struct DesktopWorkspace {
     }
   }
 
-  private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string): Promise<string> {
-    const id = this.sessionId;
+  private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string,
+    id: string = this.sessionId): Promise<string> {
     const data = this.data;
     if (id.length === 0 || data === undefined || this.busySessions.includes(id)) {
       return '当前会话暂不可操作';
     }
     this.busySessions = [...this.busySessions, id];
-    this.chatError = '';
-    const error = await run(id);
+    if (this.sessionId === id) { this.chatError = ''; }
+    let error: string;
+    try { error = await run(id); } catch (_) { error = '当前会话操作失败'; }
     if (!this.pageActive || this.data !== data) {
       return error;
     }
@@ -929,31 +950,30 @@ struct DesktopWorkspace {
 
   private attachDocument(): void {
     const data = this.data;
-    const context = this.getUIContext().getHostContext();
-    if (data === undefined || context === undefined) {
-      return;
+    if (data !== undefined) {
+      this.chatAction((id: string): Promise<string> => this.pickConversationDocuments(data, id, data.conversation));
     }
-    this.chatAction(async (id: string): Promise<string> => {
-      try {
-        const picked = await pickDocumentUris(context, 500);
-        if (picked.outcome === PickOutcome.CANCELLED) {
-          return '';
-        }
-        if (picked.outcome !== PickOutcome.PICKED) {
-          return picked.reason;
-        }
-        return await this.stageDocuments(data, id, picked.uris);
-      } catch (_) {
-        return '无法读取所选文件';
-      }
-    });
   }
 
-  private async stageDocuments(data: DesktopWorkspaceData, id: string, uris: string[]): Promise<string> {
+  private async pickConversationDocuments(data: DesktopWorkspaceData, id: string, conversation: DesktopConversation): Promise<string> {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) { return '无法打开文件选择器'; }
+    try {
+      const picked = await pickDocumentUris(context, 500);
+      if (picked.outcome === PickOutcome.CANCELLED) { return ''; }
+      if (picked.outcome !== PickOutcome.PICKED) { return picked.reason; }
+      return await this.stageDocuments(data, id, picked.uris, conversation);
+    } catch (_) {
+      return '无法读取所选文件';
+    }
+  }
+
+  private async stageDocuments(data: DesktopWorkspaceData, id: string, uris: string[],
+    conversation: DesktopConversation = data.conversation): Promise<string> {
     const problems: string[] = [];
     for (const uri of uris) {
       if (this.data !== data) { return ''; }
-      const problem = await this.stageDocument(data, id, uri);
+      const problem = await this.stageDocument(data, id, uri, '', conversation);
       if (problem) { problems.push(problem); }
     }
     return problems.join('\n');
@@ -962,58 +982,63 @@ struct DesktopWorkspace {
   private attachDroppedFiles(files: DesktopDroppedFiles): void {
     const data = this.data;
     if (data === undefined) { return; }
-    this.chatAction(async (id: string): Promise<string> => {
-      const problems = await this.stageDocuments(data, id, files.uris);
-      if (!files.hasFolder) { return problems; }
-      const folderProblem = '请从工作区文件面板添加目录中的文件';
-      return problems ? problems + '\n' + folderProblem : folderProblem;
-    });
+    this.chatAction((id: string): Promise<string> => this.stageDroppedDocuments(data, id, files, data.conversation));
+  }
+
+  private async stageDroppedDocuments(data: DesktopWorkspaceData, id: string, files: DesktopDroppedFiles,
+    conversation: DesktopConversation): Promise<string> {
+    const problems = await this.stageDocuments(data, id, files.uris, conversation);
+    if (!files.hasFolder) { return problems; }
+    const folderProblem = '请从工作区文件面板添加目录中的文件';
+    return problems ? problems + '\n' + folderProblem : folderProblem;
   }
 
   private attachClipboard(): void {
     const data = this.data;
     if (data === undefined) { return; }
-    this.chatAction(async (id: string): Promise<string> => {
-      try {
-        const board = pasteboard.getSystemPasteboard();
-        const clipboard = await board.getData();
-        const problems: string[] = [];
-        const uris = new Set<string>();
-        let pictureCount = 0;
-        for (let index = 0; index < clipboard.getRecordCount(); index++) {
-          if (this.data !== data) { return ''; }
-          const record = clipboard.getRecord(index);
-          if (record.mimeType === pasteboard.MIMETYPE_TEXT_URI) {
-            const uri = desktopAttachmentUri(record.uri);
-            if (uri) { uris.add(uri); }
-          } else if (record.mimeType === pasteboard.MIMETYPE_PIXELMAP && record.pixelMap !== undefined) {
-            const picture = record.pixelMap;
-            pictureCount++;
-            const name = pictureCount === 1 ? '剪贴板图片.png' : '剪贴板图片-' + pictureCount + '.png';
-            try {
-              const bytes = await packDesktopClipboardPicture(picture);
-              const problem = await this.stageAttachment(data, id, name, bytes, 'image/png');
-              if (problem) { problems.push(problem); }
-            } catch (_) {
-              problems.push(name + '：无法读取剪贴板图片');
-            } finally {
-              await picture.release().catch((): void => {});
-            }
+    this.chatAction((id: string): Promise<string> => this.stageClipboard(data, id, data.conversation));
+  }
+
+  private async stageClipboard(data: DesktopWorkspaceData, id: string, conversation: DesktopConversation): Promise<string> {
+    try {
+      const board = pasteboard.getSystemPasteboard();
+      const clipboard = await board.getData();
+      const problems: string[] = [];
+      const uris = new Set<string>();
+      let pictureCount = 0;
+      for (let index = 0; index < clipboard.getRecordCount(); index++) {
+        if (this.data !== data) { return ''; }
+        const record = clipboard.getRecord(index);
+        if (record.mimeType === pasteboard.MIMETYPE_TEXT_URI) {
+          const uri = desktopAttachmentUri(record.uri);
+          if (uri) { uris.add(uri); }
+        } else if (record.mimeType === pasteboard.MIMETYPE_PIXELMAP && record.pixelMap !== undefined) {
+          const picture = record.pixelMap;
+          pictureCount++;
+          const name = pictureCount === 1 ? '剪贴板图片.png' : '剪贴板图片-' + pictureCount + '.png';
+          try {
+            const bytes = await packDesktopClipboardPicture(picture);
+            const problem = await this.stageAttachment(data, id, name, bytes, 'image/png', conversation);
+            if (problem) { problems.push(problem); }
+          } catch (_) {
+            problems.push(name + '：无法读取剪贴板图片');
+          } finally {
+            await picture.release().catch((): void => {});
           }
         }
-        if (uris.size === 0 && pictureCount === 0) {
-          const files = desktopDroppedFiles(await board.getUnifiedData());
-          for (const uri of files.uris) { uris.add(uri); }
-          if (files.hasFolder) { problems.push('请从工作区文件面板添加目录中的文件'); }
-        }
-        const problemsFromFiles = await this.stageDocuments(data, id, Array.from(uris));
-        if (problemsFromFiles) { problems.push(problemsFromFiles); }
-        if (uris.size === 0 && pictureCount === 0 && problems.length === 0) { return '剪贴板中没有可添加的图片或文件'; }
-        return problems.join('\n');
-      } catch (_) {
-        return '无法读取剪贴板附件';
       }
-    });
+      if (uris.size === 0 && pictureCount === 0) {
+        const files = desktopDroppedFiles(await board.getUnifiedData());
+        for (const uri of files.uris) { uris.add(uri); }
+        if (files.hasFolder) { problems.push('请从工作区文件面板添加目录中的文件'); }
+      }
+      const problemsFromFiles = await this.stageDocuments(data, id, Array.from(uris), conversation);
+      if (problemsFromFiles) { problems.push(problemsFromFiles); }
+      if (uris.size === 0 && pictureCount === 0 && problems.length === 0) { return '剪贴板中没有可添加的图片或文件'; }
+      return problems.join('\n');
+    } catch (_) {
+      return '无法读取剪贴板附件';
+    }
   }
 
   private attachWorkspaceFile(path: string, name: string): void {
@@ -1037,20 +1062,21 @@ struct DesktopWorkspace {
     });
   }
 
-  private async stageDocument(data: DesktopWorkspaceData, id: string, uri: string, name: string = ''): Promise<string> {
+  private async stageDocument(data: DesktopWorkspaceData, id: string, uri: string, name: string = '',
+    conversation: DesktopConversation = data.conversation): Promise<string> {
     if (this.data !== data) { return ''; }
-    const file = await readDocumentBytes(uri, data.conversation.imageLimit(id));
+    const file = await readDocumentBytes(uri, conversation.imageLimit(id));
     if (file.outcome !== PickOutcome.PICKED || file.data === undefined) {
       return file.reason || '无法读取所选附件';
     }
-    return this.stageAttachment(data, id, name || file.name, file.data, file.mediaType);
+    return this.stageAttachment(data, id, name || file.name, file.data, file.mediaType, conversation);
   }
 
   private async stageAttachment(data: DesktopWorkspaceData, id: string, label: string, bytes: ArrayBuffer,
-    mediaType: string): Promise<string> {
+    mediaType: string, conversation: DesktopConversation = data.conversation): Promise<string> {
     if (this.data !== data) { return ''; }
     try {
-      const uploaded = await data.conversation.upload(id, label, bytes, mediaType, this.subagentAddresses.get(id));
+      const uploaded = await conversation.upload(id, label, bytes, mediaType, this.subagentAddresses.get(id));
       if (typeof uploaded === 'string') { return `${label}：${uploaded}`; }
       if (mediaType === 'image/gif' && uploaded.picture !== undefined && !uploaded.picture.draftImageSource && this.data === data) {
         const animation = await desktopDraftGif(bytes).catch((): string => '');
@@ -1082,9 +1108,11 @@ struct DesktopWorkspace {
       onClose: (): void => { this.closeImagePreview(); } })
   }
 
-  private async openImagePreview(row: DesktopMediaAttachment): Promise<void> {
-    if (!this.sessionId || row.reference === undefined || this.imageDialog >= 0 || this.imageDialogOpening) { return; }
-    const sessionId = this.sessionId;
+  private async openImagePreview(row: DesktopMediaAttachment, sessionId: string = this.sessionId): Promise<void> {
+    const owner = this.sessionId;
+    if (!sessionId || (row.reference === undefined && !row.draftImageSource) || this.imageDialog >= 0 || this.imageDialogOpening) {
+      return;
+    }
     const version = ++this.imageDialogVersion;
     const height = Math.max(120, Math.min(490, this.workbenchHeight - 135));
     const prompt = this.getUIContext().getPromptAction();
@@ -1104,7 +1132,7 @@ struct DesktopWorkspace {
           }
         }
       });
-      if (this.pageActive && this.sessionId === sessionId && version === this.imageDialogVersion) { this.imageDialog = id; }
+      if (this.pageActive && this.sessionId === owner && version === this.imageDialogVersion) { this.imageDialog = id; }
       else { prompt.closeCustomDialog(id); }
     } catch (_) {
       if (version === this.imageDialogVersion) { prompt.showToast({ message: '无法打开图片预览' }); }
@@ -1138,24 +1166,26 @@ struct DesktopWorkspace {
     }
   }
 
-  private openSessionFeedback(sessionId: string): Promise<string> {
-    return this.openFeedback({ sessionId: sessionId, messageId: '', version: '' });
+  private openSessionFeedback(sessionId: string, feedback: DesktopFeedback | undefined = this.data?.conversation.feedback): Promise<string> {
+    return this.openFeedback({ sessionId: sessionId, messageId: '', version: '' }, feedback);
   }
 
-  private async chooseReplyRating(sessionId: string, messageId: string, rating: DesktopRating): Promise<void> {
-    const feedback = this.data?.conversation.feedback;
-    if (feedback === undefined || !messageId || sessionId !== this.sessionId || this.choosingFeedback ||
+  private async chooseReplyRating(sessionId: string, messageId: string, rating: DesktopRating,
+    feedback: DesktopFeedback | undefined = this.data?.conversation.feedback): Promise<void> {
+    const owner = this.sessionId;
+    const data = this.data;
+    if (feedback === undefined || !sessionId || !messageId || this.choosingFeedback ||
       this.feedbackDialog >= 0 || this.openingFeedback) { return; }
     this.choosingFeedback = true;
     try {
       const loadProblem = await feedback.ensure(sessionId);
-      if (!this.pageActive || this.sessionId !== sessionId || this.data?.conversation.feedback !== feedback) { return; }
+      if (!this.pageActive || this.sessionId !== owner || this.data !== data) { return; }
       const previous = feedback.current(messageId);
       const target: DesktopFeedbackTarget = { sessionId: sessionId, messageId: messageId,
         rating: rating, version: previous?.version ?? '' };
       const problem = !loadProblem && previous?.rating === rating ?
-        await feedback.retract(target) : await this.openFeedback(target);
-      if (problem && this.pageActive && this.sessionId === sessionId) {
+        await feedback.retract(target) : await this.openFeedback(target, feedback);
+      if (problem && this.pageActive && this.sessionId === owner) {
         this.getUIContext().getPromptAction().showToast({ message: problem });
       }
     } finally {
@@ -1164,15 +1194,16 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private FeedbackContent(target: DesktopFeedbackTarget, version: number) {
+  private FeedbackContent(target: DesktopFeedbackTarget, version: number, feedback: DesktopFeedback) {
     DesktopFeedbackDialog({
       onClose: (): void => { this.closeFeedback(); },
-      onSubmit: (category: string, note: string): Promise<string> => this.submitFeedback(target, version, category, note)
+      onSubmit: (category: string, note: string): Promise<string> => this.submitFeedback(target, version, feedback, category, note)
     })
   }
 
-  private async openFeedback(target: DesktopFeedbackTarget): Promise<string> {
-    if (!this.pageActive || !target.sessionId || target.sessionId !== this.sessionId || this.data === undefined) {
+  private async openFeedback(target: DesktopFeedbackTarget, feedback?: DesktopFeedback): Promise<string> {
+    const owner = this.sessionId;
+    if (!this.pageActive || !target.sessionId || !owner || feedback === undefined) {
       return '当前会话暂不可反馈';
     }
     if (this.feedbackDialog >= 0 || this.openingFeedback) { return ''; }
@@ -1181,14 +1212,14 @@ struct DesktopWorkspace {
     const prompt = this.getUIContext().getPromptAction();
     const material = dialogMaterial();
     try {
-      const id = await prompt.openCustomDialog({ builder: (): void => { this.FeedbackContent(target, version); },
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.FeedbackContent(target, version, feedback); },
         alignment: DialogAlignment.Center, width: Math.max(230, Math.min(488, this.workbenchWidth - 32)),
         autoCancel: true, systemMaterial: material,
         backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
         onDidDisappear: (): void => {
           if (version === this.feedbackDialogVersion) { this.feedbackDialog = -1; this.feedbackDialogVersion++; }
         } });
-      if (this.pageActive && this.sessionId === target.sessionId && version === this.feedbackDialogVersion) {
+      if (this.pageActive && this.sessionId === owner && version === this.feedbackDialogVersion) {
         this.feedbackDialog = id;
       } else {
         prompt.closeCustomDialog(id);
@@ -1208,23 +1239,21 @@ struct DesktopWorkspace {
     if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
   }
 
-  private async submitFeedback(target: DesktopFeedbackTarget, version: number, category: string,
-    note: string): Promise<string> {
-    const feedback = this.data?.conversation.feedback;
-    if (feedback === undefined || this.sessionId !== target.sessionId || version !== this.feedbackDialogVersion) {
+  private async submitFeedback(target: DesktopFeedbackTarget, version: number, feedback: DesktopFeedback,
+    category: string, note: string): Promise<string> {
+    if (!this.pageActive || version !== this.feedbackDialogVersion) {
       return '当前会话暂不可反馈';
     }
     const problem = await feedback.record(target, category, note);
-    if (!problem && this.pageActive && this.sessionId === target.sessionId && version === this.feedbackDialogVersion) {
+    if (!problem && this.pageActive && version === this.feedbackDialogVersion) {
       this.closeFeedback();
       this.getUIContext().getPromptAction().showToast({ message: '感谢你的反馈' });
     }
     return problem;
   }
 
-  private async copyTranscript(): Promise<void> {
+  private async copyTranscript(sessionId: string = this.sessionId): Promise<void> {
     const conversation = this.data?.conversation;
-    const sessionId = this.sessionId;
     if (conversation === undefined || !sessionId || this.copyingTranscript) { return; }
     this.copyingTranscript = true;
     const prompt = this.getUIContext().getPromptAction();
@@ -1420,9 +1449,10 @@ struct DesktopWorkspace {
     else { this.toggleRightDock(); }
   }
 
-  private showPlan(document: DesktopPlanDocument): void {
-    const tab: DesktopDockTab = { id: 'plan:' + document.callId, kind: DesktopDockKind.PLAN,
-      title: document.title || '计划预览', plan: document };
+  private showPlan(document: DesktopPlanDocument, sessionId: string = this.sessionId): void {
+    const source = sessionId === this.sessionId ? undefined : sessionId;
+    const tab: DesktopDockTab = { id: desktopDockResourceId('plan', document.callId, source), kind: DesktopDockKind.PLAN,
+      title: document.title || '计划预览', plan: document, sourceSessionId: source };
     this.setDock(desktopDockOpen(this.rightDock, tab));
   }
 
@@ -1439,27 +1469,31 @@ struct DesktopWorkspace {
     if (create) { this.terminalCreateSession = this.sessionId; }
   }
 
-  private showArtifact(path: string, name: string): void {
+  private showArtifact(path: string, name: string, sessionId: string = this.sessionId): void {
     if (!path) { return; }
-    const tab: DesktopDockTab = { id: 'file:' + path, kind: DesktopDockKind.PREVIEW, title: name || path,
-      file: { path: path, name: name } };
+    const source = sessionId === this.sessionId ? undefined : sessionId;
+    const tab: DesktopDockTab = { id: desktopDockResourceId('file', path, source), kind: DesktopDockKind.PREVIEW, title: name || path,
+      file: { path: path, name: name }, sourceSessionId: source };
     this.setDock(desktopDockOpen(this.rightDock, tab, false));
   }
 
-  private showChanges(target: DesktopChangeTarget): void {
-    if (target.sessionId !== this.sessionId) { return; }
-    const tab: DesktopDockTab = { id: 'changes:' + target.sequence, kind: DesktopDockKind.CHANGES,
+  private showChanges(target: DesktopChangeTarget, sessionId: string = this.sessionId): void {
+    if (target.sessionId !== sessionId) { return; }
+    const source = sessionId === this.sessionId ? undefined : sessionId;
+    const tab: DesktopDockTab = { id: desktopDockResourceId('changes', String(target.sequence), source), kind: DesktopDockKind.CHANGES,
+      sourceSessionId: source,
       title: '改动审阅', changes: target, changeLocation: !target.summary.applied && target.sequence >= 0 ?
         { sequence: target.sequence, index: target.index, split: target.split, wrap: target.wrap } : undefined };
     this.setDock(desktopDockOpen(this.rightDock, tab));
   }
 
-  private async referenceFileAction(action: DesktopReferenceAction, path: string, name: string): Promise<void> {
-    const sessionId = this.sessionId;
+  private async referenceFileAction(action: DesktopReferenceAction, path: string, name: string,
+    sessionId: string = this.sessionId): Promise<void> {
+    const owner = this.sessionId;
     const host = this.data?.actions;
     if (!sessionId || host === undefined) { return; }
     const result = await host.call('workspaceFiles/stat', { 'workspaceFileScopeId': sessionId, 'path': path });
-    if (!this.pageActive || this.sessionId !== sessionId || this.data?.actions !== host) { return; }
+    if (!this.pageActive || this.sessionId !== owner || this.data?.actions !== host) { return; }
     const absolute = getString(result.value, 'absolutePath') ?? '';
     const ability = this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext');
     const toast = this.getUIContext().getPromptAction();
@@ -1506,11 +1540,12 @@ struct DesktopWorkspace {
     }
   }
 
-  private async openArtifactAction(path: string, name: string, reveal: boolean): Promise<void> {
-    const sessionId = this.sessionId;
+  private async openArtifactAction(path: string, name: string, reveal: boolean,
+    sessionId: string = this.sessionId): Promise<void> {
+    const owner = this.sessionId;
     const result = await this.data?.actions.call('workspaceFiles/stat', { 'workspaceFileScopeId': sessionId, 'path': path });
     const ability = this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext');
-    if (!this.pageActive || this.sessionId !== sessionId) {
+    if (!this.pageActive || this.sessionId !== owner) {
       return;
     }
     const absolute = getString(result?.value, 'absolutePath') ?? '';
@@ -1614,10 +1649,12 @@ struct DesktopWorkspace {
     }
   }
 
-  private async forkFrom(source: string, atSeq?: number): Promise<void> {
+  private async forkFrom(source: string, atSeq?: number,
+    conversation: DesktopConversation | undefined = this.data?.conversation): Promise<void> {
     const data = this.data;
+    const owner = this.sessionId;
     if (data === undefined || this.forking ||
-      (atSeq !== undefined && (source !== this.sessionId || !data.conversation.canForkAt(atSeq)))) {
+      (atSeq !== undefined && (!conversation?.canForkAt(atSeq) || (conversation === data.conversation && source !== owner)))) {
       return;
     }
     this.forking = true;
@@ -1626,6 +1663,8 @@ struct DesktopWorkspace {
       if (!this.pageActive || this.data !== data) { return; }
       if (result.problem) {
         this.getUIContext().getPromptAction().showToast({ message: result.problem });
+      } else if (atSeq !== undefined && result.id && conversation !== data.conversation && owner === this.sessionId) {
+        this.showDockChat({ id: result.id }, '分叉会话');
       } else if (atSeq !== undefined && result.id && this.sessionId === source && this.panel === 'session' &&
         !this.openSessionById(result.id, false)) {
         this.pendingForkId = result.id;
@@ -2077,6 +2116,9 @@ struct DesktopWorkspace {
           onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {
             this.openSubagent(entry, parents);
           },
+          onSubagentAside: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {
+            this.openSubagent(entry, parents, true);
+          },
           onSubagentParent: (child: DesktopSubagentEntry): void => { this.openSubagentParent(child); },
           interactions: this.interactions,
           onDecision: (id: string, allow: boolean): void => {
@@ -2444,14 +2486,59 @@ struct DesktopWorkspace {
         .onActionCancel((): void => { this.finishDockResize(false); }))
   }
 
+  private dockChatActions(data?: DesktopWorkspaceData): DesktopDockChatActions {
+    return {
+      run: (id: string, operation: (id: string) => Promise<string>): Promise<string> => this.chatAction(operation, undefined, id),
+      readDraft: (id: string): DesktopComposerDraft => this.drafts.get(id) ?? EMPTY_DESKTOP_DRAFT,
+      writeDraft: (id: string, draft: DesktopComposerDraft): void => this.storeDraft(id, draft),
+      readAttachments: (id: string): DesktopDraftAttachment[] => this.attachmentsBySession.get(id) ?? [],
+      writeAttachments: (id: string, files: DesktopDraftAttachment[]): void => this.setAttachments(id, files),
+      pickAttachments: (id: string, conversation: DesktopConversation): Promise<string> => data === undefined ?
+        Promise.resolve('无法打开文件选择器') : this.pickConversationDocuments(data, id, conversation),
+      dropAttachments: (id: string, conversation: DesktopConversation, files: DesktopDroppedFiles): Promise<string> =>
+        data === undefined ? Promise.resolve('无法添加文件') : this.stageDroppedDocuments(data, id, files, conversation),
+      pasteAttachments: (id: string, conversation: DesktopConversation): Promise<string> => data === undefined ?
+        Promise.resolve('无法读取剪贴板附件') : this.stageClipboard(data, id, conversation),
+      openMain: (target: DesktopDockChatTarget, title: string): void => this.openRelatedSession(target.id, title, target.subagent),
+      openChild: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean): void =>
+        this.openSubagent(child, parents, aside),
+      openParent: (child: DesktopSubagentEntry): void => this.openSubagentParent(child),
+      openImage: (id: string, row: DesktopMediaAttachment): void => { this.openImagePreview(row, id); },
+      openFile: (id: string, path: string, name: string): void => this.showArtifact(path, name, id),
+      systemFile: (id: string, path: string, name: string, reveal: boolean): void => { this.openArtifactAction(path, name, reveal, id); },
+      referenceFile: (id: string, action: DesktopReferenceAction, path: string, name: string): void => {
+        this.referenceFileAction(action, path, name, id);
+      },
+      openPlan: (id: string, plan: DesktopPlanDocument): void => this.showPlan(plan, id),
+      openChanges: (target: DesktopChangeTarget): void => this.showChanges(target, target.sessionId),
+      openModels: (): void => { this.openSettings('settings.models'); },
+      copy: (id: string): void => { this.copyTranscript(id); },
+      exportLog: (id: string): Promise<string> => this.exportLog(id),
+      feedback: (id: string, conversation: DesktopConversation): Promise<string> => this.openSessionFeedback(id, conversation.feedback),
+      rate: (id: string, messageId: string, rating: DesktopRating, conversation: DesktopConversation): void => {
+        this.chooseReplyRating(id, messageId, rating, conversation.feedback);
+      },
+      fork: (id: string, sequence: number, conversation: DesktopConversation): void => {
+        this.forkFrom(id, sequence, conversation);
+      }
+    };
+  }
+
+  private dockChatDirectory(tab: DesktopDockTab): string {
+    return this.sessionSummaries.find((row: SessionListItem): boolean => row.id === tab.chat?.id)?.cwd ?? this.selectedSessionDirectory;
+  }
+
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
       DesktopFilesPane({ host: this.data?.actions,
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
-        sessionId: this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
+        sessionId: tab.sourceSessionId ?? this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
         onHide: (): void => this.closeDockTab(index, tab.id),
-        onOpenFile: (path: string, name: string): void => { this.focusDockPane(index); this.showArtifact(path, name); },
+        onOpenFile: (path: string, name: string): void => {
+          this.focusDockPane(index);
+          this.showArtifact(path, name, tab.sourceSessionId ?? this.sessionId);
+        },
         onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); },
         onReferenceWorkspaceFile: (path: string, name: string): void => {
           this.referenceFileAction(DesktopReferenceAction.ADD_TO_CHAT, path, name);
@@ -2470,18 +2557,23 @@ struct DesktopWorkspace {
           if (index < 0) { this.closeDockTab(index, tab.id); } else { this.toggleRightDock(); }
         } })
     } else if (tab.kind === DesktopDockKind.PLAN) {
-      DesktopPlanPreviewPane({ host: this.data?.actions, sessionId: this.sessionId,
+      DesktopPlanPreviewPane({ host: this.data?.actions, sessionId: tab.sourceSessionId ?? this.sessionId,
         document: this.dockStoredTab(index, tab.id)?.plan, shown: this.dockTabShown(index, tab.id),
         onClosePreview: (): void => this.closeDockTab(index, tab.id) })
+    } else if (tab.kind === DesktopDockKind.CHAT) {
+      DesktopDockChatPane({ data: this.data, actions: this.dockChatActions(this.data), target: tab.chat,
+        title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
+        busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,
+        appearance: this.appearance, summaries: this.sessionSummaries })
     } else {
-      DesktopChangesPane({ host: this.data?.actions, sessionId: this.sessionId,
+      DesktopChangesPane({ host: this.data?.actions, sessionId: tab.sourceSessionId ?? this.sessionId,
         target: this.dockStoredTab(index, tab.id)?.changes, changeLocation: this.dockStoredTab(index, tab.id)?.changeLocation,
         shown: this.dockTabShown(index, tab.id),
         onClose: (): void => this.closeDockTab(index, tab.id),
         onFile: (path: string, name: string, target: DesktopChangeTarget): void => {
-          this.showChanges(target);
+          this.showChanges(target, tab.sourceSessionId ?? this.sessionId);
           this.focusDockPane(index);
-          this.showArtifact(path, name);
+          this.showArtifact(path, name, tab.sourceSessionId ?? this.sessionId);
         } })
     }
   }

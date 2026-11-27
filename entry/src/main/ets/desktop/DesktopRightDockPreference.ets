@@ -1,8 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { getArray, getBoolean, getNumber, getRecord, getString, parseJson } from 'connection';
-import { desktopDockSplitFraction, DesktopDockKind, emptyDesktopDock } from './DesktopRightDock';
-import type { DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from './DesktopRightDock';
+import { desktopDockChatTab, desktopDockResourceId, desktopDockSplitFraction, DesktopDockKind, emptyDesktopDock } from './DesktopRightDock';
+import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from './DesktopRightDock';
 
 const PREFS: string = 'dshm_desktop_dock';
 
@@ -15,6 +15,8 @@ interface SavedDockTab {
   index?: number;
   split?: boolean;
   wrap?: boolean;
+  chat?: DesktopDockChatTarget;
+  sourceSessionId?: string;
 }
 
 interface SavedDockPane {
@@ -41,13 +43,14 @@ interface SavedDock {
 
 function restorable(tab: DesktopDockTab): boolean {
   return tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.TERMINAL || tab.file !== undefined ||
-    (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined;
+    (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined || tab.chat !== undefined;
 }
 
 function saveTab(tab: DesktopDockTab): SavedDockTab {
   return { kind: tab.kind, path: tab.file?.path ?? '', title: tab.title,
     sequence: tab.plan?.sequence ?? tab.changeLocation?.sequence, callId: tab.plan?.callId,
-    index: tab.changeLocation?.index, split: tab.changeLocation?.split, wrap: tab.changeLocation?.wrap };
+    index: tab.changeLocation?.index, split: tab.changeLocation?.split, wrap: tab.changeLocation?.wrap, chat: tab.chat,
+    sourceSessionId: tab.sourceSessionId };
 }
 
 export function encodeDesktopDock(layout: DesktopDockLayout): string {
@@ -73,22 +76,40 @@ function restoreTab(row: Object | undefined): DesktopDockTab | undefined {
   const kind = getString(row, 'kind');
   if (kind === DesktopDockKind.FILES) { return { id: kind, kind: kind, title: '工作区文件' }; }
   if (kind === DesktopDockKind.TERMINAL) { return { id: kind, kind: kind, title: '终端' }; }
+  if (kind === DesktopDockKind.CHAT) {
+    const chat = getRecord(row, 'chat');
+    const id = getString(chat, 'id') ?? '';
+    if (!id) { return undefined; }
+    const title = getString(row, 'title') || id;
+    const child = getRecord(chat, 'subagent');
+    if (child === undefined) { return desktopDockChatTab({ id: id }, title); }
+    const parentId = getString(child, 'parentId') ?? '';
+    const mode = getString(child, 'mode');
+    if (!parentId || parentId === id || getString(child, 'id') !== id ||
+      (mode !== 'continuable' && mode !== 'one-shot' && mode !== 'unknown')) { return undefined; }
+    return desktopDockChatTab({ id: id, subagent: { id: id, parentId: parentId, mode: mode,
+      name: getString(child, 'name') || id, label: getString(child, 'label') || '',
+      createdAt: getNumber(child, 'createdAt') ?? 0 } }, title);
+  }
   const path = getString(row, 'path') ?? '';
+  const source = getString(row, 'sourceSessionId');
   if (kind === DesktopDockKind.PREVIEW && path) {
     const name = getString(row, 'title') || path;
-    return { id: 'file:' + path, kind: kind, title: name, file: { path: path, name: name } };
+    return { id: desktopDockResourceId('file', path, source), kind: kind, title: name,
+      file: { path: path, name: name }, sourceSessionId: source };
   }
   const sequence = getNumber(row, 'sequence') ?? -1;
   if (!Number.isSafeInteger(sequence) || sequence < 0) { return undefined; }
   if (kind === DesktopDockKind.PLAN) {
     const callId = getString(row, 'callId') ?? '';
     const title = getString(row, 'title') || '计划预览';
-    return callId ? { id: 'plan:' + callId, kind: kind, title: title,
-      plan: { sequence: sequence, callId: callId, title: title, markdown: '' } } : undefined;
+    return callId ? { id: desktopDockResourceId('plan', callId, source), kind: kind, title: title,
+      plan: { sequence: sequence, callId: callId, title: title, markdown: '' }, sourceSessionId: source } : undefined;
   }
   if (kind === DesktopDockKind.CHANGES) {
     const index = getNumber(row, 'index') ?? 0;
-    return { id: 'changes:' + sequence, kind: kind, title: '改动审阅', changeLocation: { sequence: sequence,
+    return { id: desktopDockResourceId('changes', String(sequence), source), kind: kind, title: '改动审阅', sourceSessionId: source,
+      changeLocation: { sequence: sequence,
       index: Number.isSafeInteger(index) && index >= 0 ? index : 0, split: getBoolean(row, 'split'),
       wrap: getBoolean(row, 'wrap') } };
   }
