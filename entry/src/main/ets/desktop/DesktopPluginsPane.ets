@@ -3,6 +3,7 @@ import { getArray, getBoolean, getNumber, getRecord, getString } from 'connectio
 import type { RpcResult } from 'connection';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopPluginSettings } from './DesktopPluginSettings';
 
 const MARKET_BUNDLE: string = '@deepseek-ai/dsh-experimental-plugin-market-bundle';
 
@@ -60,6 +61,7 @@ export struct DesktopPluginsPane {
   host?: DesktopHostActions;
   onWeb: () => void = (): void => {};
   @State private tab: string = 'bundles';
+  @State private settingsVisited: boolean = false;
   @State private bundles: DesktopPluginRow[] = [];
   @State private plugins: DesktopPluginRow[] = [];
   @State private sources: DesktopMarketSource[] = [];
@@ -444,12 +446,14 @@ export struct DesktopPluginsPane {
       }
       .width('100%')
       Row({ space: 8 }) {
-        Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' : '插件市场',
+        Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' :
+          this.tab === 'settings' ? '配置' : '插件市场',
           { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .enabled(!this.busy)
+          .key('desktopPluginsView').enabled(!this.busy)
           .bindMenu([
             { value: '插件包', action: (): void => { this.tab = 'bundles'; } },
             { value: '运行中的插件', action: (): void => { this.tab = 'entries'; } },
+            { value: '配置', action: (): void => { this.settingsVisited = true; this.tab = 'settings'; } },
             { value: '插件市场', action: (): void => {
               this.tab = 'market';
               if (this.market.length === 0) {
@@ -476,9 +480,12 @@ export struct DesktopPluginsPane {
       }
       Scroll() {
         Column({ space: 8 }) {
+          if (this.settingsVisited) {
+            DesktopPluginSettings({ host: this.host }).visibility(this.tab === 'settings' ? Visibility.Visible : Visibility.None)
+          }
           if (this.tab === 'market') {
             this.Discover()
-          } else {
+          } else if (this.tab !== 'settings') {
             ForEach(this.tab === 'bundles' ? this.bundles : this.plugins, (row: DesktopPluginRow) => {
               this.PluginRow(row)
             }, (row: DesktopPluginRow): string => JSON.stringify(row))
