@@ -7,9 +7,21 @@ export class DesktopHostActions {
   private readonly connection: Connection;
   private readonly referencePaths: Map<string, Promise<boolean>> = new Map();
   private readonly changes: Map<string, Promise<DesktopChangeSummary | undefined>> = new Map();
+  private modelCatalogWatchers?: Set<() => void>;
 
   constructor(connection: Connection) {
     this.connection = connection;
+  }
+
+  watchModelCatalog(listener: () => void): () => void {
+    const watchers = this.modelCatalogWatchers ?? new Set<() => void>();
+    this.modelCatalogWatchers = watchers;
+    watchers.add(listener);
+    return (): void => { watchers.delete(listener); };
+  }
+
+  modelCatalogChanged(): void {
+    this.modelCatalogWatchers?.forEach((listener: () => void): void => { listener(); });
   }
 
   watch(endpoint: string, body: Record<string, Object>, sink: StreamSink): (() => void) | undefined {

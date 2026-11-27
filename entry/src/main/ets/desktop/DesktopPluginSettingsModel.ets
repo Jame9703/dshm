@@ -1,4 +1,5 @@
 import { getArray, getBoolean, getField, getNumber, getRecord, getString } from 'connection';
+import type { ModelOption } from 'appstate';
 
 export const WEB_SETTINGS: string = 'web';
 export const WEB_API_SETTINGS: string = 'web-deepseek-api';
@@ -6,6 +7,8 @@ export const WEB_LEGACY_SETTINGS: string = 'web-search-deepseek';
 export const AGENT_LOOP_SETTINGS: string = 'agent-loop';
 export const BASH_SETTINGS: string = 'bash-sandbox';
 export const PWSH_SETTINGS: string = 'pwsh-sandbox';
+export const SUBAGENT_SETTINGS: string = 'subagent';
+export const SUBAGENT_MODEL_SETTINGS: string = 'subagent-model-selection-settings';
 export const WEB_SEARCH_API: string = 'deepseek-search-api';
 export const WEB_SEARCH_LEGACY: string = 'deepseek-official';
 export const WEB_FETCH_API: string = 'deepseek-fetch-api';
@@ -34,8 +37,34 @@ export interface DesktopWebProvider {
   title: string;
 }
 
+export interface DesktopSubagentRoute {
+  provider: string;
+  model: string;
+}
+
+export interface DesktopSubagentAuthorization {
+  enabled: boolean;
+  routes: DesktopSubagentRoute[];
+  revision: number;
+}
+
+export interface DesktopSubagentModel {
+  route: DesktopSubagentRoute;
+  name: string;
+  providerName: string;
+  key: string;
+  available: boolean;
+}
+
+export interface DesktopSubagentModelGroup {
+  key: string;
+  title: string;
+  models: DesktopSubagentModel[];
+}
+
 export function readDesktopPluginConfiguration(value?: Object): DesktopPluginConfiguration {
-  const names = [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS, AGENT_LOOP_SETTINGS, BASH_SETTINGS, PWSH_SETTINGS];
+  const names = [WEB_SETTINGS, WEB_API_SETTINGS, WEB_LEGACY_SETTINGS, AGENT_LOOP_SETTINGS, BASH_SETTINGS, PWSH_SETTINGS,
+    SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];
   const documents: DesktopPluginDocument[] = [];
   for (const item of getArray(value, 'namespaces') ?? []) {
     const document = readDesktopPluginDocument(item);
@@ -70,11 +99,73 @@ export function desktopPluginBillingLocked(document: DesktopPluginDocument | und
   return !!(desktopPluginField(document, capability + 'BaseURL') || desktopPluginField(document, capability + 'ApiKeyEnv'));
 }
 
-export function desktopPluginPositiveInteger(text: string, maximum: number = Number.MAX_SAFE_INTEGER): number | undefined {
+export function desktopPluginInteger(text: string, maximum: number = Number.MAX_SAFE_INTEGER,
+  minimum: number = 1): number | undefined {
   const trimmed = text.trim();
   if (!new RegExp('^\\d+$').test(trimmed)) { return undefined; }
   const value = Number(trimmed);
-  return Number.isSafeInteger(value) && value >= 1 && value <= maximum ? value : undefined;
+  return Number.isSafeInteger(value) && value >= minimum && value <= maximum ? value : undefined;
+}
+
+export function desktopSubagentRouteKey(route: DesktopSubagentRoute): string {
+  return JSON.stringify([route.provider, route.model]);
+}
+
+export function desktopSubagentAuthorization(document?: DesktopPluginDocument): DesktopSubagentAuthorization {
+  const routes: DesktopSubagentRoute[] = [];
+  const keys = new Set<string>();
+  for (const item of getArray(document?.value, 'allowedModels') ?? []) {
+    const route: DesktopSubagentRoute = { provider: getString(item, 'provider') ?? '', model: getString(item, 'model') ?? '' };
+    const key = desktopSubagentRouteKey(route);
+    if (route.provider && route.model && !keys.has(key)) {
+      keys.add(key);
+      routes.push(route);
+    }
+  }
+  return { enabled: getBoolean(document?.value, 'enabled') === true, routes: routes, revision: document?.revision ?? -1 };
+}
+
+export function sameDesktopSubagentAuthorization(left: DesktopSubagentAuthorization,
+  right: DesktopSubagentAuthorization): boolean {
+  if (left.enabled !== right.enabled || left.routes.length !== right.routes.length) { return false; }
+  const keys = new Set(right.routes.map(desktopSubagentRouteKey));
+  return left.routes.every((route: DesktopSubagentRoute): boolean => keys.has(desktopSubagentRouteKey(route)));
+}
+
+export function desktopSubagentModelGroups(catalog: ModelOption[], stored: DesktopSubagentRoute[],
+  draft: DesktopSubagentRoute[]): DesktopSubagentModelGroup[] {
+  const groups = new Map<string, DesktopSubagentModelGroup>();
+  const shown = new Set<string>();
+  for (const option of catalog) {
+    const route: DesktopSubagentRoute = { provider: option.provider, model: option.modelId };
+    const key = desktopSubagentRouteKey(route);
+    if (shown.has(key)) { continue; }
+    shown.add(key);
+    let group = groups.get(route.provider);
+    if (group === undefined) {
+      group = { key: 'provider:' + route.provider, title: option.providerName, models: [] };
+      groups.set(route.provider, group);
+    }
+    group.models.push({ route: route, name: option.modelName, providerName: option.providerName, key: key, available: true });
+  }
+  const unavailable: DesktopSubagentModel[] = [];
+  for (const route of stored.concat(draft)) {
+    const key = desktopSubagentRouteKey(route);
+    if (shown.has(key)) { continue; }
+    shown.add(key);
+    unavailable.push({ route: route, name: route.model, providerName: route.provider, key: key, available: false });
+  }
+  const result = Array.from(groups.values());
+  if (unavailable.length > 0) {
+    result.push({ key: 'unavailable', title: '已保存但当前不可用', models: unavailable });
+  }
+  for (const group of result) {
+    // ArkUI retains a keyed group's builder until its id changes. Selection is observed separately.
+    const identity = [group.key, group.title];
+    for (const model of group.models) { identity.push(model.key, model.name); }
+    group.key = JSON.stringify(identity);
+  }
+  return result;
 }
 
 function providerTitle(id: string): string {

@@ -2,7 +2,7 @@ import { projectSessionCreate, projectSessionList, sessionCreatePayload, session
 import type { SessionListItem } from 'appstate';
 import { Connection, getArray, getRecord, getString, toStringArray } from 'connection';
 import type { EventSink, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_SETTINGS_DOCUMENT_UPDATED,
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SETTINGS_DOCUMENT_UPDATED,
   SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -94,14 +94,20 @@ export class DesktopWorkspaceData {
         this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
         this.readSubmitPreference();
+        this.actions.modelCatalogChanged();
       },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
         const event = getString(frame, 'event');
         if (event === EVENT_COMMANDS_CHANGE) { this.conversation.invalidateCommands(); }
         if (event === EVENT_GOAL_ACTIVATION_CHANGED) { this.conversation.observeGoalActivation(frame); }
-        if (event === EVENT_SETTINGS_DOCUMENT_UPDATED && getArray(frame, 'args')?.[0] === 'ui-conversation') {
-          this.readSubmitPreference();
+        if (event === EVENT_LLM_ADAPTERS_UPDATED) { this.actions.modelCatalogChanged(); }
+        if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
+          const namespace = getArray(frame, 'args')?.[0];
+          if (namespace === 'ui-conversation') { this.readSubmitPreference(); }
+          if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
+            this.actions.modelCatalogChanged();
+          }
         }
       },
       onEnd: (): void => { this.interactions.resetEvents(); }

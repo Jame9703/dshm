@@ -1,14 +1,20 @@
-import { getBoolean, getField, getRecord, getString } from 'connection';
-import { CREDENTIALS_DESCRIBE_ENDPOINT, CREDENTIALS_SET_ENDPOINT, SETTINGS_CONFLICT, SETTINGS_DESCRIBE_ENDPOINT,
+import { projectModelCatalog } from 'appstate';
+import type { ModelOption } from 'appstate';
+import { getArray, getBoolean, getField, getRecord, getString } from 'connection';
+import { CREDENTIALS_DESCRIBE_ENDPOINT, CREDENTIALS_SET_ENDPOINT, MODEL_CATALOG_ENDPOINT, SETTINGS_CONFLICT, SETTINGS_DESCRIBE_ENDPOINT,
   SETTINGS_MUTATE_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { AGENT_LOOP_SETTINGS, BASH_SETTINGS, desktopPluginBillingLocked, desktopPluginField, desktopPluginPathOps,
-  desktopPluginPositiveInteger, desktopWebProviders, PWSH_SETTINGS, readDesktopPluginConfiguration, readDesktopPluginDocument, WEB_API_SETTINGS,
+  desktopPluginInteger, desktopSubagentAuthorization, desktopSubagentModelGroups, desktopSubagentRouteKey, desktopWebProviders,
+  PWSH_SETTINGS, readDesktopPluginConfiguration, readDesktopPluginDocument, sameDesktopSubagentAuthorization,
+  SUBAGENT_MODEL_SETTINGS, SUBAGENT_SETTINGS, WEB_API_SETTINGS,
   WEB_FETCH_API, WEB_LEGACY_SETTINGS, WEB_SEARCH_API, WEB_SEARCH_LEGACY, WEB_SETTINGS } from './DesktopPluginSettingsModel';
-import type { DesktopPluginConfiguration, DesktopPluginDocument, DesktopPluginEdit, DesktopWebProvider } from './DesktopPluginSettingsModel';
+import type { DesktopPluginConfiguration, DesktopPluginDocument, DesktopPluginEdit, DesktopSubagentAuthorization,
+  DesktopSubagentModel, DesktopSubagentModelGroup, DesktopSubagentRoute, DesktopWebProvider } from './DesktopPluginSettingsModel';
 
 const WEB_SCOPE: string[] = [WEB_API_SETTINGS, WEB_LEGACY_SETTINGS, WEB_SETTINGS];
+const SUBAGENT_SCOPE: string[] = [SUBAGENT_SETTINGS, SUBAGENT_MODEL_SETTINGS];
 const SEARCH: string = 'searchProvider';
 const FETCH: string = 'fetchProvider';
 
@@ -26,15 +32,31 @@ export struct DesktopPluginSettings {
   @State private saving: boolean = false;
   @State private problem: string = '';
   @State private providerFailure: boolean = false;
+  @State private subagentDraft?: DesktopSubagentAuthorization = undefined;
+  @State private catalog: ModelOption[] = [];
+  @State private catalogStatus: string = 'idle';
+  @State private catalogPartial: boolean = false;
+  @State private subagentHelp: string = '';
+  @State private feedbackScope: string = '';
   private active: boolean = false;
   private credentialRead: number = 0;
+  private catalogQueued: boolean = false;
+  private stopCatalogWatch?: () => void;
 
-  aboutToAppear(): void { this.active = true; this.load(); }
+  aboutToAppear(): void {
+    this.active = true;
+    this.stopCatalogWatch = this.host?.watchModelCatalog((): void => {
+      if (this.subagentAuthorization().enabled) { this.loadCatalog(); }
+      else if (this.catalogStatus !== 'loading') { this.catalogStatus = 'idle'; }
+    });
+    this.load();
+  }
 
   aboutToDisappear(): void {
     this.active = false;
     this.credentialRead++;
     this.keyDraft = '';
+    this.stopCatalogWatch?.();
   }
 
   private document(namespace: string): DesktopPluginDocument | undefined {
@@ -78,17 +100,20 @@ export struct DesktopPluginSettings {
     const result = await this.host?.call(SETTINGS_DESCRIBE_ENDPOINT);
     if (!this.active) { return false; }
     if (result?.ok !== true) {
+      this.feedbackScope = '';
       this.problem = result === undefined ? '工作区尚未连接' : desktopHostProblem(result);
       this.configuration = { writable: false, documents: this.configuration.documents };
       return false;
     }
     this.configuration = readDesktopPluginConfiguration(result.value);
+    if (!this.subagentChanged()) { this.subagentDraft = undefined; }
     return true;
   }
 
   private async load(): Promise<void> {
     if (this.reading || this.saving) { return; }
     this.problem = '';
+    this.feedbackScope = '';
     this.reading = true;
     if (await this.readConfiguration()) {
       if (this.document(WEB_SETTINGS) !== undefined) {
@@ -98,6 +123,7 @@ export struct DesktopPluginSettings {
         this.providers = result?.ok === true ? result.value : undefined;
       }
       this.loadCredential();
+      if (this.subagentAuthorization().enabled) { this.loadCatalog(); }
     }
     if (this.active) { this.reading = false; }
   }
@@ -127,6 +153,74 @@ export struct DesktopPluginSettings {
     return this.configuration.writable && !this.reading && !this.saving;
   }
 
+  private subagentAuthorization(): DesktopSubagentAuthorization {
+    return this.subagentDraft ?? desktopSubagentAuthorization(this.document(SUBAGENT_MODEL_SETTINGS));
+  }
+
+  private subagentChanged(): boolean {
+    return this.subagentDraft !== undefined && !sameDesktopSubagentAuthorization(this.subagentDraft,
+      desktopSubagentAuthorization(this.document(SUBAGENT_MODEL_SETTINGS)));
+  }
+
+  private subagentConflicted(): boolean {
+    return this.subagentChanged() && this.subagentDraft?.revision !== this.document(SUBAGENT_MODEL_SETTINGS)?.revision;
+  }
+
+  private subagentGroups(): DesktopSubagentModelGroup[] {
+    const stored = desktopSubagentAuthorization(this.document(SUBAGENT_MODEL_SETTINGS));
+    return desktopSubagentModelGroups(this.catalog, stored.routes, this.subagentDraft?.routes ?? []);
+  }
+
+  private subagentSelected(key: string): boolean {
+    return this.subagentAuthorization().routes.some((route: DesktopSubagentRoute): boolean =>
+      desktopSubagentRouteKey(route) === key);
+  }
+
+  private stageSubagent(enabled: boolean, routes: DesktopSubagentRoute[]): void {
+    const current = this.subagentAuthorization();
+    this.subagentDraft = { enabled: enabled, routes: routes, revision: current.revision };
+    if (!this.subagentChanged()) { this.subagentDraft = undefined; }
+    this.feedbackScope = SUBAGENT_SETTINGS;
+    this.problem = '';
+    if (enabled && this.catalogStatus === 'idle') { this.loadCatalog(); }
+  }
+
+  private selectSubagent(candidate: DesktopSubagentModel, selected: boolean): void {
+    if (!this.canEdit() || this.subagentSelected(candidate.key) === selected) { return; }
+    const routes = this.subagentAuthorization().routes;
+    const next = selected ? routes.concat([candidate.route]) : routes.filter((route: DesktopSubagentRoute): boolean =>
+      desktopSubagentRouteKey(route) !== candidate.key);
+    this.stageSubagent(true, next);
+  }
+
+  private discardSubagent(): void {
+    this.subagentDraft = undefined;
+    this.edits = this.edits.filter((edit: DesktopPluginEdit): boolean => edit.namespace !== SUBAGENT_SETTINGS);
+    this.problem = '';
+    if (this.subagentAuthorization().enabled && this.catalogStatus === 'idle') { this.loadCatalog(); }
+  }
+
+  private async loadCatalog(): Promise<void> {
+    if (this.catalogStatus === 'loading') { this.catalogQueued = true; return; }
+    this.catalogStatus = 'loading';
+    const result = await this.host?.call(MODEL_CATALOG_ENDPOINT);
+    if (!this.active) { return; }
+    if (!this.subagentAuthorization().enabled) {
+      this.catalogStatus = 'idle';
+      this.catalogQueued = false;
+      return;
+    }
+    if (result?.ok === true) {
+      this.catalog = projectModelCatalog(result.value);
+      this.catalogPartial = (getArray(result.value, 'failures')?.length ?? 0) > 0;
+    }
+    this.catalogStatus = result?.ok === true ? 'ready' : 'error';
+    if (this.catalogQueued) {
+      this.catalogQueued = false;
+      if (this.subagentAuthorization().enabled) { this.loadCatalog(); }
+    }
+  }
+
   private normalized(edit: DesktopPluginEdit): DesktopPluginEdit | undefined {
     const raw = edit.value;
     if (raw === undefined || edit.namespace === WEB_SETTINGS || edit.field.endsWith('Billing')) { return edit; }
@@ -135,21 +229,30 @@ export struct DesktopPluginSettings {
       return text && !new RegExp('^https?://[^\\s/]+(?:/[^\\s]*)?$', 'i').test(text) ? undefined :
         { namespace: edit.namespace, field: edit.field, value: text || undefined };
     }
-    const number = desktopPluginPositiveInteger(text, edit.field === 'count' ? 50 : Number.MAX_SAFE_INTEGER);
+    const number = desktopPluginInteger(text, edit.field === 'count' ? 50 : Number.MAX_SAFE_INTEGER,
+      edit.namespace === SUBAGENT_SETTINGS && edit.field === 'maxDepth' ? 0 : 1);
     return text && number === undefined ? undefined :
       { namespace: edit.namespace, field: edit.field, value: number };
   }
 
   private hasDraft(namespaces: string[]): boolean {
     return this.edits.some((edit: DesktopPluginEdit): boolean => namespaces.includes(edit.namespace)) ||
-      (namespaces.includes(WEB_SETTINGS) && !!this.keyDraft.trim());
+      (namespaces.includes(WEB_SETTINGS) && !!this.keyDraft.trim()) ||
+      (namespaces.includes(SUBAGENT_MODEL_SETTINGS) && this.subagentChanged());
   }
 
   private async save(namespaces: string[]): Promise<void> {
     const host = this.host;
     if (host === undefined || !this.canEdit() || !this.hasDraft(namespaces)) { return; }
     const pending: DesktopPluginEdit[] = [];
+    this.feedbackScope = namespaces[0];
     this.problem = '';
+    const subagent = namespaces.includes(SUBAGENT_MODEL_SETTINGS) && this.subagentChanged() ? this.subagentDraft : undefined;
+    if (subagent !== undefined) {
+      if (this.subagentConflicted() || (subagent.enabled && subagent.routes.length === 0)) { return; }
+      pending.push({ namespace: SUBAGENT_MODEL_SETTINGS, field: 'enabled', value: subagent.enabled },
+        { namespace: SUBAGENT_MODEL_SETTINGS, field: 'allowedModels', value: subagent.routes });
+    }
     for (const edit of this.edits.filter((item: DesktopPluginEdit): boolean => namespaces.includes(item.namespace))) {
       if (edit.field.endsWith('Billing') && desktopPluginBillingLocked(this.document(WEB_API_SETTINGS), edit.field.slice(0, -7))) {
         this.problem = '高级配置已覆盖计费方式，请恢复该项后再保存。';
@@ -158,7 +261,8 @@ export struct DesktopPluginSettings {
       const value = this.normalized(edit);
       if (value === undefined) {
         this.problem = edit.field === 'baseURL' ? '请填写有效的 HTTP 或 HTTPS 地址。' :
-          (edit.field === 'count' ? '请输入 1 至 50 的整数。' : '请输入正整数。');
+          (edit.field === 'count' ? '请输入 1 至 50 的整数。' :
+            edit.field === 'maxDepth' ? '请输入不小于 0 的整数。' : '请输入正整数。');
         return;
       }
       pending.push(value);
@@ -198,6 +302,7 @@ export struct DesktopPluginSettings {
         this.configuration = { writable: this.configuration.writable, documents: documents };
       }
       this.edits = this.edits.filter((edit: DesktopPluginEdit): boolean => edit.namespace !== ns);
+      if (ns === SUBAGENT_MODEL_SETTINGS) { this.subagentDraft = undefined; }
     }
     const read = !needsRefresh || await this.readConfiguration();
     if (!this.active) { return; }
@@ -236,10 +341,40 @@ export struct DesktopPluginSettings {
   }
 
   @Builder
+  private LimitExplanation(field: string) {
+    Column({ space: 8 }) {
+      if (field === 'maxDepth') {
+        Text('限制 Agent 创建子智能体的递归层级。').fontSize(13)
+        Text('0 禁用子智能体\n1 仅允许主 Agent 创建子智能体').fontSize(13)
+        Text('如果某个工具单独设置了最大递归深度，以该工具的设置为准。').fontSize(13)
+      } else {
+        Text('同一主 Agent 下，所有递归层级同时存活的子智能体总数，主 Agent 不计入。达到上限时，新的启动请求会被拒绝。')
+          .fontSize(13)
+      }
+    }.width(300).padding(14).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private LimitHelp(field: string, label: string) {
+    Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      SymbolGlyph($r('sys.symbol.questionmark_circle')).fontSize(15)
+    }.width(28).height(28).padding(0).focusOnTouch(false).accessibilityText(label + '说明')
+      .key('pluginSettingHelp-' + field)
+      .onClick((): void => { this.subagentHelp = this.subagentHelp === field ? '' : field; })
+      .bindPopup(this.subagentHelp === field, { builder: this.LimitExplanation(field), placement: Placement.Bottom,
+        systemMaterial: desktopMenuOptions(Placement.Bottom).systemMaterial,
+        onStateChange: (event): void => {
+          if (!event.isVisible && this.subagentHelp === field) { this.subagentHelp = ''; }
+        } })
+  }
+
+  @Builder
   private Field(namespace: string, field: string, label: string, number: boolean = true) {
     Column({ space: 5 }) {
       Row({ space: 8 }) {
-        Text(label).fontSize(14).layoutWeight(1)
+        Text(label).fontSize(14)
+        if (namespace === SUBAGENT_SETTINGS) { this.LimitHelp(field, label) }
+        Blank()
         if (this.overridden(namespace, field)) {
           Button('恢复默认', { buttonStyle: ButtonStyleMode.TEXTUAL }).fontSize(12).enabled(this.canEdit())
             .key('pluginSettingReset-' + field).onClick((): void => { this.stage(namespace, field); })
@@ -339,6 +474,93 @@ export struct DesktopPluginSettings {
       .backgroundColor($r('app.color.workspace_panel'))
   }
 
+  @Builder
+  private SubagentModels() {
+    Column({ space: 10 }) {
+      Text('模型选择').fontSize(15).fontWeight(FontWeight.Medium)
+      Row({ space: 12 }) {
+        Text('允许 Agent 为子智能体选择模型').fontSize(14).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.subagentAuthorization().enabled })
+          .key('pluginSetting-subagentModelToggle').accessibilityText('允许 Agent 为子智能体选择模型')
+          .enabled(this.canEdit()).onChange((enabled: boolean): void => {
+            const current = this.subagentAuthorization();
+            if (this.canEdit() && current.enabled !== enabled) { this.stageSubagent(enabled, current.routes); }
+          })
+      }.width('100%')
+      if (this.subagentAuthorization().enabled) {
+        Text('开启后，Agent 可以从下方授权模型中，为每个子智能体选择提供方、模型和推理强度。修改会立即对所有会话生效。')
+          .fontSize(13).fontColor($r('sys.color.font_secondary'))
+        if (this.catalogStatus === 'loading') { Text('正在加载模型…').fontSize(13) }
+        if (this.catalogStatus === 'error') {
+          Row({ space: 8 }) {
+            Text('无法加载模型。').fontSize(13)
+            Button('重试', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.saving)
+              .onClick((): void => { this.loadCatalog(); })
+          }
+        }
+        if (this.catalogPartial) { Text('部分模型提供方暂时无法加载。').fontSize(13) }
+        if (this.subagentGroups().length > 0) { Text('Agent 可选择的模型').fontSize(13).fontWeight(FontWeight.Medium) }
+        else if (this.catalogStatus === 'ready') { Text('当前没有模型提供方公布模型。').fontSize(13) }
+        ForEach(this.subagentGroups(), (group: DesktopSubagentModelGroup) => {
+          Column({ space: 8 }) {
+            Text(group.title).fontSize(13).fontWeight(FontWeight.Medium)
+            ForEach(group.models, (candidate: DesktopSubagentModel) => {
+              Row({ space: 10 }) {
+                Checkbox({ name: candidate.key }).select(this.subagentSelected(candidate.key))
+                  .key('pluginSetting-subagentModel-' + candidate.route.provider + '/' + candidate.route.model)
+                  .accessibilityText(candidate.providerName + ' ' + candidate.name).enabled(this.canEdit())
+                  .onChange((selected: boolean): void => { this.selectSubagent(candidate, selected); })
+                Column({ space: 2 }) {
+                  Text(candidate.name).fontSize(14)
+                  Text(candidate.providerName + ' · ' + candidate.route.provider + '/' + candidate.route.model)
+                    .fontSize(12).fontColor($r('sys.color.font_secondary'))
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                if (!candidate.available) { Text('当前不可用').fontSize(12).fontColor($r('sys.color.font_secondary')) }
+              }.width('100%')
+            }, (candidate: DesktopSubagentModel): string => candidate.key)
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }, (group: DesktopSubagentModelGroup): string => group.key)
+        if (this.subagentAuthorization().routes.length === 0) {
+          Text('保存前请至少选择一个模型。').fontSize(13).fontColor($r('sys.color.warning'))
+        }
+      } else {
+        Text('子智能体使用现有默认模型，或继承父 Agent 的模型。已保存的模型选择会保留。')
+          .fontSize(13).fontColor($r('sys.color.font_secondary'))
+      }
+      if (this.subagentConflicted()) {
+        Text('设置已在其他位置更新。请放弃修改后重试。').fontSize(13).fontColor($r('sys.color.warning'))
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private SubagentCard() {
+    Column({ space: 12 }) {
+      Text('子智能体').fontSize(17).fontWeight(FontWeight.Medium)
+      if (this.document(SUBAGENT_SETTINGS) !== undefined) {
+        Text('运行限制').fontSize(15).fontWeight(FontWeight.Medium)
+        this.Field(SUBAGENT_SETTINGS, 'maxDepth', '最大递归深度')
+        this.Field(SUBAGENT_SETTINGS, 'maxActiveSubagents', '子智能体并行数量上限')
+      }
+      if (this.document(SUBAGENT_MODEL_SETTINGS) !== undefined) { this.SubagentModels() }
+      if (this.feedbackScope === SUBAGENT_SETTINGS && this.problem && !this.subagentConflicted()) {
+        Text(this.problem).fontSize(13).fontColor($r('sys.color.font_secondary')).key('pluginSettingsStatus-subagent')
+      }
+      Row({ space: 8 }) {
+        Blank()
+        if (this.hasDraft(SUBAGENT_SCOPE)) {
+          Button('放弃修改', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.saving)
+            .key('pluginSettingsDiscard-subagent').onClick((): void => { this.discardSubagent(); })
+        }
+        Button(this.saving ? '保存中…' : '保存').key('pluginSettingsSave-subagent')
+          .enabled(this.canEdit() && this.hasDraft(SUBAGENT_SCOPE) && !this.subagentConflicted() &&
+            (!this.subagentAuthorization().enabled || this.subagentAuthorization().routes.length > 0))
+          .onClick((): void => { this.save(SUBAGENT_SCOPE); })
+      }.width('100%')
+    }.width('100%').padding(16).borderRadius(12).alignItems(HorizontalAlign.Start)
+      .backgroundColor($r('app.color.workspace_panel'))
+  }
+
   build() {
     Column({ space: 12 }) {
       Row({ space: 8 }) {
@@ -347,7 +569,8 @@ export struct DesktopPluginSettings {
         Button('刷新配置', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.reading && !this.saving)
           .onClick((): void => { this.load(); })
       }.width('100%')
-      if (this.problem || (!this.configuration.writable && this.configuration.documents.length > 0)) {
+      if ((this.problem && this.feedbackScope !== SUBAGENT_SETTINGS) ||
+        (!this.configuration.writable && this.configuration.documents.length > 0)) {
         Text(this.problem || '本部署的设置为只读。').fontSize(13).fontColor($r('sys.color.font_secondary'))
           .key('pluginSettingsStatus').width('100%')
       }
@@ -361,6 +584,9 @@ export struct DesktopPluginSettings {
       }
       if (this.document(PWSH_SETTINGS) !== undefined) { this.ShellCard(PWSH_SETTINGS) }
       else if (this.document(BASH_SETTINGS) !== undefined) { this.ShellCard(BASH_SETTINGS) }
+      if (this.document(SUBAGENT_SETTINGS) !== undefined || this.document(SUBAGENT_MODEL_SETTINGS) !== undefined) {
+        this.SubagentCard()
+      }
       if (!this.reading && !this.problem && this.configuration.documents.length === 0) {
         Text('宿主未提供这些插件的配置。').fontSize(13).width('100%')
       }
