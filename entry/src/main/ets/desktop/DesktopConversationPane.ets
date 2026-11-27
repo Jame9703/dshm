@@ -33,6 +33,8 @@ import { DesktopChatRunningStatus } from './DesktopChatRunningStatus';
 import type { DesktopCompactionRow as DesktopCompactionInfo } from './DesktopCompactionModel';
 import { DesktopUserMessageActions } from './DesktopUserMessageActions';
 import { desktopTranscriptRows } from './DesktopTranscriptPresentation';
+import { DesktopTranscriptListSource } from './DesktopTranscriptListSource';
+import type { DesktopTranscriptListItem } from './DesktopTranscriptListSource';
 import type { DesktopTranscriptDisclosure, DesktopTranscriptPolicy, DesktopTranscriptRow, DesktopTranscriptTurn }
   from './DesktopTranscriptPresentation';
 import type { DesktopSubmissionEcho } from './DesktopSubmissionEcho';
@@ -174,6 +176,8 @@ export struct DesktopConversationPane {
   onChanges: (target: DesktopChangeTarget) => void = (_target: DesktopChangeTarget): void => {};
 
   private readonly scroller: Scroller = new Scroller();
+  private readonly transcriptList = new DesktopTranscriptListSource();
+  private transcriptListSession: string = '';
   @State private outlineWide: boolean = false;
   @State private outlineHeight: number = 0;
   @State private outlineEndOffset: number = 0;
@@ -217,6 +221,8 @@ export struct DesktopConversationPane {
   @State private workflowViews: Map<string, DesktopWorkflowView> = new Map();
   private workflowTranscript?: DesktopTranscriptItem[];
   @State private expandedReasoning: string[] = [];
+  @State private expandedTranscriptDetails: string[] = [];
+  private compactionRequest: number = 0;
   @State private expandedTeamCommands: string[] = [];
   @State private inspectedTool: string = '';
   @State private reviewedQuestionCall: string = '';
@@ -271,6 +277,7 @@ export struct DesktopConversationPane {
 
   aboutToDisappear(): void {
     this.outlineJumpGeneration++;
+    this.compactionRequest++;
     clearTimeout(this.historyCommitTimer);
     clearTimeout(this.historyProbeTimer);
     this.composerReady = false;
@@ -318,6 +325,8 @@ export struct DesktopConversationPane {
       this.following = true;
       this.expandedProcesses = [];
       this.expandedReasoning = [];
+      this.expandedTranscriptDetails = [];
+      this.compactionRequest++;
       this.hoveredMessage = '';
       this.expandedTeamCommands = [];
       this.inspectedTool = '';
@@ -415,7 +424,9 @@ export struct DesktopConversationPane {
     const rowIndices: number[] = [];
     const itemIndices: number[] = [];
     const statuses: Map<string, DesktopTranscriptItem> = new Map();
+    const cells: DesktopTranscriptListItem[] = [];
     rows.forEach((row: DesktopTranscriptRow, index: number): void => {
+      cells.push({ key: this.transcriptRowKey(row), row: row });
       if (row.item !== undefined) {
         visible.push(row.item);
         rowIndices.push(index);
@@ -431,6 +442,9 @@ export struct DesktopConversationPane {
     this.visibleItemIndices = itemIndices;
     this.transcriptStatusRows = statuses;
     this.transcriptRows = rows;
+    const resetList = this.transcriptListSession !== this.sessionId;
+    this.transcriptListSession = this.sessionId;
+    this.transcriptList.replace(cells, resetList);
   }
 
   private transcriptDisclosure(turn: number): DesktopTranscriptDisclosure | undefined {
@@ -496,7 +510,12 @@ export struct DesktopConversationPane {
     this.scroller.scrollToIndex(index, false, ScrollAlign.START);
     await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
     if (!requested()) { return; }
-    const position = this.scroller.getItemRect(index);
+    let position = this.scroller.getItemRect(index);
+    for (let frame = 0; frame < 3 && position.height <= 0; frame++) {
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 16); });
+      if (!requested()) { return; }
+      position = this.scroller.getItemRect(index);
+    }
     const gap = position.y - 12;
     if (position.height <= 0 || gap <= 6) { return; }
     // Extend the end only when the list clipped start alignment for a short trailing turn.
@@ -1388,6 +1407,17 @@ export struct DesktopConversationPane {
       (item.referenceLabels === undefined ? '' : JSON.stringify(item.referenceLabels));
   }
 
+  private toggleTranscriptDetails(key: string): void {
+    this.expandedTranscriptDetails = this.expandedTranscriptDetails.includes(key) ?
+      this.expandedTranscriptDetails.filter((id: string): boolean => id !== key) : [...this.expandedTranscriptDetails, key];
+  }
+
+  private openTranscriptCompaction(sequence: number): Promise<ResourceStr | undefined> {
+    const request = ++this.compactionRequest;
+    // The request belongs to the conversation, even if the source row scrolls out of the List cache.
+    return this.onOpenCompaction(sequence, (): boolean => request === this.compactionRequest);
+  }
+
   @Builder
   private TranscriptContent(item: DesktopTranscriptItem, row: DesktopTranscriptRow) {
     if (item.questionReply !== undefined) {
@@ -1401,14 +1431,16 @@ export struct DesktopConversationPane {
     } else if (item.compaction !== undefined) {
       DesktopCompactionRow({ row: this.transcriptStatusRows.get(item.id)?.compaction ?? item.compaction,
         previewAvailable: true, bodySize: this.typography.textSize, fontFamily: this.typography.textFamily,
-        onOpenSummary: this.onOpenCompaction })
+        expanded: this.expandedTranscriptDetails.includes(item.id), onExpand: (): void => this.toggleTranscriptDetails(item.id),
+        onOpenSummary: (sequence: number): Promise<ResourceStr | undefined> => this.openTranscriptCompaction(sequence) })
     } else if (item.plan !== undefined) {
       this.PlanCard(item.plan)
     } else if (item.command !== undefined) {
       if (item.command.name === 'team') { this.TeamCommand(item.command) }
       else if (item.command.name === 'compact') {
         DesktopCompactionRow({ row: this.compactionCommand(item.command), bodySize: this.typography.textSize,
-          fontFamily: this.typography.textFamily })
+          fontFamily: this.typography.textFamily, expanded: this.expandedTranscriptDetails.includes(item.id),
+          onExpand: (): void => this.toggleTranscriptDetails(item.id) })
       }
       else { this.CommandCard(item.command) }
     } else if (item.workflow !== undefined) {
@@ -1481,7 +1513,9 @@ export struct DesktopConversationPane {
       DesktopTurnTriggerRow({ row: context, typography: this.typography })
     } else {
       DesktopContextMessageRow({ row: context, bodySize: this.typography.textSize, textFamily: this.typography.textFamily,
-        codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily })
+        codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
+        open: this.expandedTranscriptDetails.includes('context:' + context.id),
+        onExpand: (): void => this.toggleTranscriptDetails('context:' + context.id) })
     }
   }
 
@@ -1837,20 +1871,20 @@ export struct DesktopConversationPane {
               })
             }
           }
-          ForEach(this.transcriptRows, (row: DesktopTranscriptRow): void => {
+          LazyForEach(this.transcriptList, (cell: DesktopTranscriptListItem): void => {
             ListItem() {
               Row() {
-                if (row.process !== undefined) {
-                  DesktopTranscriptDisclosureRow({ disclosure: this.transcriptDisclosure(row.process.turn),
+                if (cell.row.process !== undefined) {
+                  DesktopTranscriptDisclosureRow({ disclosure: this.transcriptDisclosure(cell.row.process.turn),
                     fontSize: this.typography.textSize, onToggle: (): void => {
-                      this.toggleTranscriptDisclosure(row.process?.turn ?? -1);
+                      this.toggleTranscriptDisclosure(cell.row.process?.turn ?? -1);
                     } })
-                } else if (row.item !== undefined) {
-                  this.TranscriptContent(row.item, row)
+                } else if (cell.row.item !== undefined) {
+                  this.TranscriptContent(cell.row.item, cell.row)
                 }
               }.width('100%').justifyContent(FlexAlign.Center)
             }
-          }, (row: DesktopTranscriptRow): string => this.transcriptRowKey(row))
+          }, (cell: DesktopTranscriptListItem): string => cell.key)
           this.SubmissionRows('transcript')
           if ((this.snapshot?.partial.length ?? 0) > 0) {
             ListItem() {
@@ -1893,6 +1927,7 @@ export struct DesktopConversationPane {
         }
         .height('100%').width('100%').padding({ left: 20, right: 20, top: 12, bottom: 12 })
         .contentEndOffset(this.outlineEndOffset)
+        .cachedCount(2)
         .maintainVisibleContentPosition(true)
         .scrollBar(BarState.Auto)
         .onDidScroll((_offset: number, _state: ScrollState): void => { this.trackChatScroll(); })

@@ -1039,8 +1039,9 @@ export class DesktopConversation {
       const previous = tail?.process;
       const process = current.process;
       if (tail !== undefined && previous !== undefined && process !== undefined && previous.turn === process.turn) {
-        tail.process = { id: previous.id, sequence: previous.sequence, turn: previous.turn,
-          version: previous.version + ':' + process.version, steps: [...previous.steps, ...process.steps] };
+        // Both groups were created by this transcript rebuild and have not been published yet.
+        previous.version += ':' + process.version;
+        for (const step of process.steps) { previous.steps.push(step); }
       } else {
         current.referenceLabels = current.message?.speaker === Speaker.USER ? this.recallLabels.get(current.sequence) : undefined;
         transcript.push(current);

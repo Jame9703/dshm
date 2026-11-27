@@ -202,7 +202,8 @@ export struct DesktopContextMessageRow {
   @Prop textFamily: string = '';
   @Prop codeSize: number = 11;
   @Prop codeFamily: string = 'monospace';
-  @State private open: boolean = false;
+  @Prop open: boolean = false;
+  onExpand: () => void = (): void => {};
   @State private hovered: boolean = false;
   @State private focused: boolean = false;
   @State private pressed: boolean = false;
@@ -215,7 +216,6 @@ export struct DesktopContextMessageRow {
   private resetForRow(): void {
     if (this.activeRowId === this.row.id) { return; }
     this.activeRowId = this.row.id;
-    this.open = false;
     this.hovered = false;
     this.focused = false;
     this.pressed = false;
@@ -306,7 +306,7 @@ export struct DesktopContextMessageRow {
           .onTouch((event: TouchEvent): void => {
             this.pressed = event.type === TouchType.Down || event.type === TouchType.Move;
           })
-          .onClick((): void => { this.open = !this.open; })
+          .onClick(this.onExpand)
       } else {
         this.Header()
       }

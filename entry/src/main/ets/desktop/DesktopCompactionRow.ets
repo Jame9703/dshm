@@ -9,6 +9,8 @@ export struct DesktopCompactionRow {
   @Prop @Watch('syncPreviewIdentity') previewAvailable: boolean = false;
   @Prop bodySize: number = 14;
   @Prop fontFamily: string = '';
+  @Prop expanded: boolean = false;
+  onExpand: () => void = (): void => {};
   onOpenSummary: (summarySequence: number, isCurrent: () => boolean) => Promise<ResourceStr | undefined> =
     async (): Promise<undefined> => undefined;
 
@@ -17,7 +19,6 @@ export struct DesktopCompactionRow {
   @State private focused: boolean = false;
   @State private pressing: boolean = false;
   @State private tooltipVisible: boolean = false;
-  @State private expanded: boolean = false;
   @State private failure: ResourceStr | undefined = undefined;
 
   private previewIdentity: string = '';
@@ -42,7 +43,6 @@ export struct DesktopCompactionRow {
     this.previewGeneration++;
     this.opening = false;
     this.failure = undefined;
-    this.expanded = false;
     this.hovered = false;
     this.focused = false;
     this.pressing = false;
@@ -198,7 +198,7 @@ export struct DesktopCompactionRow {
             this.pressing = event.type === TouchType.Down || event.type === TouchType.Move;
           })
           .onClick((): void => {
-            if (this.canOpen()) { this.openSummary(); } else { this.expanded = !this.expanded; }
+            if (this.canOpen()) { this.openSummary(); } else { this.onExpand(); }
           })
           .bindPopup(this.tooltipVisible, { builder: this.PreviewTooltip(), placement: Placement.Top,
             targetSpace: 6, enableArrow: false, focusable: false, mask: false, autoCancel: false,

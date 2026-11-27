@@ -47,8 +47,15 @@ function timestamp(row: ToolEntry): number { return row.start >= 0 ? row.start :
 export class DesktopToolLog {
   private readonly entries: Map<string, ToolEntry> = new Map();
   private readonly closed: Set<number> = new Set();
+  private readonly pendingGroupTurns: Set<number> = new Set();
+  private cachedGroups?: DesktopProcessGroup[];
 
-  clear(): void { this.entries.clear(); this.closed.clear(); }
+  clear(): void {
+    this.entries.clear();
+    this.closed.clear();
+    this.pendingGroupTurns.clear();
+    this.cachedGroups = undefined;
+  }
 
   approvalCommand(callId: string): string | undefined {
     const entry = this.entries.get(callId);
@@ -65,7 +72,13 @@ export class DesktopToolLog {
     const type = getString(event, 'type');
     const turn = getNumber(data, 'turn') ?? 0;
     const step = getNumber(data, 'step') ?? 0;
-    if (type === 'turn/end' && turn > 0) { this.closed.add(turn); return false; }
+    if (type === 'turn/end' && turn > 0) {
+      if (!this.closed.has(turn)) {
+        this.closed.add(turn);
+        if (this.pendingGroupTurns.has(turn)) { this.cachedGroups = undefined; }
+      }
+      return false;
+    }
     const child = type === 'tool/ptc-dispatch' || type === 'tool/ptc-dispatch-start';
     const done = type === 'tool/result' || type === 'tool/ptc-dispatch';
     if (!child && type !== 'tool/call' && type !== 'tool/result') { return false; }
@@ -79,9 +92,20 @@ export class DesktopToolLog {
       { id: id, parentId: '', turn: 0, step: 0, start: -1, end: -1, error: '' };
     const name = getString(data, 'name') ?? '';
     const parentId = child ? getString(data, 'parentCallId') ?? '' : '';
-    if (parentId && parentId !== id) { entry.parentId = parentId; }
-    if (turn > 0) { entry.turn = turn; }
-    if (step > 0) { entry.step = step; }
+    if (parentId && parentId !== id && parentId !== entry.parentId) {
+      entry.parentId = parentId;
+      this.cachedGroups = undefined;
+    }
+    if (turn > 0 && turn !== entry.turn) {
+      entry.turn = turn;
+      this.cachedGroups = undefined;
+    }
+    if (step > 0 && step !== entry.step) {
+      entry.step = step;
+      this.cachedGroups = undefined;
+    }
+    // Even an older frame can supply placement facts, but its call or result does not replace newer evidence.
+    if (done ? entry.end > seq : entry.start >= 0 && seq >= entry.start) { return false; }
     const args = getRecord(data, 'arguments');
     const item = (child ? undefined : projectWireRecord(record)) ??
       makeItem(id, TrajectoryKind.TOOL, getNumber(event, 'time') ?? 0);
@@ -89,21 +113,32 @@ export class DesktopToolLog {
     if (child && args !== undefined) { item.toolArgs = stringifyJson(args) ?? ''; }
     item.callId = id;
     if (done) {
-      if (entry.end > seq) { return false; }
       const error = getRecord(data, 'error');
       const code = getString(error, 'code') ?? '';
-      entry.error = getString(error, 'reason') || getString(error, 'message') || code;
+      const problem = getString(error, 'reason') || getString(error, 'message') || code;
       const failed = getBoolean(child ? data : resultMessage, 'isError') === true || error !== undefined;
       if (item.toolState !== ToolState.REJECTED) {
         item.toolState = failed ? ToolState.FAILED : ToolState.SUCCESS;
       }
       item.toolOutput = renderContent(child ? data : resultMessage) || item.toolOutput;
+      const previous = entry.result;
+      const changed = seq !== entry.end || problem !== entry.error || previous?.at !== item.at ||
+        previous?.toolName !== item.toolName || previous?.toolState !== item.toolState ||
+        previous?.toolOutput !== item.toolOutput;
+      if (changed) { this.cachedGroups = undefined; }
+      entry.error = problem;
       entry.result = item;
       entry.end = seq;
       if (desktopCordisAction(entry.call?.toolName || name) || getString(getRecord(data, 'meta'), 'pluginId')) {
+        const previousData = entry.cordisResult;
+        if (!changed && previousData !== data && (previousData === undefined || data === undefined ||
+            stringifyJson(previousData) !== stringifyJson(data))) {
+          this.cachedGroups = undefined;
+        }
         entry.cordisResult = data;
       }
-    } else if (entry.start < 0 || seq < entry.start) {
+    } else {
+      this.cachedGroups = undefined;
       item.toolState = ToolState.RUNNING;
       entry.call = item;
       entry.start = seq;
@@ -133,6 +168,8 @@ export class DesktopToolLog {
   }
 
   groups(): DesktopProcessGroup[] {
+    if (this.cachedGroups !== undefined) { return this.cachedGroups; }
+    this.pendingGroupTurns.clear();
     const rows = Array.from(this.entries.values()).sort((a: ToolEntry, b: ToolEntry): number => timestamp(a) - timestamp(b));
     const children: Map<string, ToolEntry[]> = new Map();
     for (const entry of rows) {
@@ -152,6 +189,7 @@ export class DesktopToolLog {
       if (steps.length > 0) {
         groups.push({ id: root.id, sequence: timestamp(root), turn: root.turn, version: stamps.join('|'), steps: steps });
         for (const step of steps) {
+          if (step.resultSequence < 0 && !step.interrupted) { this.pendingGroupTurns.add(root.turn); }
           if (step.cordis === undefined) { continue; }
           const key = desktopCordisRunKey(step.cordis);
           if (key) {
@@ -164,6 +202,7 @@ export class DesktopToolLog {
     for (const card of runCards) {
       card.superseded = (latestRuns.get(desktopCordisRunKey(card)) ?? -1) > card.resultSequence;
     }
+    this.cachedGroups = groups;
     return groups;
   }
 
