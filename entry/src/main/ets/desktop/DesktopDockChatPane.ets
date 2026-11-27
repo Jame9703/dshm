@@ -215,6 +215,8 @@ export struct DesktopDockChatPane {
           onPlanMode: (enabled: boolean): void => {
             this.run((binding, id): Promise<string> => binding.conversation.togglePlanMode(id, enabled));
           },
+          onTeamMode: (id: string, enabled: boolean): Promise<string> =>
+            this.binding?.conversation.setTeamMode(id, enabled) ?? Promise.resolve('当前会话暂不可操作'),
           onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string): Promise<string> =>
             this.run((binding, id): Promise<string> => binding.conversation.mutateGoal(id, action, ref, objective)),
           onQueueAction: (session: string, row: string, action: QueueActionBody): Promise<string> =>

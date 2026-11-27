@@ -522,7 +522,7 @@
     },
     {
       "name": "desktop_chat_model_settings",
-      "value": "在 WebUI 配置模型"
+      "value": "模型设置"
     },
     {
       "name": "desktop_chat_effort",

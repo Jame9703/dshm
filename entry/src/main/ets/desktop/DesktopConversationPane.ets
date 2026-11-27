@@ -2,6 +2,8 @@ import { Speaker, TrajectoryItem } from 'appstate';
 import { KeyCode } from '@kit.InputKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { resourceManager } from '@kit.LocalizationKit';
+import { getString } from 'connection';
+import { dialogMaterial } from 'platform';
 import { DESKTOP_ATTACHMENT_DROP_TYPES, desktopClipboardHasAttachments, desktopClipboardHasText,
   desktopDroppedFiles } from './DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
@@ -37,6 +39,7 @@ import { DesktopWorkflowPane } from './DesktopWorkflowPane';
 import { DesktopActionCardPane } from './DesktopActionCardPane';
 import { desktopHideActionCardFences } from './DesktopActionCards';
 import type { DesktopActionCard } from './DesktopActionCards';
+import { desktopTeamBoardVisible } from './DesktopTeam';
 import type { DesktopWorkflowView } from './DesktopWorkflowTimeline';
 import { DesktopQueueDock } from './DesktopQueueDock';
 import { DesktopAttachmentFile, DesktopAttachmentThumbnail } from './DesktopAttachments';
@@ -113,6 +116,7 @@ export struct DesktopConversationPane {
   onAnswer: (id: string, answers: DesktopQuestionAnswer[]) => void =
     (_id: string, _answers: DesktopQuestionAnswer[]): void => {};
   onPlanMode: (enabled: boolean) => void = (_enabled: boolean): void => {};
+  onTeamMode: (id: string, enabled: boolean) => Promise<string> = (): Promise<string> => Promise.resolve('');
   onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string) => Promise<string> =
     (_action: DesktopGoalAction, _ref: DesktopGoalRef, _objective: string): Promise<string> => Promise.resolve('');
   onPlanPreview: (plan: DesktopPlanDocument) => void = (_plan: DesktopPlanDocument): void => {};
@@ -137,6 +141,7 @@ export struct DesktopConversationPane {
   @State private workflowViews: Map<string, DesktopWorkflowView> = new Map();
   private workflowTranscript?: DesktopTranscriptItem[];
   @State private expandedReasoning: string[] = [];
+  @State private expandedTeamCommands: string[] = [];
   @State private inspectedTool: string = '';
   private readonly composer = new DesktopDraftEditor();
   private composerReady: boolean = false;
@@ -165,6 +170,13 @@ export struct DesktopConversationPane {
   @State private riskPreset: string = '';
   @State private agreed: boolean = false;
   @State private paletteNotice: string = '';
+  @State private teamSaving: boolean = false;
+  @State private teamProblem: string = '';
+  private teamDialog: number = -1;
+  private teamDialogOwner: string = '';
+  private teamDialogVersion: number = 0;
+  private teamActionVersion: number = 0;
+  private paneWidth: number = 472;
 
   private subagentCanSend(): boolean {
     return this.snapshot?.subagent === undefined ||
@@ -178,6 +190,8 @@ export struct DesktopConversationPane {
 
   aboutToDisappear(): void {
     this.composerReady = false;
+    this.teamActionVersion++;
+    this.closeTeamDialog();
     if (this.composerSyncTimer !== -1) { clearTimeout(this.composerSyncTimer); this.composerSyncTimer = -1; }
     this.cancelSlashRefresh();
     this.cancelReferenceLookup();
@@ -193,12 +207,17 @@ export struct DesktopConversationPane {
     const partial = this.snapshot?.partial ?? '';
     this.updateWorkflowViews();
     if (id !== this.sessionId) {
+      this.teamActionVersion++;
+      this.closeTeamDialog();
+      this.teamSaving = false;
+      this.teamProblem = '';
       this.sessionId = id;
       this.composerSelectionEnd = -1;
       this.scheduleComposerSync();
       this.following = true;
       this.expandedProcesses = [];
       this.expandedReasoning = [];
+      this.expandedTeamCommands = [];
       this.inspectedTool = '';
       this.dismissedDraft = undefined;
       this.closePalette();
@@ -758,6 +777,35 @@ export struct DesktopConversationPane {
   }
 
   @Builder
+  private TeamCommand(row: DesktopCommandRecord) {
+    Column({ space: 6 }) {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 8 }) {
+          Image($r('app.media.dsh_team_users_outline')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
+          Text('智能体团队协作').fontSize(13).fontWeight(FontWeight.Medium)
+          Text(row.completed < 0 ? '执行中' : row.outcome === 'error' ?
+            (row.text ? '执行失败：' + row.text.trim().split('\n')[0] : '执行失败') : row.text || '已完成')
+            .fontSize(13).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontColor(row.outcome === 'error' ? $r('sys.color.warning') : $r('sys.color.font_secondary'))
+          if (row.text && (row.outcome === 'error' || row.text.includes('\n'))) {
+            Image($r('app.media.dsh_queue_chevron_down_outline')).width(14).height(14).supportSvg2(true)
+              .rotate({ angle: this.expandedTeamCommands.includes(row.id) ? 180 : 0 }).accessibilityLevel('no')
+          }
+        }.width('100%')
+      }.key('desktopTeamCommand-' + row.id).width('100%').height(32).padding({ left: 0, right: 0 })
+        .accessibilitySelected(this.expandedTeamCommands.includes(row.id)).onClick((): void => {
+          if (!row.text || (row.outcome !== 'error' && !row.text.includes('\n'))) { return; }
+          this.expandedTeamCommands = this.expandedTeamCommands.includes(row.id) ?
+            this.expandedTeamCommands.filter((id: string): boolean => id !== row.id) : this.expandedTeamCommands.concat([row.id]);
+        })
+      if (this.expandedTeamCommands.includes(row.id)) {
+        Text(row.text).fontSize(13).width('100%').copyOption(CopyOptions.LocalDevice)
+          .fontColor(row.outcome === 'error' ? $r('sys.color.warning') : $r('sys.color.font_secondary'))
+      }
+    }.width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
   private CommandCard(row: DesktopCommandRecord) {
     Column({ space: 6 }) {
       Row({ space: 8 }) {
@@ -807,6 +855,137 @@ export struct DesktopConversationPane {
         })
       };
     });
+  }
+
+  private teamAvailable(): boolean {
+    const snapshot = this.snapshot;
+    return snapshot?.team !== undefined && snapshot.subagent === undefined &&
+      getString(this.sessionSummaries.find((row: SessionListItem): boolean => row.id === snapshot.sessionId)?.raw,
+        'origin') !== 'subagent';
+  }
+
+  private async applyTeamMode(owner: string, enabled: boolean): Promise<void> {
+    if (this.teamSaving || !this.teamAvailable() || owner !== this.snapshot?.sessionId ||
+      !this.snapshot.teamModelReady) { return; }
+    this.teamProblem = '';
+    this.teamSaving = true;
+    const operation = ++this.teamActionVersion;
+    let error: string;
+    try { error = await this.onTeamMode(owner, enabled); } catch (_) { error = '宿主暂不可连接'; }
+    if (operation !== this.teamActionVersion || owner !== this.snapshot?.sessionId) { return; }
+    this.teamSaving = false;
+    if (error) {
+      this.teamProblem = `无法确认智能体团队协作设置已保存，请重试：${error}`;
+      if (this.teamDialogOwner !== owner) {
+        this.getUIContext().getPromptAction().showToast({ message: this.teamProblem });
+      }
+    } else if (this.teamDialogOwner === owner) { this.closeTeamDialog(); }
+  }
+
+  private chooseTeamMode(enabled: boolean): void {
+    const owner = this.snapshot?.sessionId ?? '';
+    if (!owner || this.teamSaving || this.busy || this.snapshot?.team?.enabled === enabled) { return; }
+    if (!enabled && this.snapshot?.teamModelUsed) { this.confirmTeamDisable(owner); }
+    else { this.applyTeamMode(owner, enabled); }
+  }
+
+  @Builder
+  private TeamDisableDialog(owner: string) {
+    Column({ space: 12 }) {
+      Row({ space: 10 }) {
+        Text('确认关闭智能体团队协作？').fontSize(20).fontWeight(FontWeight.Medium).layoutWeight(1)
+        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Image($r('app.media.dsh_dock_close')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
+        }.width(30).height(30).padding(0).accessibilityText('关闭').enabled(!this.teamSaving)
+          .onClick((): void => { this.closeTeamDialog(); })
+      }.width('100%')
+      Text('对话过程中关闭智能体团队协作，将停止共享任务工具和团队协调指令。').fontSize(14)
+      Text('关闭后可能影响缓存复用、增加后续 token 用量与开销，并影响当前任务的协作效果。').fontSize(14)
+        .fontColor($r('sys.color.font_secondary'))
+      if (this.teamProblem) { Text(this.teamProblem).key('desktopTeamDisableError').fontSize(13).fontColor($r('sys.color.warning')) }
+      Row({ space: 8 }) {
+        Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopTeamDisableCancel').defaultFocus(true)
+          .enabled(!this.teamSaving).onClick((): void => { this.closeTeamDialog(); })
+        Button('确认关闭').key('desktopTeamDisableConfirm').enabled(!this.teamSaving)
+          .onClick((): void => { this.applyTeamMode(owner, false); })
+      }.width('100%').justifyContent(FlexAlign.End)
+    }.key('desktopTeamDisableDialog').width('100%').padding(22).alignItems(HorizontalAlign.Start)
+  }
+
+  private async confirmTeamDisable(owner: string): Promise<void> {
+    if (this.teamDialogOwner) { return; }
+    const version = ++this.teamDialogVersion;
+    this.teamDialogOwner = owner;
+    this.teamProblem = '';
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    try {
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.TeamDisableDialog(owner); }, alignment: DialogAlignment.Center,
+        width: Math.max(220, Math.min(440, this.paneWidth - 32)),
+        autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onWillDismiss: (action): void => { if (!this.teamSaving) { action.dismiss(); } },
+        onDidDisappear: (): void => {
+          if (version === this.teamDialogVersion) {
+            this.teamDialog = -1;
+            this.teamDialogOwner = '';
+            this.teamProblem = '';
+            this.teamDialogVersion++;
+          }
+        }
+      });
+      if (version === this.teamDialogVersion && owner === this.snapshot?.sessionId) { this.teamDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (version === this.teamDialogVersion) {
+        this.teamDialogOwner = '';
+        prompt.showToast({ message: '无法打开团队协作确认' });
+      }
+    }
+  }
+
+  private closeTeamDialog(): void {
+    const dialog = this.teamDialog;
+    this.teamDialog = -1;
+    this.teamDialogOwner = '';
+    this.teamDialogVersion++;
+    this.teamProblem = '';
+    if (dialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(dialog); }
+  }
+
+  @Builder
+  private TeamModeContents() {
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        Text('开启智能体团队协作').fontSize(14).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.snapshot?.team?.enabled === true })
+          .key('desktopTeamModeSwitch').accessibilityText('开启智能体团队协作')
+          .enabled(this.snapshot?.teamModelReady === true && !this.busy && !this.teamSaving)
+          .onChange((enabled: boolean): void => { this.chooseTeamMode(enabled); })
+      }.width('100%')
+      Text('通过共享任务板协调多个智能体的分工与进度，复杂任务表现更佳，token 开销也相应更高。')
+        .fontSize(13).fontColor($r('sys.color.font_secondary'))
+      if (this.teamProblem && !this.teamDialogOwner) { Text(this.teamProblem).fontSize(13).fontColor($r('sys.color.warning')) }
+    }.width(256).padding(12).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private TeamModeMenu() {
+    Menu() { MenuItem(this.TeamModeContents) }
+  }
+
+  @Builder
+  private ModelPickerMenu() {
+    Menu() {
+      ForEach(this.modelMenu(), (option: MenuElement): void => {
+        MenuItem({ content: option.value }).onChange((): void => { option.action(); })
+      }, (_: MenuElement, index: number): string => String(index))
+      if (this.teamAvailable()) {
+        MenuItem({ content: '智能体团队协作', labelInfo: this.snapshot?.team?.enabled ? '开启' : '关闭' })
+          .key('desktopTeamModeMenuItem').subMenuBuilder(this.TeamModeMenu)
+      }
+    }
   }
 
   private sessionMenu(): MenuElement[] {
@@ -897,9 +1076,10 @@ export struct DesktopConversationPane {
           .fontColor([$r('sys.color.font_tertiary')]).rotate({ angle: 90 })
       }
     }
-    .height(32).padding({ left: 8, right: 8 }).constraintSize({ maxWidth: effort ? 95 : 160 })
+    .key(effort ? 'desktopEffortMenu' : 'desktopModelMenu').height(32).padding({ left: 8, right: 8 })
+    .constraintSize({ maxWidth: effort ? 95 : 160 })
     .borderRadius(8).backgroundColor(Color.Transparent).focusOnTouch(false)
-    .enabled(!this.busy).bindMenu(effort ? this.effortMenu() : this.modelMenu(), this.menuOptions)
+    .enabled(!this.busy).bindMenu(effort ? this.effortMenu() : this.ModelPickerMenu, this.menuOptions)
   }
 
   @Builder
@@ -1055,9 +1235,10 @@ export struct DesktopConversationPane {
           }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
-        if ((this.snapshot?.subagents.length ?? 0) > 0 || this.snapshot?.subagent !== undefined) {
+        if ((this.snapshot?.subagents.length ?? 0) > 0 || this.snapshot?.subagent !== undefined ||
+          desktopTeamBoardVisible(this.snapshot?.team)) {
           DesktopSubagentsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
-            child: this.snapshot?.subagent, entries: this.snapshot?.subagents ?? [],
+            child: this.snapshot?.subagent, entries: this.snapshot?.subagents ?? [], team: this.snapshot?.team,
             summaries: this.sessionSummaries, onOpen: this.onSubagent, onOpenAside: this.onSubagentAside })
         }
         if (this.snapshot?.sessionId) {
@@ -1102,7 +1283,10 @@ export struct DesktopConversationPane {
           .bindMenu(this.sessionMenu(), desktopMenuOptions(Placement.BottomRight))
       }
       .width('100%').height(50).padding({ left: this.compactHeader ? 8 : 20, right: this.compactHeader ? 8 : 16 })
-      .onAreaChange((_, area: Area): void => { this.compactHeader = Number(area.width) < 500; })
+      .onAreaChange((_, area: Area): void => {
+        this.paneWidth = Number(area.width);
+        this.compactHeader = this.paneWidth < 500;
+      })
       if (this.snapshot?.loading) {
         LoadingProgress().width(22).height(22).color($r('sys.color.brand'))
       }
@@ -1120,7 +1304,8 @@ export struct DesktopConversationPane {
               if (item.plan !== undefined) {
                 this.PlanCard(item.plan)
               } else if (item.command !== undefined) {
-                this.CommandCard(item.command)
+                if (item.command.name === 'team') { this.TeamCommand(item.command) }
+                else { this.CommandCard(item.command) }
               } else if (item.workflow !== undefined) {
                 DesktopWorkflowPane({ runId: item.workflow.id,
                   view: this.workflowViews.get(item.id) ?? item.workflow.view, sessionId: this.snapshot?.sessionId ?? '',

@@ -502,7 +502,7 @@
     },
     {
       "name": "desktop_chat_model_settings",
-      "value": "Configure models in WebUI"
+      "value": "Model settings"
     },
     {
       "name": "desktop_chat_effort",

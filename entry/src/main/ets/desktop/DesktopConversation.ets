@@ -27,6 +27,8 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopFeedback } from './DesktopFeedback';
 import { DesktopActionCardState, desktopHideActionCardFences } from './DesktopActionCards';
 import type { DesktopActionCard } from './DesktopActionCards';
+import { DesktopTeamState } from './DesktopTeam';
+import type { DesktopTeam } from './DesktopTeam';
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
 import { DesktopWorkflowTimeline } from './DesktopWorkflowTimeline';
 import type { DesktopWorkflowRun } from './DesktopWorkflowTimeline';
@@ -86,6 +88,9 @@ export interface DesktopConversationSnapshot {
   commandError: string;
   feedbackRows: FeedbackRow[];
   actionCards: Map<number, DesktopActionCard>;
+  team?: DesktopTeam;
+  teamModelReady: boolean;
+  teamModelUsed: boolean;
   queue: DesktopQueuedPrompt[];
   busyEnterSteers: boolean;
   subagent?: DesktopSubagentEntry;
@@ -130,6 +135,7 @@ export class DesktopConversation {
   private readonly replyTimeline: DesktopReplyTimeline = new DesktopReplyTimeline();
   private readonly workflows: DesktopWorkflowTimeline = new DesktopWorkflowTimeline();
   private readonly actionCards: DesktopActionCardState = new DesktopActionCardState();
+  private readonly team: DesktopTeamState = new DesktopTeamState();
   private inheritedSequence: number = -1;
   readonly feedback: DesktopFeedback;
   private models: ModelOption[] = [];
@@ -199,6 +205,7 @@ export class DesktopConversation {
     this.subagentCatalogSequence = -1;
     this.feedback.select(sessionId);
     this.actionCards.clear();
+    this.team.clear();
     this.interactions.select(sessionId);
     this.transcript = [];
     this.recallLabels.clear();
@@ -445,6 +452,15 @@ export class DesktopConversation {
 
   async togglePlanMode(sessionId: string, enabled: boolean): Promise<string> {
     return this.executeCommand(sessionId, enabled ? '/plan' : '/plan off', []);
+  }
+
+  async setTeamMode(sessionId: string, enabled: boolean): Promise<string> {
+    if (!sessionId || sessionId !== this.sessionId || this.subagent !== undefined || this.team.view === undefined ||
+      !this.team.modelReady || this.closed) { return '当前会话暂不能更改团队协作设置'; }
+    const generation = this.generation;
+    const result = await this.host.call('agentTeams/setEnabled', { 'agentId': sessionId, 'enabled': enabled });
+    if (this.current(generation)) { await this.loadSelection(generation); }
+    return result.ok ? '' : this.failure(result, '宿主未确认团队协作设置');
   }
 
   async mutateGoal(sessionId: string, action: DesktopGoalAction, expected: DesktopGoalRef,
@@ -779,7 +795,8 @@ export class DesktopConversation {
         const goalChanged = this.readGoal(result.value);
         const queueChanged = this.readQueue(result.value);
         const cardsChanged = this.actionCards.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
-        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged) {
+        const teamChanged = this.team.observe(getRecord(result.value, 'values'), getNumber(result.value, 'asOfSeq') ?? 0);
+        if (this.readPlan(result.value) || goalChanged || queueChanged || subagentsChanged || cardsChanged || teamChanged) {
           this.publish();
         }
       }
@@ -885,6 +902,7 @@ export class DesktopConversation {
     this.readQueue(projection);
     const values = getRecord(projection, 'values');
     this.actionCards.observe(values, getNumber(projection, 'asOfSeq') ?? 0);
+    this.team.observe(values, getNumber(projection, 'asOfSeq') ?? 0);
     this.readSubagents(values, getNumber(projection, 'asOfSeq') ?? -1);
     this.readImageLimit(values);
     const model = getRecord(values, 'modelSelection');
@@ -953,7 +971,8 @@ export class DesktopConversation {
       const queueChanged = this.queue.observe(changes, getNumber(frame, 'seq') ?? -1);
       const subagentsChanged = this.readSubagents(changes, getNumber(frame, 'seq') ?? -1);
       const cardsChanged = this.actionCards.observe(changes, getNumber(frame, 'seq') ?? 0);
-      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged) { return; }
+      const teamChanged = this.team.observe(changes, getNumber(frame, 'seq') ?? 0);
+      if (!goalChanged && !queueChanged && !subagentsChanged && !cardsChanged && !teamChanged) { return; }
       if (goalChanged && !this.goals.goal?.activation) { this.readGoalActivation(); }
     } else if (type === 'event') {
       const event = getRecord(frame, 'event');
@@ -1030,6 +1049,7 @@ export class DesktopConversation {
       goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
       feedbackRows: this.feedback.rows, actionCards: this.actionCards.cards, queue: queue, busyEnterSteers: this.busyEnterSteers,
+      team: this.team.view, teamModelReady: this.team.modelReady, teamModelUsed: this.team.lastModelUsed,
       subagent: this.subagent, subagents: this.subagents
     });
   }

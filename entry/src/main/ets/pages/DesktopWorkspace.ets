@@ -2833,6 +2833,8 @@ struct DesktopWorkspace {
               this.chatAction((id: string): Promise<string> => conversation.togglePlanMode(id, enabled));
             }
           },
+          onTeamMode: (id: string, enabled: boolean): Promise<string> =>
+            this.data?.conversation.setTeamMode(id, enabled) ?? Promise.resolve('当前会话暂不可操作'),
           onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string): Promise<string> => {
             const conversation = this.data?.conversation;
             return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(

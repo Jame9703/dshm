@@ -5,6 +5,8 @@ import { desktopMenuOptions } from './DesktopMenuOptions';
 import { desktopSubagentCatalog, desktopSubagentDurationLabel, desktopSubagentModeLabel, desktopSubagentRows,
   desktopSubagentTokenLabel } from './DesktopSubagents';
 import type { DesktopSubagentEntry, DesktopSubagentRow } from './DesktopSubagents';
+import { desktopTeamBoardVisible } from './DesktopTeam';
+import type { DesktopTeam, DesktopTeamTask } from './DesktopTeam';
 
 interface DesktopSubagentBranch {
   id: string;
@@ -24,6 +26,7 @@ export struct DesktopSubagentsControl {
   @Prop @Watch('ownerChanged') sessionId: string = '';
   @Prop child?: DesktopSubagentEntry = undefined;
   @Prop @Watch('catalogChanged') entries: DesktopSubagentEntry[] = [];
+  @Prop team?: DesktopTeam = undefined;
   @Prop @Watch('syncMetricClock') summaries: SessionListItem[] = [];
   onOpen: (item: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
   onOpenAside: (item: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
@@ -33,6 +36,11 @@ export struct DesktopSubagentsControl {
   @State private unfolded: boolean = false;
   @State private expanded: string[] = [];
   @State private branches: DesktopSubagentBranch[] = [];
+  @State private teamUnfolded: boolean = false;
+  @State private taskExpanded: string = '';
+  @State private taskHovered: string = '';
+  private taskHoverTimer: number = -1;
+  private readonly teamFolds: Map<string, boolean> = new Map<string, boolean>();
   private readonly folds: Map<string, boolean> = new Map<string, boolean>();
   private readonly branchLoads: Map<string, Promise<void>> = new Map<string, Promise<void>>();
   private generation: number = 0;
@@ -42,6 +50,7 @@ export struct DesktopSubagentsControl {
     this.generation++;
     this.branchLoads.clear();
     this.stopMetricClock();
+    this.hoverTask('');
   }
 
   private stopMetricClock(): void {
@@ -53,6 +62,7 @@ export struct DesktopSubagentsControl {
   private syncMetricClock(): void {
     if (!this.shown) {
       this.stopMetricClock();
+      this.hoverTask('');
       return;
     }
     this.clockMs = Date.now();
@@ -72,6 +82,8 @@ export struct DesktopSubagentsControl {
     this.branchLoads.clear();
     this.branches = [];
     this.unfolded = this.folds.get(this.sessionId) === true;
+    this.teamUnfolded = this.teamFolds.get(this.sessionId) === true;
+    this.taskExpanded = '';
   }
 
   private rootId(): string { return this.child?.parentId ?? this.sessionId; }
@@ -284,46 +296,131 @@ export struct DesktopSubagentsControl {
     }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: Math.min(8, node.parents.length) * 14 })
   }
 
+  private hasTree(): boolean { return this.child !== undefined || this.entries.length > 0; }
+
+  private hoverTask(id: string): void {
+    clearTimeout(this.taskHoverTimer);
+    this.taskHoverTimer = -1;
+    if (!id || this.taskExpanded === id) { this.taskHovered = ''; return; }
+    this.taskHoverTimer = setTimeout((): void => { this.taskHovered = id; }, this.taskHovered ? 0 : 350);
+  }
+
+  private taskStatus(task: DesktopTeamTask): string {
+    return task.blocked ? '被依赖阻塞' : task.status === 'in_progress' ? '进行中' :
+      task.status === 'completed' ? '已完成' : '待处理';
+  }
+
+  @Builder
+  private TaskPreview(task: DesktopTeamTask) {
+    Column({ space: 5 }) {
+      Text(task.subject).fontSize(14).fontWeight(FontWeight.Medium)
+      Text(this.taskStatus(task)).fontSize(12).fontColor($r('sys.color.font_secondary'))
+      Text('负责人：' + task.owner).fontSize(12)
+      if (task.description) { Text(task.description).fontSize(12).maxLines(8).textOverflow({ overflow: TextOverflow.Ellipsis }) }
+    }.width(240).padding(12).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private TaskRow(task: DesktopTeamTask) {
+    Column({ space: 4 }) {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 8 }) {
+          Circle().width(7).height(7).fill(task.blocked ? $r('sys.color.warning') : task.status === 'in_progress' ?
+            $r('sys.color.brand') : task.status === 'completed' ? $r('sys.color.font_primary') : $r('sys.color.font_tertiary'))
+          Text(task.subject).fontSize(13).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Image($r('app.media.dsh_queue_chevron_down_outline')).width(14).height(14).supportSvg2(true)
+            .rotate({ angle: this.taskExpanded === task.id ? 180 : 0 }).accessibilityLevel('no')
+        }.width('100%')
+      }.key('desktopTeamTask-' + task.id).width('100%').height(34).padding({ left: 8, right: 8 }).focusOnTouch(false)
+        .accessibilityText(task.subject + ' · ' + this.taskStatus(task)).accessibilitySelected(this.taskExpanded === task.id)
+        .onClick((): void => {
+          this.hoverTask('');
+          this.taskExpanded = this.taskExpanded === task.id ? '' : task.id;
+        })
+        .onHover((hovered: boolean): void => { this.hoverTask(hovered ? task.id : ''); })
+        .bindPopup(this.taskHovered === task.id, { builder: this.TaskPreview(task), placement: Placement.Right,
+          enableArrow: false, systemMaterial: desktopMenuOptions(Placement.Right).systemMaterial })
+      if (this.taskExpanded === task.id) {
+        Column({ space: 4 }) {
+          if (task.description) { Text(task.description).fontSize(13) }
+          Text('负责人：' + task.owner).fontSize(12).fontColor($r('sys.color.font_secondary'))
+        }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 22, right: 8, bottom: 4 })
+      }
+    }.width('100%')
+  }
+
+  @Builder
+  private SharedTasks() {
+    Row({ space: 8 }) {
+      Text('共享任务').fontSize(16).fontWeight(FontWeight.Medium)
+      Text(this.team?.progress ?? '').key('desktopTeamProgress').fontSize(12).layoutWeight(1)
+        .fontColor($r('sys.color.font_secondary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }.width('100%').padding({ left: 8, right: 8 })
+    if (this.team?.failure) {
+      Text('任务记录无效：' + this.team.failure).fontSize(12).padding({ left: 8, right: 8 })
+        .fontColor($r('sys.color.warning'))
+    }
+    ForEach((this.team?.tasks.length ?? 0) > 6 && !this.teamUnfolded ? this.team?.tasks.slice(0, 5) ?? [] :
+      this.team?.tasks ?? [], (task: DesktopTeamTask): void => { this.TaskRow(task) },
+      (task: DesktopTeamTask): string => JSON.stringify(task))
+    if ((this.team?.tasks.length ?? 0) > 6) {
+      Button(this.teamUnfolded ? '收起' : `显示其余 ${(this.team?.tasks.length ?? 5) - 5} 个`,
+        { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopTeamFold').onClick((): void => {
+        this.teamUnfolded = !this.teamUnfolded;
+        this.teamFolds.set(this.sessionId, this.teamUnfolded);
+      })
+    }
+  }
+
+  @Builder
+  private MemberTree() {
+    Row({ space: 8 }) {
+      Text('子智能体').fontSize(16).fontWeight(FontWeight.Medium)
+      Text(this.progress()).fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+    }.width('100%').padding({ left: 8, right: 8 })
+    this.BranchState(this.rootId())
+    if (this.rootRows().length === 0 && this.branch(this.rootId())?.state === 'ready') {
+      Text('没有子智能体').fontSize(13).fontColor($r('sys.color.font_secondary'))
+    }
+    ForEach(this.visibleRows(), (node: DesktopSubagentTreeRow): void => { this.TreeRow(node) },
+      (node: DesktopSubagentTreeRow): string => JSON.stringify([node.row.entry.parentId, node.row.entry.id,
+        node.row.entry.mode, node.row.title, node.row.status, node.parents.length, node.row.tokens,
+        node.row.settledMs, node.row.turnSince, node.row.turnThrough]))
+    if (this.rootRows().length > 6) {
+      Button(this.unfolded ? '收起' : `再显示 ${this.rootRows().length - 5} 个`, { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .onClick((): void => {
+          this.unfolded = !this.unfolded;
+          this.folds.set(this.sessionId, this.unfolded);
+          if (this.unfolded) { this.prepareMetrics(); }
+        })
+    }
+  }
+
   @Builder
   private Panel() {
-    Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Text('子智能体').fontSize(16).fontWeight(FontWeight.Medium)
-        Text(this.progress()).fontSize(12).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
-      }.width('100%').padding({ left: 8, right: 8 })
-      this.BranchState(this.rootId())
-      if (this.rootRows().length === 0 && this.branch(this.rootId())?.state === 'ready') {
-        Text('没有子智能体').fontSize(13).fontColor($r('sys.color.font_secondary'))
-      }
-      Scroll() {
-        Column({ space: 2 }) {
-          ForEach(this.visibleRows(), (node: DesktopSubagentTreeRow): void => { this.TreeRow(node) },
-            (node: DesktopSubagentTreeRow): string => JSON.stringify([node.row.entry.parentId, node.row.entry.id,
-              node.row.entry.mode, node.row.title, node.row.status, node.parents.length, node.row.tokens,
-              node.row.settledMs, node.row.turnSince, node.row.turnThrough]))
-          if (this.rootRows().length > 6) {
-            Button(this.unfolded ? '收起' : `再显示 ${this.rootRows().length - 5} 个`, { buttonStyle: ButtonStyleMode.TEXTUAL })
-              .onClick((): void => {
-                this.unfolded = !this.unfolded;
-                this.folds.set(this.sessionId, this.unfolded);
-                if (this.unfolded) { this.prepareMetrics(); }
-              })
-          }
-        }.width('100%')
-      }.width('100%').constraintSize({ maxHeight: 360 }).align(Alignment.TopStart)
-    }.width(344).padding(12).alignItems(HorizontalAlign.Start)
+    Scroll() {
+      Column({ space: 6 }) {
+        if (this.hasTree()) { this.MemberTree() }
+        if (desktopTeamBoardVisible(this.team)) { this.SharedTasks() }
+      }.width('100%').alignItems(HorizontalAlign.Start).padding(12)
+    }.width(344).constraintSize({ maxHeight: 420 }).align(Alignment.TopStart)
   }
 
   build() {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
       Row({ space: 3 }) {
-        SymbolGlyph($r('sys.symbol.person_2')).fontSize(16).fontColor([$r('sys.color.font_primary')]).accessibilityLevel('no')
+        if (this.hasTree()) {
+          SymbolGlyph($r('sys.symbol.person_2')).fontSize(16).fontColor([$r('sys.color.font_primary')]).accessibilityLevel('no')
+        } else {
+          Image($r('app.media.dsh_team_users_outline')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+        }
         if (!this.shown && this.entries.some((entry: DesktopSubagentEntry): boolean => entry.mode !== 'external' &&
           this.summaries.some((summary: SessionListItem): boolean => summary.id === entry.id && summary.running))) {
           Circle().width(6).height(6).fill($r('sys.color.brand'))
         }
       }
-    }.width(36).height(34).padding(0).focusOnTouch(false).key('desktopSubagentsToggle').accessibilityText('子智能体')
+    }.width(36).height(34).padding(0).focusOnTouch(false).key('desktopSubagentsToggle')
+      .accessibilityText(this.hasTree() ? '子智能体' : '共享任务')
       .onClick((): void => {
         this.shown = !this.shown;
         if (this.shown) { this.prepareMetrics(this.rootId()); }
