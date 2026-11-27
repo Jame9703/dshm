@@ -1,9 +1,11 @@
-import { util } from '@kit.ArkTS';
 import { getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
+import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
+import { DesktopPluginInstall } from './DesktopPluginInstall';
+import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 
 const MARKET_BUNDLE: string = '@deepseek-ai/dsh-experimental-plugin-market-bundle';
@@ -54,6 +56,7 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
 @Component
 export struct DesktopPluginsPane {
   host?: DesktopHostActions;
+  @ObjectLink installer: DesktopPluginInstall;
   @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
   @Prop requestedTitle: string = '';
   @Prop requestedDescription: string = '';
@@ -75,23 +78,32 @@ export struct DesktopPluginsPane {
   @State private nextOffset: number = -1;
   @State private fetchedAt: number = 0;
   @State private market: Object[] = [];
-  @State private spec: string = '';
   @State private status: string = '';
+  @State private catalogError: string = '';
+  @State private catalogBusy: boolean = false;
+  @State private paneWidth: number = 500;
   @State private busy: boolean = false;
-  @State private installId: string = '';
   @State private versionOwner: string = '';
   @State private versions: string[] = [];
   private active: boolean = false;
   private detailRead: number = 0;
+  private refreshAgain: boolean = false;
+  private stopCatalog?: () => void;
+  private installDialog: number = -1;
+  private installOpening: boolean = false;
 
   aboutToAppear(): void {
     this.active = true;
+    this.stopCatalog = this.installer.watchCatalog((): void => { this.refresh(); });
     this.refresh();
     this.requestedBundleChanged();
   }
 
   aboutToDisappear(): void {
     this.active = false;
+    this.stopCatalog?.();
+    this.stopCatalog = undefined;
+    this.closeInstall();
   }
 
   private requestedBundleChanged(): void {
@@ -120,10 +132,17 @@ export struct DesktopPluginsPane {
 
   private async refresh(): Promise<void> {
     const host = this.host;
-    if (host === undefined || this.busy) {
-      return;
-    }
-    this.busy = true;
+    if (host === undefined || !this.active) { return; }
+    if (this.catalogBusy) { this.refreshAgain = true; return; }
+    this.catalogBusy = true;
+    do {
+      this.refreshAgain = false;
+      await this.loadCatalog(host);
+    } while (this.active && this.refreshAgain);
+    this.catalogBusy = false;
+  }
+
+  private async loadCatalog(host: DesktopHostActions): Promise<void> {
     const results = await Promise.all([
       host.call('pluginManager/listBundles'),
       host.call('pluginManager/listPlugins'),
@@ -132,7 +151,6 @@ export struct DesktopPluginsPane {
     if (!this.active) {
       return;
     }
-    this.busy = false;
     this.bundles = pluginRows(results[0], true);
     this.plugins = pluginRows(results[1], false);
     this.marketError = desktopHostProblem(results[2]);
@@ -151,7 +169,7 @@ export struct DesktopPluginsPane {
         this.nextOffset = -1;
       }
     }
-    this.status = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
+    this.catalogError = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
   }
 
   private async saveSources(urls: string[]): Promise<void> {
@@ -224,7 +242,6 @@ export struct DesktopPluginsPane {
     if (!this.active) {
       return;
     }
-    this.installId = '';
     this.busy = false;
     const value = getRecord(result.value, 'result') ?? result.value;
     const outcome: RpcResult = { ok: result.ok, value: value, error: result.error };
@@ -234,45 +251,38 @@ export struct DesktopPluginsPane {
       '已保存，重启核心后生效' : '操作已完成');
   }
 
-  private async install(spec: string, registry: string = ''): Promise<void> {
-    const host = this.host;
-    if (host === undefined || this.busy || spec.trim().length === 0) {
-      return;
-    }
-    const options: Record<string, Object> = {};
-    if (registry.length > 0) {
-      options['registry'] = registry;
-    }
-    this.busy = true;
-    const result = await host.call('pluginManager/inspect', { 'spec': spec.trim(), 'options': options });
-    if (!this.active) {
-      return;
-    }
-    this.busy = false;
-    this.status = desktopHostProblem(result);
-    if (!result.ok || getString(result.value, 'status') !== 'accepted') {
-      this.status = this.status || getString(result.value, 'reason') ||
-        getString(result.value, 'problem') || '宿主无法识别插件';
-      return;
-    }
-    this.confirm('安装插件', getString(result.value, 'name') || spec.trim(), (): void => {
-      if (this.busy) {
-        return;
-      }
-      this.installId = util.generateRandomUUID();
-      options['requestId'] = this.installId;
-      this.mutate('pluginManager/installBundle', { 'spec': spec.trim(), 'options': options });
-    });
+  @Builder
+  private InstallDialog() {
+    DesktopPluginInstallDialog({ installer: this.installer, onClose: (): void => { this.closeInstall(); } })
   }
 
-  private async cancelInstall(): Promise<void> {
-    if (this.host === undefined || this.installId.length === 0) {
-      return;
+  private async openInstall(spec: string = '', registry: string = ''): Promise<void> {
+    if (!this.active || this.installOpening || this.installDialog >= 0) { return; }
+    this.installOpening = true;
+    this.installer.offer(spec, registry);
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.InstallDialog(); },
+        alignment: DialogAlignment.Center, width: Math.max(240, Math.min(496, this.paneWidth - 28)),
+        isModal: true, autoCancel: true, cornerRadius: 22, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onDidDisappear: (): void => {
+          this.installDialog = -1;
+          this.installer.closeInspection();
+        }
+      });
+      if (this.active) { this.installDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.active) { prompt.showToast({ message: $r('app.string.desktop_plugin_install_open_failed') }); }
+    } finally {
+      this.installOpening = false;
     }
-    const result = await this.host.call('pluginManager/cancelInstall', { 'requestId': this.installId });
-    if (this.active && getString(result.value, 'status') === 'too-late') {
-      this.status = '安装已进入应用阶段，请等待完成';
-    }
+  }
+
+  private closeInstall(): void {
+    if (this.installDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.installDialog); }
   }
 
   private async listVersions(row: DesktopPluginRow): Promise<void> {
@@ -318,7 +328,7 @@ export struct DesktopPluginsPane {
       } });
     }
     if (row.installSpec.length > 0) {
-      result.push({ value: '安装', action: (): void => { this.install(row.installSpec); } });
+      result.push({ value: '安装', action: (): void => { this.openInstall(row.installSpec); } });
     }
     if (row.update) {
       result.push({ value: '检查更新', action: (): void => { this.listVersions(row); } });
@@ -344,7 +354,7 @@ export struct DesktopPluginsPane {
         (getBoolean(compatibility, 'compatible') !== true && getBoolean(compatibility, 'exempted') !== true)) {
         return [];
       }
-      return [{ value: version, action: (): void => { this.install(spec, registry); } }];
+      return [{ value: version, action: (): void => { this.openInstall(spec, registry); } }];
     });
   }
 
@@ -495,7 +505,7 @@ export struct DesktopPluginsPane {
     Column({ space: 14 }) {
       Row({ space: 8 }) {
         Text('插件').fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
-        Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
+        Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy && !this.catalogBusy)
           .onClick((): void => { this.refresh(); })
         Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy).onClick(this.onWeb)
       }
@@ -517,22 +527,25 @@ export struct DesktopPluginsPane {
                 }
               } }
             ], desktopMenuOptions(Placement.BottomLeft))
-          if (this.tab === 'bundles') {
-            TextInput({ 'text': this.spec, placeholder: 'npm 包名或插件仓库地址' }).layoutWeight(1)
-              .onChange((value: string): void => { this.spec = value; })
-            Button('安装插件').enabled(!this.busy && this.spec.trim().length > 0)
-              .onClick((): void => { this.install(this.spec); })
+          Blank()
+          if (this.tab === 'bundles' || this.installer.phase !== 'idle') {
+            Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.NORMAL }) {
+              Row({ space: 6 }) {
+                Image($r('app.media.dsh_reference_menu_plus')).width(16).height(16).supportSvg2(true)
+                  .draggable(false).accessibilityLevel('no')
+                Text(this.installer.phase === 'idle' ? $r('app.string.desktop_plugin_install_add') :
+                  $r('app.string.desktop_plugin_install_task')).fontSize(14).fontColor($r('sys.color.font_primary'))
+              }
+            }.height(34).borderRadius(8).padding({ left: 10, right: 10 }).key('desktopPluginOpenInstall')
+            .onClick((): void => { this.openInstall(); })
           }
-          if (this.installId.length > 0) {
-            Button('取消安装', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.cancelInstall(); })
-          }
-          if (this.busy) {
+          if (this.busy || this.catalogBusy) {
             LoadingProgress().width(24).height(24)
           }
         }.width('100%')
       }
-      if (this.status.length > 0) {
-        Text(this.status).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
+      if (this.status || this.catalogError) {
+        Text(this.status || this.catalogError).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
       }
       Scroll() {
         Column({ space: 8 }) {
@@ -548,7 +561,7 @@ export struct DesktopPluginsPane {
               ForEach(this.tab === 'bundles' ? this.bundles : this.plugins, (row: DesktopPluginRow) => {
                 this.PluginRow(row, this.tab === 'bundles')
               }, (row: DesktopPluginRow): string => JSON.stringify(row))
-              if (!this.busy && (this.tab === 'bundles' ? this.bundles.length : this.plugins.length) === 0) {
+              if (!this.busy && !this.catalogBusy && (this.tab === 'bundles' ? this.bundles.length : this.plugins.length) === 0) {
                 Text('暂无插件').fontColor($r('sys.color.font_secondary'))
               }
             }
@@ -559,5 +572,6 @@ export struct DesktopPluginsPane {
       .width('100%').layoutWeight(1).align(Alignment.TopStart)
     }
     .padding(20).height('100%').layoutWeight(1).alignItems(HorizontalAlign.Start)
+    .onAreaChange((_previous: Area, current: Area): void => { this.paneWidth = Number(current.width); })
   }
 }

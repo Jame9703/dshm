@@ -44,7 +44,7 @@ export interface ForwardedEvent {
 }
 
 /**
- * 上游转发白名单（19 条）。
+ * 原生客户端消费的上游转发事件。
  *
  * 纪律：**不在本表的事件不会到达客户端**。想用某个上游事件前先在这里查；
  * 查不到说明要么上游没转发它，要么我们还没同步白名单——两种情况都必须先核实，
@@ -68,6 +68,9 @@ export const FORWARDED_EVENTS: ForwardedEvent[] = [
   { event: 'cordis/inspect-query', mode: ForwardedEventMode.EMIT, purpose: '插件检视查询 → 插件页（当前未接入）' },
   { event: 'cordis/inspect-query-resolved', mode: ForwardedEventMode.EMIT, purpose: '插件检视已决 → 插件页（当前未接入）' },
   { event: 'llm/adapters-updated', mode: ForwardedEventMode.EMIT, purpose: '模型适配器变化 → 模型页刷新' },
+  { event: 'plugin-manager/changed', mode: ForwardedEventMode.EMIT, purpose: '插件清单变化 → 管理页刷新' },
+  { event: 'plugin-manager/install-state', mode: ForwardedEventMode.EMIT, purpose: '插件安装进度 → 安装任务' },
+  { event: 'plugin-manager/install-log', mode: ForwardedEventMode.EMIT, purpose: '插件安装输出 → 安装任务' },
   { event: 'settings/document-updated', mode: ForwardedEventMode.EMIT, purpose: '设置文档变化 → 设置页刷新' },
   { event: 'user-questions/request', mode: ForwardedEventMode.WATERFALL, purpose: '**用户提问 → 提问卡**（需应答）' }
 ];
@@ -104,6 +107,9 @@ export const EVENT_LLM_ADAPTERS_UPDATED: string = 'llm/adapters-updated';
 export const EVENT_COMMANDS_CHANGE: string = 'commands/change';
 /** 目标激活状态变化 */
 export const EVENT_GOAL_ACTIVATION_CHANGED: string = 'goal/activation-changed';
+export const EVENT_PLUGIN_MANAGER_CHANGED: string = 'plugin-manager/changed';
+export const EVENT_PLUGIN_INSTALL_STATE: string = 'plugin-manager/install-state';
+export const EVENT_PLUGIN_INSTALL_LOG: string = 'plugin-manager/install-log';
 
 // ── 会话轨迹事件的**命名空间前缀** ──
 //

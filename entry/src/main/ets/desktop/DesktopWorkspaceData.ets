@@ -6,6 +6,7 @@ import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LL
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT, WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopPluginInstall } from './DesktopPluginInstall';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
 import type { DesktopAccountNotice } from './DesktopAccountNotices';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -64,6 +65,7 @@ export class DesktopWorkspaceData {
   readonly conversation: DesktopConversation;
   readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
+  readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
   readonly reading: DesktopSessionReading;
   readonly accountNotices: DesktopAccountNotices;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
@@ -147,10 +149,12 @@ export class DesktopWorkspaceData {
         });
         this.readConversationPreferences();
         this.actions.modelCatalogChanged();
+        this.pluginInstall.reconnect();
         if (this.accountWatchEnabled) { this.accountNotices.connect(); }
       },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
+        this.pluginInstall.observe(frame);
         const event = getString(frame, 'event');
         if (event === EVENT_COMMANDS_CHANGE) {
           this.conversation.invalidateCommands();
@@ -327,6 +331,7 @@ export class DesktopWorkspaceData {
 
   stop(): void {
     this.active = false;
+    this.pluginInstall.dispose();
     this.accountNotices.stop();
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();

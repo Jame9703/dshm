@@ -186,6 +186,7 @@ struct DesktopWorkspace {
   @State private settingsOpen: boolean = false;
   private settingsDialog: number = -1;
   private settingsSection: string = 'settings.general';
+  private settingsOpeningPlugins: boolean = false;
   @State @Watch('syncReading') private panel: string = 'session';
   @State private pluginName: string = '';
   private pluginTitle: string = '';
@@ -1890,7 +1891,8 @@ struct DesktopWorkspace {
   private SettingsDialog() {
     IndexContent({ desktopSection: this.settingsSection,
       onCloseSettings: (): void => { this.closeSettings(); },
-      onSettingsSection: (section: string): void => { this.settingsSection = section; } })
+      onSettingsSection: (section: string): void => { this.settingsSection = section; },
+      onOpenPlugins: (): void => { this.settingsOpeningPlugins = true; } })
   }
 
   private async openSettings(section: string = ''): Promise<void> {
@@ -1924,7 +1926,10 @@ struct DesktopWorkspace {
   private settingsDismissed(): void {
     this.settingsDialog = -1;
     this.settingsOpen = false;
+    const showPlugins = this.settingsOpeningPlugins;
+    this.settingsOpeningPlugins = false;
     if (this.pageActive) {
+      if (showPlugins) { this.openPlugins(); }
       this.reloadShortcutBindings();
       this.syncReading();
     }
@@ -3576,7 +3581,7 @@ struct DesktopWorkspace {
             if (this.panel !== 'session' || !this.dockFullscreen()) { this.Sidebar() }
             if (this.panel === 'plugins' && this.ready && this.data !== undefined) {
               DesktopPluginsPane({
-                host: this.data.actions,
+                host: this.data.actions, installer: this.data.pluginInstall,
                 requestedBundle: this.pluginName, requestedTitle: this.pluginTitle,
                 requestedDescription: this.pluginDescription,
                 onWeb: (): void => { this.openWeb(false, 'plugins'); }

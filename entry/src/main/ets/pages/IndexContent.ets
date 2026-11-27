@@ -358,6 +358,7 @@ export struct IndexContent {
   desktopSection: string = '';
   onCloseSettings: () => void = (): void => {};
   onSettingsSection: (section: string) => void = (_section: string): void => {};
+  onOpenPlugins: () => void = (): void => {};
   // ── 形态 ──
   @State mode: LayoutMode = LayoutMode.SINGLE;
   /**
@@ -4340,6 +4341,11 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
   /** 切右栏面板（经注册表校验：内容没做的候选切不过去） */
   /** 切设置分区（经注册表校验；写进 `NavigationState.settingsSection`——唯一真值） */
   private selectSettingsSection(sectionId: string): void {
+    if (this.desktopSettingsEntry && sectionId === 'settings.plugins') {
+      this.onOpenPlugins();
+      this.closeDesktopSettings();
+      return;
+    }
     this.nav = openSettings(this.nav, sectionId, this.panelRegistry);
     if (this.desktopSettingsEntry) { this.onSettingsSection(this.nav.settingsSection); }
   }
