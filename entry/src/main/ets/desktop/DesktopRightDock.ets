@@ -92,7 +92,17 @@ export function desktopDockTab(layout: DesktopDockLayout, index: number = layout
   return pane?.tabs.find((tab: DesktopDockTab): boolean => tab.id === pane.active);
 }
 
-export function desktopDockOpen(layout: DesktopDockLayout, tab: DesktopDockTab, update: boolean = true): DesktopDockLayout {
+export function desktopDockOpen(layout: DesktopDockLayout, tab: DesktopDockTab, update: boolean = true,
+  destination?: number): DesktopDockLayout {
+  if (destination !== undefined && layout.panes[destination] !== undefined) {
+    layout = desktopDockSeatFloat(layout, tab.id, destination);
+    const existing = layout.panes.findIndex((pane: DesktopDockPane): boolean =>
+      pane.tabs.some((item: DesktopDockTab): boolean => item.id === tab.id));
+    if (existing >= 0 && existing !== destination) {
+      layout = desktopDockMoveTab(layout, existing, tab.id, destination);
+    }
+    layout = desktopDockPresentation(layout, destination, true, layout.fullscreen, '');
+  }
   const floating = layout.floats.findIndex((item: DesktopDockFloat): boolean => item.tab.id === tab.id);
   if (floating >= 0) {
     const next = copyDock(layout);

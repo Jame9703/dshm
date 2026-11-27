@@ -75,6 +75,11 @@ interface DesktopDockDrag {
   tab: string;
 }
 
+interface DesktopSessionDrag {
+  owner: string;
+  session: SessionListItem;
+}
+
 interface DesktopDockDrop {
   pane: number;
   before: string;
@@ -112,6 +117,10 @@ struct DesktopWorkspace {
   private floatOrigin?: DesktopDockRect;
   private readonly terminalSelections = new Map<string, string>();
   private dockBounds?: Area;
+  private workbenchBounds?: Area;
+  private sessionContentBounds?: Area;
+  @State private sessionDrag?: DesktopSessionDrag = undefined;
+  @State private sessionDropPane: number = -1;
   private dockDrag?: DesktopDockDrag;
   private dockDrop?: DesktopDockDrop;
   private dockPanActive: boolean = false;
@@ -252,6 +261,7 @@ struct DesktopWorkspace {
   onPageHide(): void {
     this.pageVisible = false;
     this.shortcutsOpen = false;
+    this.clearSessionDrag();
     this.syncReading();
   }
 
@@ -827,16 +837,16 @@ struct DesktopWorkspace {
     else { this.openRelatedSession(entry.id, title, entry); }
   }
 
-  private showDockChat(target: DesktopDockChatTarget, title: string): void {
+  private showDockChat(target: DesktopDockChatTarget, title: string, destination?: number): void {
     if (!this.sessionId || !target.id || target.id === this.sessionId) { return; }
     const tab = desktopDockChatTab(target, title);
     const exists = this.rightDock.panes.some((pane: DesktopDockPane): boolean =>
       pane.tabs.some((item: DesktopDockTab): boolean => item.id === tab.id)) ||
       this.rightDock.floats.some((panel: DesktopDockFloat): boolean => panel.tab.id === tab.id);
-    const layout = !exists && this.rightDock.panes[0].tabs.length > 0 && this.canSplitDock() &&
+    const layout = destination === undefined && !exists && this.rightDock.panes[0].tabs.length > 0 && this.canSplitDock() &&
       this.dockAvailableWidth() >= DOCK_SPLIT_MIN_WIDTH ?
       desktopDockSplit(this.rightDock) : this.rightDock;
-    this.setDock(desktopDockOpen(layout, tab));
+    this.setDock(desktopDockOpen(layout, tab, true, destination));
   }
 
   private openSubagentParent(child: DesktopSubagentEntry): void {
@@ -1430,6 +1440,7 @@ struct DesktopWorkspace {
   }
 
   private clearDockGesture(): void {
+    this.clearSessionDrag();
     this.endDockDrag(false);
     this.dockTabBounds.clear();
     this.dockGripHover = 0;
@@ -1909,6 +1920,86 @@ struct DesktopWorkspace {
     .width('100%')
   }
 
+  private canDragSession(session: SessionListItem, archived: boolean): boolean {
+    return this.panel === 'session' && this.ready && !!this.sessionId && this.sessionId !== session.id &&
+      !session.blank && !archived;
+  }
+
+  private beginSessionDrag(event: GestureEvent, session: SessionListItem, archived: boolean): void {
+    if (!this.canDragSession(session, archived)) { return; }
+    this.sessionDrag = { owner: this.sessionId, session: session };
+    this.updateSessionDrag(event);
+  }
+
+  private updateSessionDrag(event: GestureEvent): void {
+    if (this.sessionDrag?.owner !== this.sessionId || this.panel !== 'session') { return; }
+    const pointer = event.fingerInfos?.[0] ?? event.fingerList[0];
+    if (pointer === undefined) { return; }
+    const x = pointer.globalX - Number(this.workbenchBounds?.globalPosition.x ?? 0);
+    const y = pointer.globalY - Number(this.workbenchBounds?.globalPosition.y ?? 0);
+    this.dockDragX = Math.max(0, Math.min(this.workbenchWidth - 160, x + 12));
+    this.dockDragY = Math.max(0, Math.min(this.workbenchHeight - 28, y + 9));
+    if (this.rightDock.expanded) {
+      this.sessionDropPane = this.rightDock.panes.findIndex((_pane: DesktopDockPane, index: number): boolean =>
+        this.dockAreaContains(this.dockPaneBounds.get(index), pointer.globalX, pointer.globalY));
+    } else {
+      const rect = this.sessionDropRect(this.sessionContentBounds, true);
+      this.sessionDropPane = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height ?
+        this.rightDock.focus : -1;
+    }
+  }
+
+  private clearSessionDrag(): void {
+    this.sessionDrag = undefined;
+    this.sessionDropPane = -1;
+  }
+
+  private dropSession(event: GestureEvent): void {
+    this.updateSessionDrag(event);
+    const drag = this.sessionDrag;
+    const pane = this.sessionDropPane;
+    this.clearSessionDrag();
+    if (drag === undefined || drag.owner !== this.sessionId || this.panel !== 'session' ||
+      this.rightDock.panes[pane] === undefined || this.archivedIds.includes(drag.session.id)) { return; }
+    const session = drag.session;
+    this.showDockChat({ id: session.id, subagent: desktopSubagentFromSummary(session) }, session.title, pane);
+  }
+
+  private sessionDropRect(bounds: Area | undefined, collapsed: boolean): DesktopDockRect {
+    const width = Number(bounds?.width ?? 0);
+    const openWidth = this.dockAutoFullscreen() ? width : Math.min(width, this.dockWidth());
+    const inset = collapsed ? width - openWidth : 0;
+    return {
+      x: Number(bounds?.globalPosition.x ?? 0) - Number(this.workbenchBounds?.globalPosition.x ?? 0) + inset,
+      y: Number(bounds?.globalPosition.y ?? 0) - Number(this.workbenchBounds?.globalPosition.y ?? 0),
+      width: width - inset, height: Number(bounds?.height ?? 0)
+    };
+  }
+
+  @Builder
+  private SessionDropZone(index: number, rect: DesktopDockRect, quiet: boolean) {
+    if (rect.width > 0 && rect.height > 0) {
+      Stack() {
+        if (!quiet || this.sessionDropPane === index) {
+          Column({ space: 8 }) {
+            Image($r('app.media.dsh_sidebar_panel_outline')).width(20).height(20).rotate({ angle: 180 })
+              .supportSvg2(true).draggable(false)
+              .fillColor($r('sys.color.font_secondary')).accessibilityLevel('no')
+            Text($r('app.string.desktop_session_drop')).fontSize(13).fontWeight(FontWeight.Medium)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_secondary'))
+          }.width('100%').height('100%').padding(12).justifyContent(FlexAlign.Center)
+            .borderRadius(12).border({ width: 1.5, style: BorderStyle.Dashed,
+              color: this.sessionDropPane === index ? $r('sys.color.ohos_id_color_activated') :
+                $r('app.color.workspace_border') })
+            .backgroundColor(controlMaterial() === undefined ? $r('app.color.workspace_panel') : Color.Transparent)
+            .systemMaterial(controlMaterial())
+        }
+      }.key('desktopSessionDrop-' + index).width(rect.width).height(rect.height).padding(8)
+        .position({ x: rect.x, y: rect.y }).zIndex(this.rightDock.floats.length + 1)
+        .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+    }
+  }
+
   @Builder
   private SessionRow(group: DesktopWorkspaceGroup, session: SessionListItem, archived: boolean) {
     Row() {
@@ -1938,6 +2029,11 @@ struct DesktopWorkspace {
       .accessibilityText(this.accessibilityLabel(this.sessionLabel(session)))
       .accessibilityDescription(archived ? '已归档' : '')
       .accessibilitySelected(this.sessionId === session.id)
+      .priorityGesture(PanGesture({ direction: PanDirection.Horizontal, distance: 10 })
+        .onActionStart((event: GestureEvent): void => { this.beginSessionDrag(event, session, archived); })
+        .onActionUpdate((event: GestureEvent): void => { this.updateSessionDrag(event); })
+        .onActionEnd((event: GestureEvent): void => { this.dropSession(event); })
+        .onActionCancel((): void => { this.clearSessionDrag(); }))
       .onClick((): void => {
         if (archived) { this.openSessionById(session.id); return; }
         this.selectSession(group, session);
@@ -2248,6 +2344,7 @@ struct DesktopWorkspace {
       }
     }
     .height('100%').layoutWeight(1)
+    .onAreaChange((_, area: Area): void => { this.sessionContentBounds = area; })
   }
 
   private dockMenu(index: number): MenuElement[] {
@@ -2833,6 +2930,17 @@ struct DesktopWorkspace {
             this.FloatingDockPane(panel)
           }, (panel: DesktopDockFloat): string => this.sessionId + ':' + panel.tab.id)
         }
+        if (this.sessionDrag !== undefined && this.panel === 'session') {
+          if (this.rightDock.expanded) {
+            this.SessionDropZone(0, this.sessionDropRect(this.dockPaneBounds.get(0), false),
+              this.rightDock.panes.length > 1)
+            if (this.rightDock.panes.length > 1) {
+              this.SessionDropZone(1, this.sessionDropRect(this.dockPaneBounds.get(1), false), true)
+            }
+          } else {
+            this.SessionDropZone(this.rightDock.focus, this.sessionDropRect(this.sessionContentBounds, true), false)
+          }
+        }
         if (this.pageVisible && !this.shortcutsOpen) {
           Row() {
             ForEach(this.shortcutBindings, (row: DesktopShortcutRow): void => {
@@ -2849,12 +2957,15 @@ struct DesktopWorkspace {
         if (this.archiveNotice !== undefined) {
           this.ArchiveNoticeContent(this.archiveNotice)
         }
-        if (this.dockDragTitle) {
+        if (this.sessionDrag !== undefined) {
+          this.DockDragPreview(this.sessionDrag.session.title)
+        } else if (this.dockDragTitle) {
           this.DockDragPreview(this.dockDragTitle)
         }
       }
       .width('100%').height('100%')
       .onAreaChange((_, area: Area): void => {
+        this.workbenchBounds = area;
         this.workbenchWidth = Number(area.width);
         this.workbenchHeight = Number(area.height);
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));

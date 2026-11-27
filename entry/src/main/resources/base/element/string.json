@@ -433,6 +433,10 @@
       "value": "加载更早消息"
     },
     {
+      "name": "desktop_session_drop",
+      "value": "在侧边栏打开"
+    },
+    {
       "name": "desktop_chat_pending",
       "value": "本轮需要确认，打开 WebUI 处理"
     },

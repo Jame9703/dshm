@@ -413,6 +413,10 @@
       "value": "Load earlier messages"
     },
     {
+      "name": "desktop_session_drop",
+      "value": "Open in sidebar"
+    },
+    {
       "name": "desktop_chat_pending",
       "value": "This turn needs input. Open it in WebUI."
     },
