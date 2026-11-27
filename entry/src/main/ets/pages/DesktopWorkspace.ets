@@ -12,6 +12,7 @@ import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
 import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { DesktopFileSearchPreferenceBook } from '../desktop/DesktopFileSearchPreference';
 import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
 import { DesktopChangeTarget } from '../desktop/DesktopArtifacts';
 import { DesktopPlanPreviewPane } from '../desktop/DesktopPlanPreviewPane';
@@ -280,6 +281,7 @@ struct DesktopWorkspace {
   private selectedSubagent?: DesktopSubagentEntry;
   private readonly subagentAddresses: Map<string, DesktopSubagentEntry> = new Map();
   private data?: DesktopWorkspaceData;
+  private fileSearchBook?: DesktopFileSearchPreferenceBook;
   private readonly replyMedia = new DesktopReplyMedia();
   @State private workbenchWidth: number = 440;
   @State private workbenchHeight: number = 640;
@@ -3684,12 +3686,28 @@ struct DesktopWorkspace {
     return this.sessionSummaries.find((row: SessionListItem): boolean => row.id === tab.chat?.id)?.cwd ?? this.selectedSessionDirectory;
   }
 
+  private fileSearchPreferences(): DesktopFileSearchPreferenceBook | undefined {
+    if (this.fileSearchBook === undefined) {
+      const context = this.getUIContext().getHostContext();
+      if (context !== undefined) { this.fileSearchBook = new DesktopFileSearchPreferenceBook(context); }
+    }
+    return this.fileSearchBook;
+  }
+
+  private fileSearchRoot(tab: DesktopDockTab): string {
+    const session = tab.sourceSessionId;
+    return session === undefined ? this.selectedSessionDirectory :
+      this.sessionSummaries.find((row: SessionListItem): boolean => row.id === session)?.cwd ?? '';
+  }
+
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
       DesktopFilesPane({ host: this.data?.actions,
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
         sessionId: tab.sourceSessionId ?? this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
+        workspaceRoot: this.fileSearchRoot(tab), shown: this.dockTabShown(index, tab.id),
+        preferenceBook: tab.kind === DesktopDockKind.FILES ? this.fileSearchPreferences() : undefined,
         onHide: (): void => this.closeDockTab(index, tab.id),
         onOpenFile: (path: string, name: string): void => {
           this.focusDockPane(index);
