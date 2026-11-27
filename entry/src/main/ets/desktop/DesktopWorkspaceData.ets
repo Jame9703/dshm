@@ -9,6 +9,7 @@ import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LL
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
+import { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
 import type { DesktopTheme } from './DesktopTheme';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
@@ -77,6 +78,7 @@ export class DesktopWorkspaceData {
   readonly interactions: DesktopInteractions;
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
   readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
+  readonly cordis: DesktopCordisRuntime = new DesktopCordisRuntime(this.actions);
   readonly connectorAccounts: DesktopConnectorAccounts;
   readonly reading: DesktopSessionReading;
   readonly accountNotices: DesktopAccountNotices;
@@ -167,12 +169,14 @@ export class DesktopWorkspaceData {
         this.actions.modelCatalogChanged();
         this.pluginInstall.reconnect();
         this.connectorAccounts.reconnect();
+        this.cordis.reconnect();
         if (this.accountWatchEnabled) { this.accountNotices.connect(); }
       },
       onEvent: (frame: Object): void => {
         this.interactions.onEvent(frame);
         this.pluginInstall.observe(frame);
         const event = getString(frame, 'event');
+        this.cordis.observe(event);
         if (event === EVENT_COMMANDS_CHANGE) {
           this.conversation.invalidateCommands();
           this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.conversation.invalidateCommands());
@@ -392,6 +396,7 @@ export class DesktopWorkspaceData {
     this.active = false;
     this.pluginInstall.dispose();
     this.connectorAccounts.dispose();
+    this.cordis.dispose();
     this.accountNotices.stop();
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();
@@ -431,6 +436,8 @@ export class DesktopWorkspaceData {
     const id = args?.[0];
     const running = args?.[1];
     if (typeof id !== 'string' || typeof running !== 'boolean' || !this.active) { return; }
+    // Defining or removing a stopped plugin may finish without a Cordis broadcast.
+    if (!running) { this.cordis.refresh(); }
     const previous = this.sessions.find((row: SessionListItem): boolean => row.id === id);
     if (previous === undefined) {
       if (this.unlistedRunning.has(id) === running) { return; }
@@ -522,6 +529,7 @@ export class DesktopWorkspaceData {
           if (this.active) {
             this.accountWatchEnabled = true;
             this.accountNotices.connect();
+            this.cordis.start();
           }
         });
       }

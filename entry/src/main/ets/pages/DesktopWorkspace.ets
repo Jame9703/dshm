@@ -58,6 +58,7 @@ import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } fr
 import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
+import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
   WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
@@ -2900,6 +2901,12 @@ struct DesktopWorkspace {
         this.WorkspaceTree()
       } else {
         Blank()
+      }
+      if (this.ready && this.data !== undefined) {
+        DesktopCordisControl({
+          runtime: this.data.cordis, sessionId: this.sessionId, collapsed: this.sidebarCollapsed,
+          onWeb: (session: string): void => { this.openWeb(false, '', session); }
+        })
       }
       this.SidebarMenu(true)
     }
