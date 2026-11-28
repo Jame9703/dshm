@@ -61,7 +61,7 @@ export struct DesktopTimelineOverview {
         Row() {
           DesktopTimelineProgressBar({ progress: this.tree?.progress ?? 0, status: this.tree?.status ?? 'pending',
             parts: this.segmented ? this.tree?.parts : undefined, decimals: this.decimals,
-            progressKey: 'desktopTimelineTreeProgress' })
+            progressKey: 'desktopTimelineTreeProgress', animateFlow: this.active })
         }.layoutWeight(1)
         Text(desktopTimelinePercent(this.tree?.progress ?? 0, this.decimals) + '%').fontSize(24).fontWeight(FontWeight.Medium)
       }.width('100%')

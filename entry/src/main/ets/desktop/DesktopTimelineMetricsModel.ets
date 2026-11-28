@@ -20,6 +20,13 @@ export function desktopTimelineEstimate(elapsed: number, progress: number): stri
   return '≈' + desktopTimelineDuration(Math.max(1, minutes) * DESKTOP_TIMELINE_MINUTE);
 }
 
+export function desktopTimelinePeriodLabel(ms: number): string {
+  const minutes = ms / DESKTOP_TIMELINE_MINUTE;
+  if (minutes >= 1440) { return Number((minutes / 1440).toFixed(2)) + 'd'; }
+  if (minutes >= 60) { return Number((minutes / 60).toFixed(2)) + 'h'; }
+  return Number(minutes.toFixed(2)) + 'm';
+}
+
 export function desktopTimelineWeight(weight: number): string {
   return String(Number(weight.toFixed(2)));
 }

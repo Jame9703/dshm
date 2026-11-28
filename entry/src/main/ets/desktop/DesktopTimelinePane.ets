@@ -1,6 +1,6 @@
 import { dialogMaterial } from 'platform';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
-import { getField, getNumber, getRecord, getString, randomUuid } from 'connection';
+import { getArray, getField, getNumber, getRecord, getString, randomUuid } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTimelineRuler } from './DesktopTimelineRuler';
@@ -14,13 +14,13 @@ import type { DesktopTimelinePlayback } from './DesktopTimelineControl';
 import { desktopTimelineDiscussionKey, desktopTimelineDiscussionNotice, desktopTimelineDiscussionPayload,
   desktopTimelineOwnAnnotation, TIMELINE_DISCUSSION_LIMIT, TIMELINE_PRIORITIES } from './DesktopTimelineActions';
 import type { DesktopTimelineDiscussionTarget, DesktopTimelineNoticeLabels } from './DesktopTimelineActions';
-import { desktopTimelineStatus, readDesktopTimeline } from './DesktopTimelineModel';
+import { desktopTimelineStatus, emptyDesktopTimelineBrowse, readDesktopTimeline } from './DesktopTimelineModel';
 import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import { DesktopTimelineProgressBar } from './DesktopTimelineProgressBar';
 import { DesktopTimelineOverview } from './DesktopTimelineOverview';
 import { DesktopTimelineTaskMetrics } from './DesktopTimelineTaskMetrics';
-import { desktopTimelineDuration, desktopTimelineWeight } from './DesktopTimelineMetricsModel';
-import type { DesktopTimelineLocation, DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
+import { desktopTimelineDuration, desktopTimelinePeriodLabel, desktopTimelineWeight } from './DesktopTimelineMetricsModel';
+import type { DesktopTimelineBrowseState, DesktopTimelineLocation, DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
 
 interface TimelineRemoveTarget {
@@ -54,6 +54,8 @@ export struct DesktopTimelinePane {
   @Prop @Watch('activeChanged') active: boolean = false;
   @Prop writable: boolean = false;
   @Prop running: boolean = false;
+  @Prop @Watch('savedBrowseChanged') savedBrowse: DesktopTimelineBrowseState = emptyDesktopTimelineBrowse();
+  onBrowse: (session: string, state: DesktopTimelineBrowseState) => void = (): void => {};
   @Prop progressDecimals: number = 2;
   @Prop segmentedProgress: boolean = true;
   @Prop linkLost: boolean = false;
@@ -67,8 +69,7 @@ export struct DesktopTimelinePane {
   @State private view: DesktopTimelineView = readDesktopTimeline();
   @State private viewRevision: number = 0;
   @State private tab: string = 'tasks';
-  @State private treeId: string = '';
-  @State private folded: string[] = [];
+  @State private browse: DesktopTimelineBrowseState = emptyDesktopTimelineBrowse();
   @State private rulerVisited: boolean = false;
   @State private taskTrail: TimelineDetailTarget[] = [];
   @State private reportTrail: TimelineDetailTarget[] = [];
@@ -107,6 +108,7 @@ export struct DesktopTimelinePane {
 
   aboutToAppear(): void {
     this.mounted = true;
+    this.savedBrowseChanged();
     this.openingChanged();
     this.activeChanged();
   }
@@ -205,9 +207,17 @@ export struct DesktopTimelinePane {
     }
   }
 
+  private savedBrowseChanged(): void {
+    if (this.browse !== this.savedBrowse) { this.browse = this.savedBrowse; }
+  }
+
+  private saveBrowse(state: DesktopTimelineBrowseState): void {
+    this.browse = state;
+    this.onBrowse(this.sessionId, state);
+  }
+
   private selectedTree(): DesktopTimelineTree | undefined {
-    return this.view.trees.find((tree: DesktopTimelineTree): boolean => tree.id === (this.treeId || this.view.activeTree)) ??
-      this.view.trees[0];
+    return this.view.trees.find((tree: DesktopTimelineTree): boolean => tree.id === (this.browse.tree || this.view.activeTree));
   }
 
   private treeOptions(): MenuElement[] {
@@ -217,17 +227,39 @@ export struct DesktopTimelinePane {
   }
 
   private selectTree(id: string): void {
-    this.treeId = id;
-    this.folded = [];
+    if (this.browse.tree !== id) {
+      this.saveBrowse({ tree: id, folded: this.browse.folded, discussionOpen: this.browse.discussionOpen });
+    }
     this.taskTrail = [];
     this.moveScroll(0);
     this.publishTaskRoot();
   }
 
-  private isFolded(id: string): boolean { return this.folded.includes(id); }
+  private treeIndex(tree?: DesktopTimelineTree): number {
+    return this.view.trees.findIndex((row: DesktopTimelineTree): boolean => row.id === tree?.id);
+  }
+
+  private selectAdjacent(index: number): void {
+    const tree = this.view.trees[index];
+    if (tree !== undefined) { this.selectTree(tree.id); }
+  }
+
+  private isFolded(id: string): boolean {
+    const tree = this.browse.tree || this.view.activeTree;
+    return this.browse.folded.get(tree)?.includes(id) ?? false;
+  }
+
+  private setFolded(tree: string, tasks: string[]): void {
+    const folded = new Map<string, string[]>(this.browse.folded);
+    if (tasks.length === 0) { folded.delete(tree); }
+    else { folded.set(tree, tasks); }
+    this.saveBrowse({ tree: this.browse.tree, folded: folded, discussionOpen: this.browse.discussionOpen });
+  }
 
   private fold(id: string): void {
-    this.folded = this.isFolded(id) ? this.folded.filter((item: string): boolean => item !== id) : [...this.folded, id];
+    const tree = this.browse.tree || this.view.activeTree;
+    const tasks = this.browse.folded.get(tree) ?? [];
+    this.setFolded(tree, tasks.includes(id) ? tasks.filter((item: string): boolean => item !== id) : [...tasks, id]);
   }
 
   private visibleTasks(tree?: DesktopTimelineTree): DesktopTimelineTask[] {
@@ -693,26 +725,129 @@ export struct DesktopTimelinePane {
     }
   }
 
+  private annotationKey(entry: Object): string {
+    const control = getRecord(entry, 'control');
+    const reply = getRecord(entry, 'reply');
+    return (getString(entry, 'id') ?? '') + ':' + (getString(reply, 'text') ?? '') + ':' +
+      (getString(control, 'delivery') ?? '') + ':' + (getString(getRecord(control, 'outcome'), 'status') ?? '');
+  }
+
+  private discussionHistory(): Object[] {
+    return this.controlAnnotations().slice().reverse().sort((left: Object, right: Object): number =>
+      (getNumber(right, 'createdAt') ?? 0) - (getNumber(left, 'createdAt') ?? 0));
+  }
+
+  private annotationTargetLabel(entry: Object): ResourceStr {
+    const target = getRecord(entry, 'target');
+    const kind = getString(target, 'kind');
+    if (kind === 'report') {
+      const report = this.report(getString(target, 'report') ?? '');
+      if (report !== undefined) {
+        return $r('app.string.desktop_timeline_discussion_report', report.level + 1,
+          desktopTimelinePeriodLabel(report.savedPeriod ?? report.end - report.start),
+          this.time(report.start), this.time(report.end));
+      }
+      return $r('app.string.desktop_timeline_missing_detail');
+    }
+    const tree = this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === getString(target, 'tree'));
+    const missing = this.resourceText($r('app.string.desktop_timeline_missing_detail'));
+    if (kind === 'tree') { return $r('app.string.desktop_timeline_discussion_tree', tree?.title ?? missing); }
+    const task = getArray(tree?.raw, 'tasks')?.find((row: Object): boolean => getString(row, 'id') === getString(target, 'task'));
+    return $r('app.string.desktop_timeline_discussion_task', tree?.title ?? '', getString(task, 'title') ?? missing);
+  }
+
+  private annotationStatus(entry: Object): Resource {
+    if (getRecord(entry, 'control') !== undefined) { return this.controlReceiptLabel(entry); }
+    return getRecord(entry, 'reply') === undefined ? $r('app.string.desktop_timeline_discussion_waiting') :
+      $r('app.string.desktop_timeline_discussion_replied');
+  }
+
+  @Builder
+  private Annotation(entry: Object, withTarget: boolean) {
+    Column({ space: 6 }) {
+      if (withTarget) {
+        Text(this.annotationTargetLabel(entry)).width('100%').fontSize(12).fontWeight(FontWeight.Medium)
+          .key('desktopTimelineDiscussionTarget-' + (getString(entry, 'id') ?? ''))
+      }
+      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignItems: ItemAlign.Center }) {
+        Text(getRecord(entry, 'control') === undefined ? $r('app.string.desktop_timeline_discussion_user') :
+          $r('app.string.desktop_timeline_discussion_request')).fontSize(12).fontWeight(FontWeight.Medium)
+          .margin({ right: 6 })
+        if (getNumber(entry, 'createdAt') !== undefined) {
+          Text(this.time(getNumber(entry, 'createdAt') ?? 0)).fontSize(11).fontColor($r('sys.color.font_secondary'))
+            .margin({ right: 6 })
+        }
+        Text(this.annotationStatus(entry)).fontSize(11).fontColor($r('sys.color.font_secondary'))
+          .key((getRecord(entry, 'control') === undefined ? 'desktopTimelineDiscussionStatus-' :
+            'desktopTimelineControlReceipt-') + (getString(entry, 'id') ?? ''))
+      }.width('100%')
+      if (getString(entry, 'text')) { MarkdownRenderer({ text: getString(entry, 'text') ?? '', onLink: this.onLink }) }
+      if (getRecord(entry, 'reply') !== undefined) {
+        Column({ space: 5 }) {
+          Row({ space: 8 }) {
+            Text($r('app.string.desktop_timeline_discussion_agent')).fontSize(12).fontWeight(FontWeight.Medium)
+            if (getNumber(getRecord(entry, 'reply'), 'createdAt') !== undefined) {
+              Text(this.time(getNumber(getRecord(entry, 'reply'), 'createdAt') ?? 0)).fontSize(11)
+                .fontColor($r('sys.color.font_secondary'))
+            }
+          }.width('100%')
+          MarkdownRenderer({ text: getString(getRecord(entry, 'reply'), 'text') ?? '', onLink: this.onLink })
+        }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 8, top: 4, bottom: 4 })
+          .border({ width: { left: 2 }, color: $r('app.color.workspace_timeline_done') })
+      }
+    }.key('desktopTimelineDiscussionRow-' + (getString(entry, 'id') ?? ''))
+      .width('100%').padding(9).alignItems(HorizontalAlign.Start).borderRadius(8)
+      .border({ width: 0.5, color: $r('app.color.workspace_border') })
+  }
+
+  @Builder
+  private DiscussionRows(entries: Object[], withTarget: boolean) {
+    Column({ space: 8 }) {
+      ForEach(entries, (entry: Object): void => { this.Annotation(entry, withTarget) },
+        (entry: Object): string => this.annotationKey(entry))
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
   @Builder
   private Discussions(kind: string, tree: string, id: string) {
-    if (this.targetAnnotations(kind, tree, id).length > 0) {
-      Text($r('app.string.desktop_timeline_discussions')).width('100%').fontSize(14).fontWeight(FontWeight.Medium)
-      ForEach(this.targetAnnotations(kind, tree, id), (entry: Object): void => {
-        Column({ space: 6 }) {
-          if (getRecord(entry, 'control') !== undefined) {
-            Text(this.controlReceiptLabel(entry)).fontSize(11).fontColor($r('sys.color.font_secondary'))
-              .key('desktopTimelineControlReceipt-' + (getString(entry, 'id') ?? ''))
+    Column({ space: 7 }) {
+      Text($r('app.string.desktop_timeline_discussion_count', this.targetAnnotations(kind, tree, id).length))
+        .width('100%').fontSize(14).fontWeight(FontWeight.Medium)
+      if (this.targetAnnotations(kind, tree, id).length > 0) {
+        this.DiscussionRows(this.targetAnnotations(kind, tree, id), false)
+      } else {
+        Text($r('app.string.desktop_timeline_discussion_empty')).width('100%').fontSize(12)
+          .fontColor($r('sys.color.font_secondary'))
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private SessionDiscussions(reportRoot: boolean) {
+    if (this.controlAnnotations().length > 0) {
+      Column({ space: 8 }) {
+        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 7 }) {
+            Image($r('app.media.dsh_browser_chevron_right_outline')).width(12).height(12).supportSvg2(true)
+              .rotate({ angle: this.browse.discussionOpen ? 90 : 0 }).accessibilityLevel('no')
+            Text($r('app.string.desktop_timeline_discussion_history', this.controlAnnotations().length)).fontSize(13)
           }
-          Text(getString(entry, 'text') ?? '').fontSize(13).copyOption(CopyOptions.LocalDevice)
-          if (getString(getRecord(entry, 'reply'), 'text')) {
-            Text(getString(getRecord(entry, 'reply'), 'text') ?? '').fontSize(13)
-              .fontColor($r('sys.color.font_secondary')).copyOption(CopyOptions.LocalDevice)
+        }.key('desktopTimelineDiscussionHistoryToggle').height(34).borderRadius(7)
+          .onClick((): void => { this.saveBrowse({ tree: this.browse.tree, folded: this.browse.folded,
+            discussionOpen: !this.browse.discussionOpen }); })
+        if (this.browse.discussionOpen) {
+          if (reportRoot) {
+            Scroll() {
+              this.DiscussionRows(this.discussionHistory(), true)
+            }.width('100%').height(185).key('desktopTimelineDiscussionHistory')
+          } else {
+            Column() {
+              this.DiscussionRows(this.discussionHistory(), true)
+            }.width('100%').key('desktopTimelineDiscussionHistory')
           }
-        }.width('100%').padding(8).alignItems(HorizontalAlign.Start).backgroundColor($r('app.color.workspace_panel'))
-      }, (entry: Object): string => (getString(entry, 'id') ?? '') + ':' +
-        (getString(getRecord(entry, 'reply'), 'text') ?? '') + ':' +
-        (getString(getRecord(entry, 'control'), 'delivery') ?? '') + ':' +
-        (getString(getRecord(getRecord(entry, 'control'), 'outcome'), 'status') ?? ''))
+        }
+      }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 6 })
+        .border({ width: { top: 0.5 }, color: $r('app.color.workspace_border') })
     }
   }
 
@@ -721,10 +856,11 @@ export struct DesktopTimelinePane {
   private treeTransferOptions(tree: DesktopTimelineTree): MenuElement[] {
     const items: MenuElement[] = [];
     if (tree.tasks.some((task: DesktopTimelineTask): boolean => task.children > 0)) {
-      items.push({ value: this.folded.length > 0 ? $r('app.string.desktop_timeline_expand_branches') :
-        $r('app.string.desktop_timeline_collapse_branches'), action: (): void => {
-        this.folded = this.folded.length > 0 ? [] : tree.tasks.filter((task: DesktopTimelineTask): boolean =>
-          task.children > 0).map((task: DesktopTimelineTask): string => task.id);
+      items.push({ value: $r('app.string.desktop_timeline_expand_branches'),
+        action: (): void => { this.setFolded(tree.id, []); } });
+      items.push({ value: $r('app.string.desktop_timeline_collapse_branches'), action: (): void => {
+        this.setFolded(tree.id, tree.tasks.filter((task: DesktopTimelineTask): boolean => task.children > 0)
+          .map((task: DesktopTimelineTask): string => task.id));
       } });
     }
     if (this.writable) {
@@ -834,6 +970,7 @@ export struct DesktopTimelinePane {
         return reply.error?.message || this.resourceText($r('app.string.desktop_timeline_remove_failed'));
       }
       if (this.selectedTree()?.id === id) { this.selectTree(''); }
+      if (this.browse.folded.has(id)) { this.setFolded(id, []); }
       this.taskTrail = this.taskTrail.filter((row: TimelineDetailTarget): boolean => row.tree !== id);
       this.acknowledgedControls = this.acknowledgedControls.filter((row: Object): boolean =>
         getString(getRecord(row, 'target'), 'tree') !== id);
@@ -919,21 +1056,65 @@ export struct DesktopTimelinePane {
   }
 
   @Builder
+  private TreeArrow(previous: boolean, index: number) {
+    Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Image(previous ? $r('app.media.dsh_browser_chevron_left_outline') : $r('app.media.dsh_browser_chevron_right_outline'))
+        .width(18).height(18).supportSvg2(true).accessibilityLevel('no')
+    }.width(30).height(30).padding(0).key(previous ? 'desktopTimelineTreePrevious' : 'desktopTimelineTreeNext')
+      .enabled(index >= 0 && index < this.view.trees.length)
+      .accessibilityText(previous ? $r('app.string.desktop_timeline_previous_tree') :
+        $r('app.string.desktop_timeline_next_tree'))
+      .onClick((): void => { this.selectAdjacent(index); })
+  }
+
+  @Builder
+  private TreeNavigation(tree?: DesktopTimelineTree) {
+    if (this.view.trees.length > 0 && (tree !== undefined || !this.browse.tree)) {
+      Row({ space: 4 }) {
+        if (this.view.trees.length > 1 || tree === undefined) { this.TreeArrow(true, this.treeIndex(tree) - 1) }
+        Column({ space: 2 }) {
+          if (tree !== undefined) {
+            Button(tree.title, { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').key('desktopTimelineTree')
+              .bindMenu(this.treeOptions(), desktopMenuOptions(Placement.BottomLeft))
+          } else {
+            Button($r('app.string.desktop_timeline_choose_tree'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+              .width('100%').key('desktopTimelineTree').bindMenu(this.treeOptions(), desktopMenuOptions(Placement.BottomLeft))
+          }
+          if (this.view.trees.length > 1 || tree === undefined) {
+            Text((this.treeIndex(tree) + 1) + ' / ' + this.view.trees.length)
+              .key('desktopTimelineTreePosition').fontSize(11).fontColor($r('sys.color.font_secondary'))
+          }
+        }.layoutWeight(1)
+        if (this.view.trees.length > 1 || tree === undefined) { this.TreeArrow(false, this.treeIndex(tree) + 1) }
+        if (tree !== undefined) {
+          Button('···', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(30).height(30).padding(0)
+            .key('desktopTimelineTreeMenu').accessibilityText($r('app.string.desktop_timeline_tree_options'))
+            .bindMenu(this.treeTransferOptions(tree), desktopMenuOptions(Placement.BottomRight))
+        }
+      }.width('100%')
+    }
+  }
+
+  @Builder
   private Tasks(tree?: DesktopTimelineTree) {
+    this.TreeNavigation(tree)
     if (tree === undefined) {
-      Text($r('app.string.desktop_timeline_no_tasks')).width('100%').fontSize(13).fontColor($r('sys.color.font_secondary'))
-      if (this.writable) {
-        Button($r('app.string.desktop_timeline_import_tree'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopTimelineTreeImport').enabled(this.canImport()).onClick((): void => { this.openTransfer(); })
+      if (this.browse.tree) {
+        Text($r('app.string.desktop_timeline_tree_unavailable')).width('100%').fontSize(13)
+          .fontColor($r('sys.color.font_secondary'))
+        if (this.view.activeTree) {
+          Button($r('app.string.desktop_timeline_open_active_tree'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .onClick((): void => { this.selectTree(''); })
+        }
+      } else {
+        Text($r('app.string.desktop_timeline_no_tasks')).width('100%').fontSize(13)
+          .fontColor($r('sys.color.font_secondary'))
+        if (this.writable) {
+          Button($r('app.string.desktop_timeline_import_tree'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopTimelineTreeImport').enabled(this.canImport()).onClick((): void => { this.openTransfer(); })
+        }
       }
     } else {
-      Row({ space: 8 }) {
-        Button(tree.title, { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).key('desktopTimelineTree')
-          .bindMenu(this.treeOptions(), desktopMenuOptions(Placement.BottomLeft))
-        Button('···', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(30).height(30).padding(0)
-          .key('desktopTimelineTreeMenu').accessibilityText($r('app.string.desktop_timeline_tree_options'))
-          .bindMenu(this.treeTransferOptions(tree), desktopMenuOptions(Placement.BottomRight))
-      }.width('100%')
       DesktopTimelineOverview({ tree: tree, active: this.active, running: this.running,
         decimals: this.progressDecimals, segmented: this.segmentedProgress })
       if (tree.description) { Text(tree.description).fontSize(13).width('100%') }
@@ -941,7 +1122,6 @@ export struct DesktopTimelinePane {
       ForEach(this.visibleTasks(tree), (task: DesktopTimelineTask): void => { this.TaskRow(tree, task) },
         (task: DesktopTimelineTask): string => tree.id + ':' + task.id + ':' + task.status + ':' + task.progress + ':' +
           task.title + ':' + task.note + ':' + task.priority + ':' + task.depth + ':' + task.children)
-      this.Discussions('tree', tree.id, '')
     }
   }
 
@@ -1120,12 +1300,16 @@ export struct DesktopTimelinePane {
           onOpen: (id: string): void => { this.pushDetail('', id); } })
           .visibility(this.rulerShown() ? Visibility.Visible : Visibility.None).layoutWeight(1)
       }
+      if (this.rulerShown()) { this.SessionDiscussions(true) }
       if (!this.rulerShown()) {
         Scroll(this.scroll) {
           Column({ space: 9 }) {
-            ForEach([this.viewRevision + ':' + this.treeId], (_revision: string): void => {
+            ForEach([this.viewRevision + ':' + this.browse.tree], (_revision: string): void => {
               if (this.tab === 'tasks') {
-                if (this.target() === undefined) { this.Tasks(this.selectedTree()) }
+                if (this.target() === undefined) {
+                  this.Tasks(this.selectedTree())
+                  this.SessionDiscussions(false)
+                }
                 else { this.TaskDetail(this.task(this.target()), this.target()) }
               } else {
                 this.ReportDetail(this.report(this.target()?.id ?? ''))

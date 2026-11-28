@@ -56,7 +56,7 @@ export struct DesktopTimelineDock {
       Row() {
         DesktopTimelineProgressBar({ progress: this.tree?.progress ?? 0, status: this.tree?.status ?? 'pending',
           parts: this.segmented ? this.tree?.parts : undefined, decimals: this.decimals,
-          progressKey: 'desktopTimelineDockProgress', onTap: (): void => { this.toggle(); } })
+          progressKey: 'desktopTimelineDockProgress', animateFlow: true, onTap: (): void => { this.toggle(); } })
       }.layoutWeight(1).padding({ top: 10, bottom: 10 })
       Text(desktopTimelinePercent(this.tree?.progress ?? 0, this.decimals) + '%').key('desktopTimelineDockPercent')
         .fontSize(12).fontColor($r('sys.color.font_secondary')).onClick((): void => { this.toggle(); })

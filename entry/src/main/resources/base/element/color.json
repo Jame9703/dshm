@@ -1,5 +1,7 @@
 {
   "color": [
+    { "name": "workspace_timeline_flow_clear", "value": "#00FFFFFF" },
+    { "name": "workspace_timeline_flow_highlight", "value": "#59FFFFFF" },
     { "name": "workspace_timeline_done", "value": "#28A568" },
     {"value":"#3367E3","name":"desktop_chat_running_label"},
     {"value":"#1A3367E3","name":"desktop_terminal_agent_fill"},

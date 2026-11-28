@@ -7,6 +7,16 @@ export interface DesktopTimelineLocation {
   revision: number;
 }
 
+export interface DesktopTimelineBrowseState {
+  tree: string;
+  folded: Map<string, string[]>;
+  discussionOpen: boolean;
+}
+
+export function emptyDesktopTimelineBrowse(): DesktopTimelineBrowseState {
+  return { tree: '', folded: new Map<string, string[]>(), discussionOpen: false };
+}
+
 export interface DesktopTimelineSource {
   sequence: number;
   value: Object;

@@ -2,6 +2,7 @@ import { KeyCode } from '@kit.InputKit';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import type { DesktopTimelineParts, DesktopTimelineProgressPart } from './DesktopTimelineModel';
 import { desktopTimelinePercent } from './DesktopTimelinePreferences';
+import { DesktopTimelineProgressFlow } from './DesktopTimelineProgressFlow';
 
 const TIMELINE_PROGRESS_ORDER: string[] = ['done', 'active', 'pending', 'blocked'];
 
@@ -12,6 +13,7 @@ export struct DesktopTimelineProgressBar {
   @Prop @Watch('partsChanged') parts?: DesktopTimelineParts = undefined;
   @Prop decimals: number = 2;
   @Prop thickness: number = 8;
+  @Prop animateFlow: boolean = false;
   @Prop progressKey: string = '';
   @Prop label: string = '';
   onTap?: () => void;
@@ -114,6 +116,13 @@ export struct DesktopTimelineProgressBar {
     return true;
   }
 
+  private flowShare(): number {
+    if (!this.animateFlow || this.status !== 'active') { return 0; }
+    const parts = this.parts;
+    const value = parts === undefined ? this.progress : parts.done.fraction + parts.active.fraction;
+    return Math.min(1, Math.max(0, value));
+  }
+
   private fill(): Resource {
     if (this.status === 'done') { return $r('app.color.workspace_timeline_done'); }
     if (this.status === 'blocked') { return $r('app.color.workspace_selection'); }
@@ -187,15 +196,18 @@ export struct DesktopTimelineProgressBar {
   }
 
   build() {
-    Row() {
-      if (this.parts !== undefined) {
-        this.Segment('done', this.parts.done.fraction, $r('app.color.workspace_timeline_done'))
-        this.Segment('active', this.parts.active.fraction, $r('sys.color.brand'))
-        this.Segment('pending', this.parts.pending.fraction, $r('app.color.workspace_panel'))
-        this.Segment('blocked', this.parts.blocked.fraction, $r('app.color.workspace_selection'))
-      } else {
-        this.Segment('total', this.progress, this.fill())
-      }
+    Stack({ alignContent: Alignment.Start }) {
+      Row() {
+        if (this.parts !== undefined) {
+          this.Segment('done', this.parts.done.fraction, $r('app.color.workspace_timeline_done'))
+          this.Segment('active', this.parts.active.fraction, $r('sys.color.brand'))
+          this.Segment('pending', this.parts.pending.fraction, $r('app.color.workspace_panel'))
+          this.Segment('blocked', this.parts.blocked.fraction, $r('app.color.workspace_selection'))
+        } else {
+          this.Segment('total', this.progress, this.fill())
+        }
+      }.width('100%').height('100%')
+      if (this.flowShare() > 0) { DesktopTimelineProgressFlow({ share: this.flowShare() }) }
     }.key(this.progressKey).width('100%').height(this.thickness).borderRadius(this.thickness / 2).clip(true)
       .backgroundColor($r('app.color.workspace_selection'))
       .accessibilityRole(AccessibilityRoleType.PROGRESS).accessibilityText(this.accessibleName())
