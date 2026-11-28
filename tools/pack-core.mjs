@@ -23,6 +23,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { patchManagerLifecycle } from './lib/manager-lifecycle.mjs';
+import { patchManagerCatalogContract } from './lib/manager-catalog-contract.mjs';
 import { prepareZodLocales } from './lib/zod-locales.mjs';
 import { isBundledZodBenchmarks, prepareZodFactories } from './lib/zod-factories-startup.mjs';
 import { bundledDevelopmentFiles, bundledEmptyDevelopmentDirectories } from './lib/bundled-development-files.mjs';
@@ -3438,6 +3439,23 @@ function patchProfilePnpmBridge() {
     }
     const text = readFileSync(target, 'utf8');
     if (text.includes(MARK)) {
+      const start = text.indexOf(MARK);
+      const end = text.indexOf('logPath, ...', start);
+      if (end < 0) die(`profile 包通道补丁：${site.rel} 里找不到收尾锚点`);
+      const beforeResult = text.slice(start, end);
+      const next = beforeResult.includes('expected: options.expected') ? beforeResult :
+        beforeResult.replace('dir, signal: options.signal,', 'dir, signal: options.signal, expected: options.expected,');
+      if (!next.includes('expected: options.expected')) die(`profile 包通道补丁：${site.rel} 里找不到精确选项锚点`);
+      if (!text.slice(end, end + 140).includes('bridged.unmet')) {
+        writeFileSync(target, text.slice(0, start) + next +
+          text.slice(end).replace('logPath, ...', 'logPath, ...(bridged.unmet ? { unmet: bridged.unmet } : {}), ...'), 'utf8');
+        log(`[pack-core]   profile 包通道：${site.rel} 已保留精确安装选项`);
+        continue;
+      }
+      if (next !== beforeResult) {
+        writeFileSync(target, text.slice(0, start) + next + text.slice(end), 'utf8');
+        continue;
+      }
       log(`[pack-core]   profile 包通道补丁已存在（跳过）：${site.rel}`);
       continue;
     }
@@ -3481,7 +3499,7 @@ function profilePnpmBridgeInjection(unit) {
     `${i1}{`,
     `${i2}const dshmPnpm = await import("@deepseek-ai/dshm-profile-pnpm");`,
     `${i2}const bridged = await dshmPnpm.bridgeRunProfilePnpm(args, {`,
-    `${i3}dir, signal: options.signal,`,
+    `${i3}dir, signal: options.signal, expected: options.expected,`,
     `${i2}});`,
     `${i2}if (bridged !== undefined) {`,
     `${i3}if (bridged.text.length > 0) {`,
@@ -3494,7 +3512,7 @@ function profilePnpmBridgeInjection(unit) {
     `${i3}/* incompatible 必须**非空才带**：上游 execa 路径的收尾也是"非空才带上它"，`,
     `${i4}而 installBundle 那侧只看"这个字段在不在"（在就抛 incompatible-version）。`,
     `${i4}无条件带上空数组 ⇒ 任意失败（404/网络/权限）都被改判成"版本不兼容"（+dshm.49 真机 P0）。 */`,
-    `${i3}return { exitCode: bridged.exitCode, output: output.toString("utf8"), truncated, logPath, ...incompatible.length > 0 ? { incompatible } : {} };`,
+    `${i3}return { exitCode: bridged.exitCode, output: output.toString("utf8"), truncated, logPath, ...(bridged.unmet ? { unmet: bridged.unmet } : {}), ...incompatible.length > 0 ? { incompatible } : {} };`,
     `${i2}}`,
     `${i1}}`,
     '',
@@ -5537,6 +5555,7 @@ patchAppBootReadonlyStack();
 patchMarketDesktopRuntime();
 patchProfilePnpmBridge();
 patchPluginManagerInspectBridge();
+patchManagerCatalogContract(STAGE);
 patchInstallSpecNormalize();
 patchAgentPresetWorkflow();
 patchPtcPresetWorkflowEnabled();

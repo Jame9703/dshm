@@ -910,16 +910,17 @@ const DSHMARKET_CLIENT_TARGET = DSHMARKET_CLIENT_HEAD + DSHMARKET_THUMB_TARGET +
     const mainSrc = readFileSync(join(ROOT, 'hostcore', 'app', 'main.js'), 'utf8');
     check('L9a main.js require 了这份模块（装完才有得调）',
       mainSrc.includes("require('./dshm-market-patch.cjs')"));
-    const callAt = mainSrc.indexOf('marketPatch.replayMarketContractPatch(');
+    const callAt = mainSrc.indexOf('await replayInstalledMarketPatches(marketProfileDir)');
     const doneAt = mainSrc.indexOf("fs.writeFileSync(path.join(installQueueDir, base + (result.ok ? '.done' : '.fail'))");
     check('L9b 调用点在安装结果写盘（.done/.fail）**之前** —— 写入方拿到结果就可能去挂载',
       callAt > 0 && doneAt > 0 && callAt < doneAt, `call=${callAt} done=${doneAt}`);
-    check('L9c 只在**安装成功**时调（`!isRemove && result.ok`，装卸两条链分得清）',
-      /if \(!isRemove && result\.ok\) \{[\s\S]{0,600}?marketPatch\.replayMarketContractPatch\(/.test(mainSrc));
+    check('L9c 队列安装成功后重放，进程内安装跳过卸载、失败及目录链接',
+      /if \(!isRemove && result\.ok\) \{[\s\S]{0,600}?await replayInstalledMarketPatches\(marketProfileDir\)/.test(mainSrc) &&
+      /if \(request\.remove\) return installer\.removeSpec\(spec, opts\);[\s\S]{0,500}?if \(result\.ok && !linked\) await replayInstalledMarketPatches\(profileDir\)/.test(mainSrc));
     check('L9d 落点取的是安装器实际用的那个目录（instOpts.profileDir 优先，缺省宿主 profile 目录）',
       /const marketProfileDir[\s\S]{0,220}?instOpts\.profileDir[\s\S]{0,220}?path\.join\(HOME_DIR, 'profiles', PROFILE\)/.test(mainSrc));
     check('L9e coreDir 传的是当前已激活的核心树（CORE_DIR，与 loader 同源）',
-      /replayMarketContractPatch\(marketProfileDir, \{ coreDir: CORE_DIR \}\)/.test(mainSrc));
+      /async function replayInstalledMarketPatches\(profileDir\) \{\s*const replayed = await marketPatch\.replayMarketContractPatch\(profileDir, \{ coreDir: CORE_DIR \}\)/.test(mainSrc));
   }
 
   // L10：**落位** —— 两份清单必须同时带上它，否则 HAP 里根本没有这个文件（require 抛

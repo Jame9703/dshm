@@ -192,7 +192,11 @@ export class DesktopPluginInstall {
     this.phase = 'starting';
     const opts: Record<string, Object> = { 'enabled': this.catalogSelection, 'requestId': id };
     if (this.inspectedRegistry) { opts['registry'] = this.inspectedRegistry; }
-    if (this.catalogSelection && !this.spec.startsWith('link:')) { opts['saveExact'] = true; }
+    if (this.catalogSelection) {
+      const expected: Record<string, Object> = { 'name': this.name, 'version': this.version };
+      opts['expected'] = expected;
+      if (!this.spec.startsWith('link:')) { opts['saveExact'] = true; }
+    }
     const result = await this.host.call('pluginManager/installBundle', { 'spec': this.spec, 'options': opts }, 180000);
     if (!this.current(id)) { return; }
     if (result.ok) { this.settle(result); return; }

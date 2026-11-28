@@ -6,6 +6,12 @@ import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 
 const OUTPUT_ESCAPE = new RegExp('\\x1b\\[[0-?]*[ -/]*[@-~]|[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]', 'g');
 
+export interface DesktopPluginCatalogUpdate {
+  fromVersion: string;
+  fromSource: string;
+  targetSpec: string;
+}
+
 @Observed
 export class DesktopPluginMaintenance {
   phase: 'idle' | 'confirm' | 'running' | 'done' = 'idle';
@@ -14,6 +20,7 @@ export class DesktopPluginMaintenance {
   title: string = '';
   fromVersion: string = '';
   toVersion: string = '';
+  catalog?: DesktopPluginCatalogUpdate;
   step: string = '';
   application: string = '';
   problem: string = '';
@@ -42,6 +49,16 @@ export class DesktopPluginMaintenance {
 
   offerRemove(name: string, title: string): boolean { return this.offer('remove', name, title); }
 
+  offerCatalogUpdate(name: string, title: string, to: string, change: DesktopPluginCatalogUpdate): boolean {
+    if (!to || !change.fromVersion || !change.fromSource || !change.targetSpec || !this.offer('update', name, title)) {
+      return false;
+    }
+    this.catalog = change;
+    this.fromVersion = change.fromVersion;
+    this.toVersion = to;
+    return true;
+  }
+
   close(): void {
     if (this.phase !== 'running') { this.phase = 'idle'; }
   }
@@ -53,6 +70,7 @@ export class DesktopPluginMaintenance {
     this.title = title;
     this.fromVersion = '';
     this.toVersion = '';
+    this.catalog = undefined;
     this.step = '';
     this.application = '';
     this.problem = '';
@@ -70,7 +88,8 @@ export class DesktopPluginMaintenance {
     if (this.action === 'update') {
       this.requestId = util.generateRandomUUID();
       const options: Record<string, Object | null> = { 'requestId': this.requestId };
-      if (this.spec) { options['spec'] = this.spec; }
+      if (this.catalog !== undefined) { options['catalog'] = this.catalog; }
+      else if (this.spec) { options['spec'] = this.spec; }
       else if (this.registry !== undefined) { options['registry'] = this.registry; }
       this.step = 'checking';
       result = await this.host.call('pluginManager/updateBundle', {

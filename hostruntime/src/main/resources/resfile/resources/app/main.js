@@ -9203,8 +9203,53 @@ async function start() {
   runtimeFacts();
   stage('BOOT_42_NATIVE_READY');
   globalThis.__dshmUpdateTransaction = require('./dshm-update-transaction.cjs').withUpdateTransaction;
-  globalThis.__dshmProfileWriter = require('./dshm-profile-writer.cjs').withProfileWriter;
-  globalThis.__dshmProfileWriterToken = require('./dshm-profile-writer.cjs').currentToken;
+  const profileWriter = require('./dshm-profile-writer.cjs');
+  globalThis.__dshmProfileWriter = profileWriter.withProfileWriter;
+  globalThis.__dshmProfileWriterToken = profileWriter.currentToken;
+  function trustedCatalogLinkRoot() {
+    for (const candidate of [path.join(CORE_DIR, 'package.json'),
+      path.join(CORE_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')]) {
+      try {
+        const anchor = fs.realpathSync(candidate);
+        const root = path.resolve(path.dirname(anchor), '../..');
+        if (anchor !== path.join(root, 'apps', 'cli', 'package.json')) continue;
+        const cli = JSON.parse(fs.readFileSync(anchor, 'utf8'));
+        const workspace = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+        if (cli.name === '@deepseek-ai/dsh' && workspace.name === '@deepseek-ai/dsh-root' &&
+          Object.values(cli.dependencies || {}).some(value => typeof value === 'string' && value.startsWith('workspace:'))) {
+          const packages = path.join(root, 'packages');
+          if (fs.realpathSync(packages) === packages && fs.statSync(packages).isDirectory()) return packages;
+        }
+      } catch (_) { /* a released installation has no source checkout */ }
+    }
+    return undefined;
+  }
+  globalThis.__dshmCanInstallCatalogLink = (profileDir, spec) => {
+    return require('./dshm-installer.js').canInstallCatalogLink(spec, {
+      profileDir, trustedLinkRoot: trustedCatalogLinkRoot(),
+    });
+  };
+  async function replayInstalledMarketPatches(profileDir) {
+    const replayed = await marketPatch.replayMarketContractPatch(profileDir, { coreDir: CORE_DIR });
+    if (replayed !== null) log(`市场就地改写（装完重放）：${replayed.reason}`);
+  }
+  globalThis.__dshmApplyProfilePackage = async (spec, request) => {
+    const installer = require('./dshm-installer.js');
+    const profileDir = request.profileDir;
+    const opts = {
+      homeDir: HOME_DIR, profile: PROFILE, profileDir, writerToken: profileWriter.currentToken(profileDir),
+      expected: request.expected, registry: request.registry, saveExact: request.saveExact, signal: request.signal,
+      // The plugin manager selects the bundle after it verifies the install.
+      enabled: false, log: (m) => log(`  [installer] ${m}`),
+    };
+    if (request.signal?.aborted) return { ok: false, error: '插件操作已取消' };
+    if (request.remove) return installer.removeSpec(spec, opts);
+    const linked = spec.startsWith('link:');
+    if (linked) opts.trustedLinkRoot = trustedCatalogLinkRoot();
+    const result = await installer.installSpec(spec, opts);
+    if (result.ok && !linked) await replayInstalledMarketPatches(profileDir);
+    return result;
+  };
   // dsh-pet 桌面宿主：必须在 runProfile（插件 apply）之前生效，否则插件会去 spawn Electron。
   process.env.DSH_PET_IN_PROCESS = '1';
   process.env.DSH_PET_OPEN_TARGET = process.env.DSH_PET_OPEN_TARGET || 'web';
@@ -9711,10 +9756,7 @@ requestStop(`host-stop-request 文件${dshmStopWhy.length > 0 ? '：' + dshmStop
           const marketProfileDir = typeof instOpts.profileDir === 'string' && instOpts.profileDir.length > 0
             ? instOpts.profileDir
             : path.join(HOME_DIR, 'profiles', PROFILE);
-          const replayed = await marketPatch.replayMarketContractPatch(marketProfileDir, { coreDir: CORE_DIR });
-          if (replayed !== null) {
-            log(`市场就地改写（装完重放）：${replayed.reason}`);
-          }
+          await replayInstalledMarketPatches(marketProfileDir);
         }
         fs.writeFileSync(path.join(installQueueDir, base + (result.ok ? '.done' : '.fail')),
           JSON.stringify(result, null, 2));

@@ -45,6 +45,7 @@ interface DesktopPluginRow {
   update: string;
   installSpec: string;
   installVersion: string;
+  catalogUpdate: boolean;
   phase: string;
   diagnostic: string;
   components: DesktopPluginComponent[];
@@ -92,6 +93,7 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
         update: bundle ? getString(value, 'update') ?? '' : '',
         installSpec: installSpec,
         installVersion: installVersion,
+        catalogUpdate: bundle && getBoolean(target, 'catalogUpdate') === true,
         phase: getString(value, 'fiberPhase') ?? '',
         diagnostic: getString(value, 'diagnostic') ?? '',
         components: bundle && availability !== 'missing' ? desktopPluginComponents(value) : []
@@ -574,8 +576,16 @@ export struct DesktopPluginsPane {
   }
 
   private hasAvailableUpdate(row: DesktopPluginRow): boolean {
+    if (this.hasCatalogUpdate(row)) { return true; }
     return this.canCheckVersions(row) && this.versionScanState.results.some((result: DesktopPluginVersionResult): boolean =>
       result.name === row.id && result.installed === row.version && result.recommendedVersion.length > 0);
+  }
+
+  private hasCatalogUpdate(row: DesktopPluginRow): boolean {
+    return row.catalogUpdate && row.installed && row.removable && row.availability === 'profile' &&
+      !!row.source && !!row.version && !!row.installSpec && !!row.installVersion &&
+      (row.version !== row.installVersion || ((row.source.startsWith('link:') || row.installSpec.startsWith('link:')) &&
+        row.source !== row.installSpec));
   }
 
   private showVersionResult(result: DesktopPluginVersionResult): void {
@@ -622,6 +632,17 @@ export struct DesktopPluginsPane {
     if (this.maintenance.offerRemove(row.id, row.title)) { this.openMaintenance(); }
   }
 
+  private offerCatalogUpdate(row: DesktopPluginRow): void {
+    const current = this.bundles.find((item: DesktopPluginRow): boolean => item.id === row.id);
+    if (current === undefined || !this.hasCatalogUpdate(current) || current.version !== row.version ||
+      current.source !== row.source || current.installSpec !== row.installSpec || current.installVersion !== row.installVersion ||
+      this.maintenanceOpening || this.maintenanceDialog >= 0 || this.installer.busy() || this.busy) { return; }
+    if (this.maintenance.offerCatalogUpdate(row.id, row.title, row.installVersion,
+      { fromVersion: row.version, fromSource: row.source, targetSpec: row.installSpec })) {
+      this.openMaintenance();
+    }
+  }
+
   @Builder
   private MaintenanceDialog() {
     DesktopPluginMaintenanceDialog({ model: this.maintenance, onClose: (): void => { this.closeMaintenance(); },
@@ -659,11 +680,15 @@ export struct DesktopPluginsPane {
   private async confirmMaintenance(): Promise<void> {
     const name = this.maintenance.name;
     const update = this.maintenance.action === 'update';
-    const registry = update && this.bundles.some((row: DesktopPluginRow): boolean =>
-      row.id === name && this.canCheckVersions(row));
-    if (update && this.detailName === name && (!registry || this.versionOwner !== name ||
+    const catalog = this.maintenance.catalog;
+    const current = this.bundles.find((row: DesktopPluginRow): boolean => row.id === name);
+    const registry = update && catalog === undefined && current !== undefined && this.canCheckVersions(current);
+    const catalogChanged = catalog !== undefined && (current === undefined || !this.hasCatalogUpdate(current) ||
+      current.version !== catalog.fromVersion || current.source !== catalog.fromSource ||
+      current.installSpec !== catalog.targetSpec || current.installVersion !== this.maintenance.toVersion);
+    if (catalogChanged || (catalog === undefined && update && this.detailName === name && (!registry || this.versionOwner !== name ||
       this.versionInstalled !== this.maintenance.fromVersion || !this.versions.some((entry: DesktopPluginVersionEntry): boolean =>
-        entry.installable && entry.version === this.maintenance.toVersion))) {
+        entry.installable && entry.version === this.maintenance.toVersion)))) {
       this.closeMaintenance();
       this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_plugin_updates_stale') });
       return;
@@ -789,6 +814,12 @@ export struct DesktopPluginsPane {
   @Builder
   private BundleActions(row: DesktopPluginRow) {
     Row({ space: 8 }) {
+      if (this.hasCatalogUpdate(row)) {
+        Button($r('app.string.desktop_plugin_maintenance_update_action'), { buttonStyle: ButtonStyleMode.EMPHASIZED })
+          .key('desktopPluginCatalogUpdate-' + row.id)
+          .enabled(!this.busy && !this.installer.busy() && this.maintenance.phase !== 'running')
+          .onClick((): void => { this.offerCatalogUpdate(row); })
+      }
       if (this.canCheckVersions(row)) {
         Button($r('app.string.desktop_plugin_maintenance_check'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopPluginCheckVersions-' + row.id).enabled(!this.busy && this.maintenance.phase !== 'running')

@@ -34,6 +34,15 @@ export struct DesktopPluginMaintenanceDialog {
         Text(this.model.fromVersion + ' → ' + this.model.toVersion)
           .width('100%').fontSize(14).fontColor($r('sys.color.font_secondary'))
       }
+      if (this.model.catalog !== undefined) {
+        Column({ space: 4 }) {
+          Text($r('app.string.desktop_plugin_catalog_source')).fontSize(13)
+          Text(this.model.catalog.fromSource).key('desktopPluginMaintenanceSourceFrom')
+            .fontSize(12).fontColor($r('sys.color.font_secondary')).copyOption(CopyOptions.LocalDevice)
+          Text(this.model.catalog.targetSpec).key('desktopPluginMaintenanceSourceTo')
+            .fontSize(12).fontColor($r('sys.color.brand')).copyOption(CopyOptions.LocalDevice)
+        }.key('desktopPluginMaintenanceSourceChange').width('100%').alignItems(HorizontalAlign.Start)
+      }
       if (this.model.phase === 'confirm') {
         Text(this.model.action === 'update' ? $r('app.string.desktop_plugin_maintenance_update_note') :
           $r('app.string.desktop_plugin_maintenance_remove_note'))

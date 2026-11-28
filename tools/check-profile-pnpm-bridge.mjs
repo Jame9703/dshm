@@ -126,6 +126,36 @@ process.env.DSHM_SANDBOX_HOME = sandbox;
 
 const mod = await import(pathToFileURL(join(ROOT, ...PLUGIN_REL.split('/'))).href);
 
+async function preservesManagedInstallOptions(bridgeModule) {
+  const previous = globalThis.__dshmApplyProfilePackage;
+  const previousMode = process.env.DSHM_PROFILE_PNPM_BRIDGE;
+  const expected = { name: '@dshm/fixture', version: '1.2.3' };
+  const signal = new AbortController().signal;
+  let call;
+  globalThis.__dshmApplyProfilePackage = async (spec, options) => {
+    call = { spec, options };
+    return { ok: false, unmet: 'unexpected-package', error: 'synthetic wrong package' };
+  };
+  process.env.DSHM_PROFILE_PNPM_BRIDGE = 'force';
+  try {
+    const result = await bridgeModule.bridgeRunProfilePnpm([
+      'add', '@dshm/fixture@1.2.3', '--save-exact', '--registry', 'https://registry.example.invalid/',
+    ], { dir: profileDir, expected, signal });
+    return call?.spec === '@dshm/fixture@1.2.3' && call.options.profileDir === profileDir &&
+      call.options.expected === expected && call.options.signal === signal && !call.options.remove &&
+      call.options.saveExact === true && call.options.registry === 'https://registry.example.invalid/' &&
+      result?.exitCode === 1 && result.unmet === 'unexpected-package';
+  } finally {
+    if (previous === undefined) delete globalThis.__dshmApplyProfilePackage;
+    else globalThis.__dshmApplyProfilePackage = previous;
+    if (previousMode === undefined) delete process.env.DSHM_PROFILE_PNPM_BRIDGE;
+    else process.env.DSHM_PROFILE_PNPM_BRIDGE = previousMode;
+  }
+}
+
+check('Managed install preserves exact identity, registry, cancellation and typed rejection',
+  await preservesManagedInstallOptions(mod));
+
 /* ── A 启用判据 ──────────────────────────────────────────────────────────── */
 {
   delete process.env.DSHM_PROFILE_PNPM_BRIDGE;
@@ -435,8 +465,13 @@ if (process.argv.includes('--self-test')) {
   const variants = [
     {
       label: 'VALUE_OPTS 清空（--dir 的取值被当成包名）',
-      edits: [['const VALUE_OPTS = ["--dir", "--profile"];', 'const VALUE_OPTS = [];']],
+      edits: [['const VALUE_OPTS = ["--dir", "--profile", "--registry"];', 'const VALUE_OPTS = [];']],
       probe: async (m) => JSON.stringify(m.bridgeTargets(['--dir', '/x/y', 'pkg'])) !== JSON.stringify(['pkg']),
+    },
+    {
+      label: 'Managed install drops the expected package',
+      edits: [['expected: ctx.expected, saveExact:', 'expected: undefined, saveExact:']],
+      probe: async (m) => !(await preservesManagedInstallOptions(m)),
     },
     {
       label: 'REMOVE_COMMANDS 清空（remove 不再被接管）',

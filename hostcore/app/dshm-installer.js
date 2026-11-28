@@ -846,9 +846,16 @@ function patchCodexSubagentForExternalCodex(profileDir, packageName) {
   if (externalBin.length === 0) {
     return { patched: false, reason: 'external-codex-missing' };
   }
-  const file = path.join(profileDir, 'node_modules', packageName, 'lib', 'index.js');
+  const modules = path.join(profileDir, 'node_modules');
+  const packageDir = path.join(modules, packageName);
+  const file = path.join(packageDir, 'lib', 'index.js');
   if (!fs.existsSync(file)) {
     return { patched: false, reason: 'plugin-entry-missing' };
+  }
+  const realPackage = fs.realpathSync(packageDir);
+  if (fs.lstatSync(packageDir).isSymbolicLink() || !pathInside(fs.realpathSync(modules), realPackage)
+      || !pathInside(realPackage, fs.realpathSync(file))) {
+    return { patched: false, reason: 'plugin-entry-linked' };
   }
   let text = fs.readFileSync(file, 'utf8');
   const externalCa = externalCodexCaFile();
@@ -1139,6 +1146,7 @@ function dependencyValueFor(item) {
   if (raw.length === 0) {
     return item.exact === true ? version : '^' + version;
   }
+  if (raw.startsWith('link:')) return raw;
   // git / GitHub 形态：原样记录（市场就是按这个字符串做来源比对）。
   if (parseGitHub(raw) !== null) {
     return raw;
@@ -1228,6 +1236,12 @@ function appendProfileBundle(profileDir, name) {
   if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) {
     return false;
   }
+  if (!selectProfileBundle(pkg, name)) return false;
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+  return true;
+}
+
+function selectProfileBundle(pkg, name) {
   pkg.dsh = pkg.dsh !== null && typeof pkg.dsh === 'object' && !Array.isArray(pkg.dsh) ? pkg.dsh : {};
   pkg.dsh.profile = pkg.dsh.profile !== null && typeof pkg.dsh.profile === 'object' && !Array.isArray(pkg.dsh.profile)
     ? pkg.dsh.profile : {};
@@ -1237,7 +1251,6 @@ function appendProfileBundle(profileDir, name) {
   }
   bundles.push(name);
   pkg.dsh.profile.bundles = bundles;
-  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
   return true;
 }
 
@@ -1302,10 +1315,164 @@ function readRegistry(homeDir) {
 
 // ── 安装主体 ───────────────────────────────────────────────────────────
 
+function packageNameIsSafe(name) {
+  return typeof name === 'string' && /^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(name)
+    && name.split('/').every(part => part !== '.' && part !== '..' && part !== '@.' && part !== '@..')
+    && name !== '__proto__';
+}
+
+function installRefusal(unmet, message) {
+  const error = new Error(message);
+  error.unmet = unmet;
+  return error;
+}
+
+function validateExpectedInstall(expected, pkg, name) {
+  if (expected === undefined) return;
+  if (name !== expected.name || pkg?.name !== expected.name || pkg?.version !== expected.version) {
+    throw installRefusal('unexpected-package', '安装目标与目录记录不一致：需要 '
+      + expected.name + '@' + expected.version + '，实际为 ' + String(pkg?.name ?? name)
+      + '@' + String(pkg?.version ?? ''));
+  }
+  const bundle = pkg.dsh?.bundle;
+  if (bundle === null || typeof bundle !== 'object' || Array.isArray(bundle)) {
+    throw installRefusal('not-bundle', expected.name + ' 未声明可安装的 dsh.bundle');
+  }
+}
+
+function pathInside(root, child) {
+  const rel = path.relative(root, child);
+  return rel.length > 0 && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+
+function catalogLinkDirectory(spec, profileDir, trustedLinkRoot) {
+  if (typeof spec !== 'string' || !spec.startsWith('link:') || !path.isAbsolute(spec.slice(5))
+      || typeof trustedLinkRoot !== 'string' || !path.isAbsolute(trustedLinkRoot)) return '';
+  try {
+    const root = fs.realpathSync(trustedLinkRoot);
+    const directory = fs.realpathSync(spec.slice(5));
+    const profile = fs.realpathSync(profileDir);
+    if (!pathInside(root, directory) || directory === profile || pathInside(profile, directory)
+      || pathInside(directory, profile) || !fs.statSync(directory).isDirectory()) return '';
+    return directory;
+  } catch (_) {
+    return '';
+  }
+}
+
+function linkDirectory(source, target) {
+  fs.symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+}
+
+function linkedPackageFile(directory, name) {
+  if (typeof name !== 'string' || !name || path.isAbsolute(name)) return false;
+  try {
+    const file = fs.realpathSync(path.resolve(directory, name));
+    return pathInside(directory, file) && fs.statSync(file).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+function linkedBundleManifest(directory) {
+  return linkedPackageFile(directory, 'package.json') ? readJsonSafe(path.join(directory, 'package.json')) : null;
+}
+
+function linkedBundleIsBuilt(directory, pkg) {
+  const patch = pkg?.dsh?.bundle?.patch;
+  const patches = typeof patch === 'string' ? [patch] : patch;
+  return linkedPackageFile(directory, pkg?.main) && Array.isArray(patches) &&
+    patches.every(file => linkedPackageFile(directory, file));
+}
+
+function canInstallCatalogLink(spec, { profileDir, trustedLinkRoot }) {
+  const directory = catalogLinkDirectory(spec, profileDir, trustedLinkRoot);
+  if (!directory) return false;
+  const pkg = linkedBundleManifest(directory);
+  if (!packageNameIsSafe(pkg?.name) || typeof pkg.version !== 'string' || !pkg.version ||
+      !linkedBundleIsBuilt(directory, pkg)) return false;
+  // Some packaged Hosts can read source trees but deliberately disallow symlinks.
+  let probe = '';
+  let link = '';
+  try {
+    const modules = path.join(profileDir, 'node_modules');
+    if (fs.lstatSync(modules, { throwIfNoEntry: false }) !== undefined) ownedModuleDestination(profileDir, pkg.name);
+    probe = fs.mkdtempSync(path.join(profileDir, '.dshm-link-probe-'));
+    link = path.join(probe, 'link');
+    linkDirectory(directory, link);
+    return fs.realpathSync(link) === directory;
+  } catch (_) {
+    return false;
+  } finally {
+    if (link) { try { fs.unlinkSync(link); } catch (_) {} }
+    if (probe) { try { fs.rmdirSync(probe); } catch (_) {} }
+  }
+}
+
+function ownedModuleDestination(profileDir, name) {
+  if (!packageNameIsSafe(name)) throw new Error('无效的包名：' + String(name));
+  const modules = path.join(profileDir, 'node_modules');
+  const profile = fs.realpathSync(profileDir);
+  if (!fs.lstatSync(modules).isDirectory() || !pathInside(profile, fs.realpathSync(modules))) {
+    throw new Error('插件目标目录超出配置范围');
+  }
+  const dest = path.join(modules, name);
+  const scope = path.dirname(dest);
+  const parent = fs.lstatSync(scope, { throwIfNoEntry: false });
+  if (parent !== undefined && !parent.isDirectory()) throw new Error('插件 scope 不是配置内的普通目录');
+  return dest;
+}
+
+function commitExpectedInstall(profileDir, item, enabled) {
+  const pkgPath = path.join(profileDir, 'package.json');
+  const file = fs.lstatSync(pkgPath, { throwIfNoEntry: false });
+  if (file !== undefined && !file.isFile()) throw new Error('配置 package.json 不是普通文件');
+  const pkg = file === undefined ? {} : JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) throw new Error('配置 package.json 无效');
+  pkg.dependencies = pkg.dependencies || {};
+  pkg.dependencies[item.name] = dependencyValueFor(item);
+  if (enabled !== false) selectProfileBundle(pkg, item.name);
+  const staging = fs.mkdtempSync(path.join(profileDir, '.dshm-manifest-'));
+  const next = path.join(staging, 'package.json');
+  try {
+    fs.writeFileSync(next, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+    fs.renameSync(next, pkgPath);
+  } finally {
+    try { fs.unlinkSync(next); } catch (_) {}
+    try { fs.rmdirSync(staging); } catch (_) {}
+  }
+}
+
+function installCatalogLink(spec, opts, profileDir) {
+  const directory = catalogLinkDirectory(spec, profileDir, opts.trustedLinkRoot);
+  if (!directory || opts.expected === undefined) {
+    throw new Error('指定目录不是此宿主可用的插件目录链接');
+  }
+  const { name, version } = opts.expected;
+  const pkg = linkedBundleManifest(directory);
+  validateExpectedInstall(opts.expected, pkg, name);
+  if (!linkedBundleIsBuilt(directory, pkg)) throw new Error('链接插件缺少目录内的构建入口或配置补丁');
+  const dest = ownedModuleDestination(profileDir, name);
+  opts.signal?.throwIfAborted();
+  const existing = fs.lstatSync(dest, { throwIfNoEntry: false });
+  const reuse = existing?.isSymbolicLink() && fs.existsSync(dest) && fs.realpathSync(dest) === directory;
+  if (!reuse) {
+    opts.preserve(dest);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    linkDirectory(directory, dest);
+  }
+  const loadable = userRowLoadable(profileDir, name);
+  if (loadable) throw new Error('链接插件入口不可用：' + loadable);
+  opts.signal?.throwIfAborted();
+  commitExpectedInstall(profileDir, { name, version, spec, exact: opts.saveExact === true }, opts.enabled);
+  return { ok: true, name, version, installed: reuse ? [] : [{ name, version, files: 0, skippedLinks: 0 }],
+    note: opts.enabled === false ? '插件目录已链接' : '插件目录已链接并登记，重启应用后生效' };
+}
+
 /**
  * 安装一个插件 spec 到 profile。返回结果对象（不抛错：失败也走返回值，
  * 调用方（main.js 队列段）按 ok 字段写 .done/.fail）。
- * opts: { homeDir, profile, log? }
+ * opts: { homeDir, profile, log?, enabled?, expected?, saveExact?, signal?, trustedLinkRoot? }
  */
 async function installSpec(spec, opts) {
   const writer = require('./dshm-profile-writer.cjs');
@@ -1317,34 +1484,53 @@ async function installSpec(spec, opts) {
 
 async function installSpecOwned(spec, opts) {
   const backups = new Map();
+  const ownedInstall = opts.expected !== undefined || opts.signal !== undefined;
   const preserve = (dest) => {
-    if (backups.has(dest) || !fs.existsSync(dest)) return;
+    if (backups.has(dest)) return;
+    const exists = ownedInstall ? fs.lstatSync(dest, { throwIfNoEntry: false }) !== undefined : fs.existsSync(dest);
+    if (!exists) {
+      if (ownedInstall) backups.set(dest, null);
+      return;
+    }
     const owned = fs.mkdtempSync(path.join(path.dirname(dest), '.dshm-install-'));
     const backup = path.join(owned, 'package');
     fs.renameSync(dest, backup);
     backups.set(dest, { owned, backup });
   };
+  let tempRoot = '';
+  const allocateTempRoot = () => {
+    const base = path.join(opts.homeDir, '.installer-tmp');
+    fs.mkdirSync(base, { recursive: true });
+    tempRoot = fs.mkdtempSync(path.join(base, 'install-'));
+    return tempRoot;
+  };
   let succeeded = false;
   let result;
   try {
-    result = await installSpecInner(spec, { ...opts, preserve });
+    opts.signal?.throwIfAborted();
+    result = await installSpecInner(spec, { ...opts, preserve, allocateTempRoot });
     succeeded = result.ok === true;
   } catch (e) {
     // 契约：本函数不抛错，失败也走返回值（main.js 队列段按 ok 字段写 .done/.fail）
     result = { ok: false, error: e && e.message ? e.message : String(e) };
+    if (e?.unmet) result.unmet = e.unmet;
+    if (opts.signal?.aborted) result.cancelled = true;
   } finally {
     for (const [dest, entry] of backups) {
       try {
         if (!succeeded) {
           fs.rmSync(dest, { recursive: true, force: true });
-          fs.renameSync(entry.backup, dest);
+          if (entry !== null) fs.renameSync(entry.backup, dest);
         }
-        fs.rmSync(entry.owned, { recursive: true, force: true });
+        if (entry !== null) fs.rmSync(entry.owned, { recursive: true, force: true });
       } catch (rollbackError) {
-        const diagnostic = `本地${succeeded ? '清理' : '恢复'}失败：${rollbackError.message}；备份=${entry.owned}`;
+        const diagnostic = `本地${succeeded ? '清理' : '恢复'}失败：${rollbackError.message}；备份=${entry?.owned ?? dest}`;
         if (succeeded) result.note = (result.note || '') + '；' + diagnostic;
         else result.error = (result.error || '') + '；' + diagnostic;
       }
+    }
+    if (tempRoot) {
+      try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch (_) {}
     }
   }
   return result;
@@ -1360,14 +1546,24 @@ async function installSpecInner(spec, opts) {
   const profileDir = (typeof opts.profileDir === 'string' && opts.profileDir.length > 0)
     ? opts.profileDir
     : path.join(homeDir, 'profiles', profile);
-  const requestedRegistry = opts.registry === undefined ? '' : normalizeRegistry(opts.registry);
-  if (opts.registry !== undefined && requestedRegistry.length === 0) {
+  const expected = opts.expected;
+  if (expected !== undefined && (!packageNameIsSafe(expected?.name) ||
+      typeof expected.version !== 'string' || !expected.version || expected.version.trim() !== expected.version)) {
+    throw installRefusal('unexpected-package', '目录安装目标缺少有效的包名或版本');
+  }
+  const ownedInstall = expected !== undefined || opts.signal !== undefined;
+  opts.signal?.throwIfAborted();
+  if (spec.trim().startsWith('link:')) {
+    ensureProfileDirs(profileDir);
+    return installCatalogLink(spec.trim(), opts, profileDir);
+  }
+  const requestedRegistry = opts.registry == null ? '' : normalizeRegistry(opts.registry);
+  if (opts.registry != null && requestedRegistry.length === 0) {
     return { ok: false, error: '无效的 registry：只接受无账号、无 query/hash 的 HTTPS 地址' };
   }
   const registry = requestedRegistry.length > 0 ? requestedRegistry : readRegistry(homeDir);
   ensureProfileDirs(profileDir);
-  const tmpRoot = path.join(homeDir, '.installer-tmp');
-  fs.mkdirSync(tmpRoot, { recursive: true });
+  const tmpRoot = opts.allocateTempRoot();
 
   const installed = [];
   const seen = new Set();
@@ -1382,7 +1578,8 @@ async function installSpecInner(spec, opts) {
   // 判据与落点见 topPackageDisposition 的注释（声明 dsh.bundle ⇒ 进 dsh.profile.bundles；
   // 否则什么都不登记）。旧写法用一个 `topHasBundle` 布尔并去写**用户行**，方向是反的。
   let topPkgForRow = null;
-  let note = '重启应用后生效（bundle 型插件已登记，启动时随 profile 挂载）';
+  let note = opts.enabled === false ? '插件包已安装，启用状态保持不变'
+    : '重启应用后生效（bundle 型插件已登记，启动时随 profile 挂载）';
   /* 【GitHub 回退的记账】见落位校验失败那段：回退到 npm 同名包后，把"改用了谁"记下来
    * 进 note（.done JSON 自证），并把 npm 名留给幂等分支用作 id——GitHub spec 推出来的
    * 占位名是 `owner--repo`，与 tarball 内真名（如 `dshmarket`）不同，不记就会在"第二次
@@ -1390,12 +1587,14 @@ async function installSpecInner(spec, opts) {
   let githubFallbackNote = '';
   const queue = [{ spec: spec.trim(), depth: 0 }];
   while (queue.length > 0) {
+    opts.signal?.throwIfAborted();
     const job = queue.shift();
     const directNpm = parseNpm(job.spec);
-    if (directNpm !== null && directNpm.name === '@openai/codex'
+    if ((expected === undefined || job.depth !== 0) && directNpm !== null && directNpm.name === '@openai/codex'
       && directNpm.aliasName === undefined) {
       const externalBin = externalCodexBinary();
       if (externalBin.length > 0) {
+        if (ownedInstall) opts.preserve(ownedModuleDestination(profileDir, '@openai/codex'));
         const shim = installExternalCodexShim(profileDir, externalBin, directNpm.range);
         seen.add('@openai/codex');
         installed.push(shim);
@@ -1417,10 +1616,16 @@ async function installSpecInner(spec, opts) {
       log('依赖解析失败（跳过）：' + job.spec + '：' + (e && e.message));
       continue; // 子依赖失败：如实记录、不阻断
     }
+    opts.signal?.throwIfAborted();
+    if (!packageNameIsSafe(resolved.name)) throw new Error('无效的包名：' + String(resolved.name));
+    if (expected !== undefined && job.depth === 0 && resolved.kind === 'npm' && (resolved.name !== expected.name ||
+        resolved.version !== expected.version || (resolved.aliasName !== undefined && resolved.aliasName !== expected.name))) {
+      validateExpectedInstall(expected, resolved, resolved.aliasName || resolved.name);
+    }
     if (seen.has(resolved.name)) {
       continue;
     }
-    const dest = path.join(profileDir, 'node_modules', resolved.name);
+    const dest = ownedInstall ? ownedModuleDestination(profileDir, resolved.name) : path.join(profileDir, 'node_modules', resolved.name);
     if (fs.existsSync(path.join(dest, 'package.json'))) {
       // 【残留自愈（2026-09-24）】市场安装失败"没有新装任何包"的根因：上次安装
       // 留下半残 node_modules/<name>（package.json 在但入口缺失，装完即含不入 UI）。
@@ -1435,7 +1640,8 @@ async function installSpecInner(spec, opts) {
       // 磁盘 manifest 的 version 与本次解析出的目标版本不一致 ⇒ 视为未装、重落位。
       const haveVersion = readInstalledVersion(dest);
       const drifted = versionDrifted(resolved, haveVersion);
-      if (userRowLoadable(profileDir, resolved.name).length === 0 && !drifted) {
+      const relink = expected !== undefined && job.depth === 0 && fs.lstatSync(dest).isSymbolicLink();
+      if (userRowLoadable(profileDir, resolved.name).length === 0 && !drifted && !relink) {
         seen.add(resolved.name);
         /*
          * 顶层包可能已完整，但上次整单在后续依赖失败后回滚/残留，导致依赖缺失。
@@ -1443,7 +1649,14 @@ async function installSpecInner(spec, opts) {
          * 真机现场：subagent-codex 主包已在，@openai/codex 缺失，启动时才报
          * Cannot find module '@openai/codex/package.json'。
          */
-        enqueuePackageDependencies(queue, readJsonSafe(path.join(dest, 'package.json')), job.depth);
+        const current = readJsonSafe(path.join(dest, 'package.json'));
+        if (expected !== undefined && job.depth === 0) {
+          validateExpectedInstall(expected, current, resolved.name);
+          topName = expected.name;
+          topVersion = expected.version;
+          topPkgForRow = current;
+        }
+        enqueuePackageDependencies(queue, current, job.depth);
         continue; // 已装、完整、且版本一致（真幂等）
       }
       if (drifted) {
@@ -1453,10 +1666,11 @@ async function installSpecInner(spec, opts) {
         log('已装目录不完整（' + resolved.name + '），清除残留并重新安装…');
       }
       beforeVersions.set(resolved.name, haveVersion);
-      opts.preserve(dest);
+      if (expected === undefined) opts.preserve(dest);
     }
     log('下载 ' + resolved.name + '@' + resolved.version + ' …');
     const tgz = await fetchBuffer(resolved.tarballUrl);
+    opts.signal?.throwIfAborted();
     /*
      * 【解包之前先验完整性（2026-10-29）】npm 形态必须是"registry 声明什么就装什么"；
      * 校验失败直接抛（由外层 job 记成失败），**绝不**把未经验证的字节解包落位。
@@ -1558,7 +1772,9 @@ async function installSpecInner(spec, opts) {
     const finalName = typeof resolved.aliasName === 'string' && resolved.aliasName.length > 0
       ? resolved.aliasName
       : pkgMeta.name;
-    const finalDest = path.join(profileDir, 'node_modules', finalName);
+    if (job.depth === 0) validateExpectedInstall(expected, pkgMeta, finalName);
+    if (!packageNameIsSafe(finalName)) throw new Error('无效的包名：' + finalName);
+    const finalDest = ownedInstall ? ownedModuleDestination(profileDir, finalName) : path.join(profileDir, 'node_modules', finalName);
     if (seen.has(finalName)) {
       fs.rmSync(tmp, { recursive: true, force: true });
       continue;
@@ -1601,7 +1817,7 @@ async function installSpecInner(spec, opts) {
        *      `dsh plugin add <name>` 行为一致；profile 里记的依赖值仍是**用户原始
        *      GitHub spec**（见 mergeDependencies 注释：市场按这个字符串做来源比对）。
        */
-      if (resolved.kind === 'github' && subpath.length === 0 && job.noFallback !== true
+      if (expected === undefined && resolved.kind === 'github' && subpath.length === 0 && job.noFallback !== true
         && repositoryMatchesRequest(pkgMeta, job.spec)) {
         let npmResolved = null;
         try {
@@ -1648,6 +1864,8 @@ async function installSpecInner(spec, opts) {
     enqueuePackageDependencies(queue, pkgMeta, job.depth);
   }
   fs.rmSync(tmpRoot, { recursive: true, force: true });
+  opts.signal?.throwIfAborted();
+  if (expected !== undefined) validateExpectedInstall(expected, topPkgForRow, topName);
   const requestedNpm = parseNpm(spec.trim());
   const topPatchName = topName.length > 0
     ? topName
@@ -1661,6 +1879,13 @@ async function installSpecInner(spec, opts) {
     } catch (e) {
       throw e;
     }
+  }
+  opts.signal?.throwIfAborted();
+  if (expected !== undefined) {
+    commitExpectedInstall(profileDir, { name: topName, version: topVersion, spec: spec.trim(), exact: opts.saveExact === true },
+      opts.enabled);
+    return { ok: true, name: topName, version: topVersion, beforeVersion: topBeforeVersion, afterVersion: topVersion,
+      installed: installed, registry: registry, note: note };
   }
   if (installed.length === 0) {
     // 之前 "没有新装任何包" 被 web/市场侧判成失败（ok:false + .fail），但真 pnpm add
@@ -1697,7 +1922,7 @@ async function installSpecInner(spec, opts) {
       mergeDependencies(profileDir, [{
         name: topIdRaw, version: ver, spec: spec.trim(), exact: opts.saveExact === true,
       }]);
-      if (disp2.kind === 'bundle') {
+      if (disp2.kind === 'bundle' && opts.enabled !== false) {
         const added2 = appendProfileBundle(profileDir, topIdRaw);
         log(added2
           ? 'bundle 型包已补登记进 dsh.profile.bundles：' + topIdRaw
@@ -1708,7 +1933,7 @@ async function installSpecInner(spec, opts) {
         name: topIdRaw,
         version: ver,
         installed: [],
-        note: disp2.kind === 'bundle'
+        note: opts.enabled === false ? '包已存在，启用状态保持不变' : disp2.kind === 'bundle'
           ? '包已存在，已确认登记进 profile（重启应用后挂载生效）'
           : '包已存在（幂等；plain dependency 不登记为 profile 层）',
       };
@@ -1730,12 +1955,12 @@ async function installSpecInner(spec, opts) {
   // 的完整证据：声明 dsh.bundle 的包落点是 **dsh.profile.bundles**（与上游 reconcile 一致），
   // **不写用户行**（它的 entry 由它自己的 patch 插入，行名对不上 ⇒ 孤儿行 + 市场 toggle 报错）。
   const disp = topPackageDisposition(topPkgForRow);
-  if (disp.kind === 'bundle') {
+  if (disp.kind === 'bundle' && opts.enabled !== false) {
     const added = appendProfileBundle(profileDir, topName);
     log(added
       ? 'bundle 型包已登记进 dsh.profile.bundles：' + topName + '（重启应用后挂载生效）'
       : 'bundle 型包已在 dsh.profile.bundles 中：' + topName);
-  } else {
+  } else if (disp.kind !== 'bundle') {
     log('顶层包未声明 dsh.bundle（plain dependency），只落 node_modules、不登记为 profile 层：' + topName);
   }
   return {
@@ -2119,6 +2344,7 @@ async function removeSpecInner(spec, opts) {
 
 module.exports = {
   installSpec,
+  canInstallCatalogLink,
   removeSpec,
   extractTar,
   resolveSpec,

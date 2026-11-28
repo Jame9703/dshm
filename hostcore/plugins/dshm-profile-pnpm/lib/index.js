@@ -55,7 +55,7 @@ const POLL_MS = 500;
 const WAIT_MAX_MS = 20 * 60 * 1000;
 
 /** 需要「连值一起跳过」的选项（口径与 `bin/pnpm` 假壳、市场桥逐条对齐）。 */
-const VALUE_OPTS = ["--dir", "--profile"];
+const VALUE_OPTS = ["--dir", "--profile", "--registry"];
 
 /** 本桥接管的命令字（其余一律返回 undefined = 沿用 spawn）。 */
 const ADD_COMMANDS = ["add", "install", "i"];
@@ -458,12 +458,25 @@ function describeDone(spec, payload) {
 	return parts.join(" ");
 }
 
+function installArguments(argv) {
+	let saveExact = false;
+	let registry;
+	for (let index = 1; index < argv.length; index += 1) {
+		const arg = argv[index];
+		if (arg === "--save-exact" || arg === "-E") saveExact = true;
+		else if (arg === "--registry") registry = argv[++index];
+		else if (arg.startsWith("--registry=")) registry = arg.slice("--registry=".length);
+		else if (arg === "--dir" || arg === "--profile") index += 1;
+	}
+	return { saveExact, registry };
+}
+
 /**
  * 桥的入口：由 `tools/pack-core.mjs` 注入核心树的
  * `@deepseek-ai/dsh-plugin-manager/lib/types/operations.js` 调起。
  *
  * @param args `runProfilePnpm()` 收到的 pnpm 参数（`[命令, …选项, 目标]`）
- * @param ctx `{ dir, signal }` —— profile 目录与调用方的取消信号
+ * @param ctx `{ dir, signal, expected }` —— profile 目录、取消信号和安装目标校验
  * @returns `undefined`（不接管，调用方照旧 spawn）或 `{ exitCode, text }`
  */
 export async function bridgeRunProfilePnpm(args, ctx = {}) {
@@ -498,6 +511,14 @@ export async function bridgeRunProfilePnpm(args, ctx = {}) {
 		}
 		const signal = ctx.signal;
 		const cancelled = () => Boolean(signal && signal.aborted);
+		const apply = globalThis.__dshmApplyProfilePackage;
+		const options = installArguments(argv);
+		if (isAdd && ctx.expected !== undefined && targets.length !== 1) {
+			return { exitCode: 1, text: "精确目标仅适用于单个插件包", unmet: "unexpected-package" };
+		}
+		if (isAdd && typeof apply !== "function" && (ctx.expected !== undefined || options.saveExact || options.registry !== undefined)) {
+			return { exitCode: 1, text: "当前宿主安装桥不支持精确安装选项" };
+		}
 		const lines = [];
 		let failed = false;
 		for (const spec of targets) {
@@ -505,6 +526,15 @@ export async function bridgeRunProfilePnpm(args, ctx = {}) {
 				lines.push(`已取消：${spec}`);
 				failed = true;
 				break;
+			}
+			if (typeof apply === "function") {
+				const result = await apply(spec, { profileDir, remove: isRemove, signal,
+					expected: ctx.expected, saveExact: options.saveExact, registry: options.registry });
+				if (!result.ok) {
+					return { exitCode: 1, text: [...lines, result.error || "宿主安装失败"].join("\n"), unmet: result.unmet };
+				}
+				lines.push(describeDone(spec, result));
+				continue;
 			}
 			let base = "";
 			try {

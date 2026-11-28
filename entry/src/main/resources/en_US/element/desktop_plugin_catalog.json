@@ -1,5 +1,6 @@
 {
   "string": [
-    { "name": "desktop_plugin_unsupported_platform", "value": "This plugin is unavailable on the host platform" }
+    { "name": "desktop_plugin_unsupported_platform", "value": "This plugin is unavailable on the host platform" },
+    { "name": "desktop_plugin_catalog_source", "value": "Install source" }
   ]
 }

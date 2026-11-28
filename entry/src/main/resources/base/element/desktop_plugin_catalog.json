@@ -1,5 +1,6 @@
 {
   "string": [
-    { "name": "desktop_plugin_unsupported_platform", "value": "宿主平台不支持此插件" }
+    { "name": "desktop_plugin_unsupported_platform", "value": "宿主平台不支持此插件" },
+    { "name": "desktop_plugin_catalog_source", "value": "安装来源" }
   ]
 }
