@@ -35,6 +35,7 @@ import { DesktopTerminalRosters } from './DesktopTerminalRosters';
 import { DEFAULT_DESKTOP_TIMELINE_PREFERENCES, DESKTOP_TIMELINE_NS, desktopTimelinePreferences } from './DesktopTimelinePreferences';
 import type { DesktopTimelinePreferences } from './DesktopTimelinePreferences';
 import { DesktopTimelineDiscussionDrafts } from './DesktopTimelineDiscussionDrafts';
+import { DesktopScheduleCatalog } from './DesktopScheduleCatalog';
 
 export interface DesktopForkResult {
   id: string;
@@ -92,6 +93,7 @@ export class DesktopWorkspaceData {
   readonly terminalRetentions: DesktopTerminalRetentions = new DesktopTerminalRetentions(this.actions);
   readonly terminalRosters: DesktopTerminalRosters = new DesktopTerminalRosters(this.actions);
   readonly timelineDrafts = new DesktopTimelineDiscussionDrafts();
+  readonly scheduleCatalog = new DesktopScheduleCatalog(this.actions);
   readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
   readonly pluginMaintenance: DesktopPluginMaintenance = new DesktopPluginMaintenance(this.actions);
   readonly cordis: DesktopCordisRuntime = new DesktopCordisRuntime(this.actions);
@@ -253,6 +255,7 @@ export class DesktopWorkspaceData {
         });
         this.readConversationPreferences();
         this.actions.modelCatalogChanged();
+        this.scheduleCatalog.refresh();
         this.pluginInstall.reconnect();
         this.connectorAccounts.reconnect();
         this.cordis.reconnect();
@@ -272,6 +275,7 @@ export class DesktopWorkspaceData {
           this.conversation.observeGoalActivation(frame);
           this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.conversation.observeGoalActivation(frame));
         }
+        if (event === 'schedule/changed') { this.scheduleCatalog.refresh(); }
         if (event === EVENT_LLM_ADAPTERS_UPDATED) { this.actions.modelCatalogChanged(); }
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {

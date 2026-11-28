@@ -1,5 +1,28 @@
 {
   "string": [
+    { "name": "desktop_schedule_active", "value": "启用中" },
+    { "name": "desktop_schedule_paused", "value": "已暂停" },
+    { "name": "desktop_schedule_ended", "value": "已结束" },
+    { "name": "desktop_schedule_all", "value": "全部" },
+    { "name": "desktop_schedule_search", "value": "搜索自动化任务" },
+    { "name": "desktop_schedule_clear", "value": "清理已结束任务" },
+    { "name": "desktop_schedule_clear_message", "value": "清理目录中的 %1$d 条已结束任务？" },
+    { "name": "desktop_schedule_clear_action", "value": "清理" },
+    { "name": "desktop_schedule_delete", "value": "删除自动化任务" },
+    { "name": "desktop_schedule_delete_action", "value": "删除" },
+    { "name": "desktop_schedule_cancel", "value": "取消" },
+    { "name": "desktop_schedule_cleared", "value": "已清理 %1$d 条已结束任务" },
+    { "name": "desktop_schedule_rebase", "value": "重新读取并保留修改" },
+    { "name": "desktop_schedule_task_options", "value": "任务操作" },
+    { "name": "desktop_schedule_catalog_options", "value": "列表更多操作" },
+    { "name": "desktop_schedule_retry", "value": "重试" },
+    { "name": "desktop_schedule_no_matches", "value": "没有匹配的任务" },
+    { "name": "desktop_schedule_empty", "value": "暂无自动化任务" },
+    { "name": "desktop_schedule_rules", "value": "规则" },
+    { "name": "desktop_schedule_records", "value": "投递记录" },
+    { "name": "desktop_schedule_close", "value": "关闭详情" },
+    { "name": "desktop_schedule_new", "value": "新建任务" },
+    { "name": "desktop_schedule_web", "value": "在 WebUI 打开" },
     {
       "name": "module_desc",
       "value": "DSHM"

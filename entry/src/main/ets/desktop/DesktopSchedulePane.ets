@@ -1,7 +1,10 @@
+import { dialogMaterial } from 'platform';
 import { getArray, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
-import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './DesktopHostActions';
+import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopScheduleCatalog, desktopScheduleNextTime, desktopScheduleRows } from './DesktopScheduleCatalog';
+import type { DesktopScheduleCatalogSnapshot } from './DesktopScheduleCatalog';
 
 interface ScheduleRuleChoice {
   id: string;
@@ -33,11 +36,26 @@ function formatTime(iso: string): string {
 @Component
 export struct DesktopSchedulePane {
   host?: DesktopHostActions;
+  catalog?: DesktopScheduleCatalog;
   @Prop sessionId: string = '';
   @Prop workspacePath: string = '';
   onOpenSession: (id: string) => void = (_: string): void => {};
   onWeb: () => void = (): void => {};
   @State private tasks: Object[] = [];
+  @State private rows: Object[] = [];
+  @State private catalogError: string = '';
+  @State private catalogLoading: boolean = false;
+  @State private filter: string = 'active';
+  @State private search: string = '';
+  @State private paneWidth: number = 0;
+  @State private conflict: boolean = false;
+  private stopCatalog?: () => void;
+  private originalTitle: string = '';
+  private originalPrompt: string = '';
+  private failureCode: string = '';
+  private confirmId: number = -1;
+  private confirmOpening: boolean = false;
+  private confirmVersion: number = 0;
   @State private deliveries: Object[] = [];
   @State private nextBefore: string = '';
   @State private historyId: string = '';
@@ -70,11 +88,22 @@ export struct DesktopSchedulePane {
 
   aboutToAppear(): void {
     this.active = true;
-    this.refresh();
+    this.stopCatalog = this.catalog?.watch((snapshot: DesktopScheduleCatalogSnapshot): void => {
+      if (!this.active) { return; }
+      this.tasks = snapshot.tasks;
+      this.refilter();
+      this.catalogError = snapshot.error;
+      this.catalogLoading = snapshot.loading;
+      if (!snapshot.loading && !snapshot.error && this.detailId() && !this.taskById(this.detailId()) &&
+          !this.hasDraftChanges()) { this.closeDetail(); }
+    });
   }
 
   aboutToDisappear(): void {
     this.active = false;
+    this.stopCatalog?.();
+    this.stopCatalog = undefined;
+    this.closeConfirm();
   }
 
   private async invoke(endpoint: string, payload: Record<string, Object | null> = {}): Promise<RpcResult | undefined> {
@@ -83,25 +112,68 @@ export struct DesktopSchedulePane {
     }
     this.busy = true;
     this.status = '';
-    const result = await this.host.call(endpoint, payload);
+    this.failureCode = '';
+    let result: RpcResult;
+    try {
+      result = await this.host.call(endpoint, payload);
+    } catch (_) {
+      if (this.active) {
+        this.busy = false;
+        this.status = '宿主请求失败';
+      }
+      return undefined;
+    }
     if (!this.active) {
       return undefined;
     }
     this.busy = false;
+    this.failureCode = result.error?.code || getString(result.value, 'code') || '';
     this.status = desktopHostProblem(result);
     return this.status.length === 0 ? result : undefined;
   }
 
-  private async refresh(): Promise<void> {
-    const result = await this.invoke('schedule/catalog');
-    if (result !== undefined) {
-      this.tasks = desktopHostItems(result);
-    }
+  private async refresh(): Promise<boolean> { return await this.catalog?.refresh() ?? false; }
+
+  private taskById(id: string): Object | undefined {
+    return this.tasks.find((row: Object): boolean => getString(row, 'id') === id);
+  }
+
+  private refilter(): void {
+    this.rows = desktopScheduleRows(this.tasks, this.filter, this.search);
+  }
+
+  private catalogActions(): MenuElement[] {
+    return [{ value: $r('app.string.desktop_schedule_clear'), enabled: !this.catalogLoading,
+      action: (): void => { this.confirmDelete(); } }];
+  }
+
+  private endedCount(): number {
+    return this.tasks.filter((row: Object): boolean => getString(row, 'status') === 'ended').length;
+  }
+
+  private statusLabel(value: string): Resource {
+    if (value === 'active') { return $r('app.string.desktop_schedule_active'); }
+    if (value === 'paused') { return $r('app.string.desktop_schedule_paused'); }
+    if (value === 'ended') { return $r('app.string.desktop_schedule_ended'); }
+    return $r('app.string.desktop_schedule_all');
+  }
+
+  private hasDetail(): boolean { return this.editing || !!this.historyId; }
+
+  private detailId(): string { return this.historyId || this.editId; }
+
+  private closeDetail(): void {
+    this.editing = false;
+    this.historyId = '';
+    this.editId = '';
+    this.conflict = false;
+    this.status = '';
   }
 
   private chooseEditor(row?: Object): void {
     this.historyId = '';
     this.status = '';
+    this.conflict = false;
     this.editId = getString(row, 'id') ?? '';
     this.revision = getString(row, 'updatedAt') ?? '';
     this.title = getString(row, 'title') ?? '';
@@ -137,6 +209,8 @@ export struct DesktopSchedulePane {
     this.targetSession = this.targetKind === 'session' ? getString(target, 'sessionId') ?? '' : this.sessionId;
     this.cwd = getString(create, 'cwd') ?? (row === undefined ? this.workspacePath : '');
     this.preset = getString(create, 'agentPreset') ?? '';
+    this.originalTitle = this.title;
+    this.originalPrompt = this.prompt;
     this.originalKind = this.kind;
     this.originalRule = this.rule;
     this.originalTime = this.time;
@@ -220,10 +294,10 @@ export struct DesktopSchedulePane {
       this.status = '请填写任务名称、提示词和投递会话';
       return;
     }
-    const patch: Record<string, Object> = { 'title': title, 'prompt': prompt };
-    if (this.editId.length === 0 || this.originalKind !== this.kind || this.originalRule !== this.rule ||
-      this.originalTime !== this.time || this.originalZone !== this.zone ||
-      this.originalWeekdays !== this.weekday.join(',')) {
+    const patch: Record<string, Object> = {};
+    if (!this.editId || this.originalTitle !== this.title) { patch['title'] = title; }
+    if (!this.editId || this.originalPrompt !== this.prompt) { patch['prompt'] = prompt; }
+    if (!this.editId || this.timingChanged()) {
       const timing = this.timing();
       if (timing === undefined) {
         this.status = '请检查时间规则';
@@ -231,19 +305,85 @@ export struct DesktopSchedulePane {
       }
       patch['timing'] = timing;
     }
-    if (this.editId.length === 0 || this.targetKind !== this.originalTarget ||
-      this.targetSession !== this.originalSession || this.cwd !== this.originalDirectory ||
-      this.preset !== this.originalPreset) {
+    if (!this.editId || this.targetChanged()) {
       patch['target'] = this.target();
     }
+    if (Object.keys(patch).length === 0) { return; }
     const request: Record<string, Object | null> = {
       'id': this.editId, 'action': 'update', 'patch': patch, 'expectedUpdatedAt': this.revision || null
     };
     const result = this.editId.length === 0 ? await this.invoke('schedule/create', patch) :
       await this.invoke('schedule/edit', request);
     if (result !== undefined) {
-      this.editing = false;
-      await this.refresh();
+      const savedId = this.editId || getString(result.value, 'id') || getString(getRecord(result.value, 'task'), 'id') || '';
+      this.closeDetail();
+      if (await this.refresh() && this.active && savedId) {
+        const row = this.taskById(savedId);
+        if (row !== undefined) { this.chooseEditor(row); }
+      }
+    } else if (this.active && this.failureCode === 'schedule_conflict') {
+      this.conflict = true;
+    }
+  }
+
+  private timingChanged(): boolean {
+    return this.originalKind !== this.kind || this.originalRule !== this.rule ||
+      this.originalTime !== this.time || this.originalZone !== this.zone || this.originalWeekdays !== this.weekday.join(',');
+  }
+
+  private hasDraftChanges(): boolean {
+    return this.editing && (this.title !== this.originalTitle || this.prompt !== this.originalPrompt ||
+      this.timingChanged() || this.targetChanged());
+  }
+
+  private targetChanged(): boolean {
+    return this.targetKind !== this.originalTarget || this.targetSession !== this.originalSession ||
+      this.cwd !== this.originalDirectory || this.preset !== this.originalPreset;
+  }
+
+  private async rebaseDraft(): Promise<void> {
+    const id = this.editId;
+    if (!id || !this.catalog || this.busy) { return; }
+    this.busy = true;
+    try {
+      if (!(await this.refresh()) || !this.active || id !== this.editId) { return; }
+      const row = this.taskById(id);
+      if (row === undefined) {
+        this.status = '该任务已不存在，当前草稿仍可查看。';
+        return;
+      }
+      const title = this.title !== this.originalTitle ? this.title : undefined;
+      const prompt = this.prompt !== this.originalPrompt ? this.prompt : undefined;
+      const timingChanged = this.timingChanged();
+      const targetChanged = this.targetChanged();
+      const kind = this.kind;
+      const rule = this.rule;
+      const time = this.time;
+      const zone = this.zone;
+      const weekdays = this.weekday;
+      const target = this.targetKind;
+      const session = this.targetSession;
+      const cwd = this.cwd;
+      const preset = this.preset;
+      this.chooseEditor(row);
+      if (title !== undefined) { this.title = title; }
+      if (prompt !== undefined) { this.prompt = prompt; }
+      if (timingChanged) {
+        this.kind = kind;
+        this.rule = rule;
+        this.time = time;
+        this.zone = zone;
+        this.weekday = weekdays;
+      }
+      if (targetChanged) {
+        this.targetKind = target;
+        this.targetSession = session;
+        this.cwd = cwd;
+        this.preset = preset;
+      }
+      this.status = '';
+    } finally {
+      if (this.active) { this.busy = false; }
     }
   }
 
@@ -253,6 +393,7 @@ export struct DesktopSchedulePane {
       return;
     }
     if (action === 'history') {
+      if (this.editId !== id) { this.chooseEditor(row); }
       this.historyId = id;
       this.deliveries = [];
       this.nextBefore = '';
@@ -270,6 +411,7 @@ export struct DesktopSchedulePane {
     }
     const result = await this.invoke(action === 'run' ? 'schedule/run' : 'schedule/edit', payload);
     if (result !== undefined) {
+      if (action === 'delete' && this.detailId() === id) { this.closeDetail(); }
       await this.refresh();
     }
   }
@@ -281,6 +423,11 @@ export struct DesktopSchedulePane {
       query['before'] = this.nextBefore;
     }
     const result = await this.invoke('schedule/history', query);
+    if (append && this.failureCode === 'delivery_cursor_not_found' && this.active && this.historyId === id) {
+      this.nextBefore = '';
+      await this.history(false);
+      return;
+    }
     if (result !== undefined && this.historyId === id) {
       const records = getArray(result.value, 'records') ?? [];
       this.deliveries = append ? [...this.deliveries, ...records] : records;
@@ -288,15 +435,67 @@ export struct DesktopSchedulePane {
     }
   }
 
-  private confirmDelete(row: Object): void {
-    this.getUIContext().getPromptAction().showDialog({
-      title: '删除自动化任务', message: getString(row, 'title') ?? '',
-      buttons: [{ text: '取消', color: '#777777' }, { text: '删除', color: '#B73535' }]
-    }).then((result): void => {
-      if (result.index === 1 && this.active) {
-        this.taskAction('delete', row);
-      }
-    }).catch((): void => {});
+  private closeConfirm(): void {
+    const id = this.confirmId;
+    this.confirmVersion++;
+    this.confirmId = -1;
+    if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
+  }
+
+  private async deleteConfirmed(row?: Object): Promise<void> {
+    if (row !== undefined) { await this.taskAction('delete', row); return; }
+    const result = await this.invoke('schedule/deleteInactive');
+    const count = getNumber(result?.value, 'deleted');
+    if (result !== undefined && count !== undefined && Number.isSafeInteger(count) && count >= 0) {
+      await this.refresh();
+      if (this.active) { this.status = this.formatCleared(count); }
+    } else if (result !== undefined) {
+      this.status = '宿主未确认清理结果';
+    }
+  }
+
+  private formatCleared(count: number): string {
+    const manager = this.getUIContext().getHostContext()?.resourceManager;
+    return manager?.getStringSync($r('app.string.desktop_schedule_cleared').id, count) ?? String(count);
+  }
+
+  @Builder
+  private DeleteDialog(row?: Object) {
+    Column({ space: 12 }) {
+      Text(row === undefined ? $r('app.string.desktop_schedule_clear') : $r('app.string.desktop_schedule_delete'))
+        .width('100%').fontWeight(FontWeight.Medium).fontSize(19)
+      Text(row === undefined ? $r('app.string.desktop_schedule_clear_message', this.endedCount()) :
+        (getString(row, 'title') ?? '')).width('100%').fontSize(14)
+      Row({ space: 10 }) {
+        Button($r('app.string.desktop_schedule_cancel'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopScheduleDeleteCancel').onClick((): void => { this.closeConfirm(); })
+        Button(row === undefined ? $r('app.string.desktop_schedule_clear_action') : $r('app.string.desktop_schedule_delete_action'))
+          .key('desktopScheduleDeleteConfirm').fontColor(Color.White)
+          .backgroundColor($r('app.color.workspace_status_error')).onClick((): void => {
+            this.closeConfirm();
+            this.deleteConfirmed(row);
+          })
+      }.width('100%').justifyContent(FlexAlign.End)
+    }.key('desktopScheduleClearConfirm').width('100%').padding(20).alignItems(HorizontalAlign.Start)
+  }
+
+  private async confirmDelete(row?: Object): Promise<void> {
+    if (!this.active || this.busy || this.catalogLoading || this.confirmOpening || this.confirmId >= 0) { return; }
+    const prompt = this.getUIContext().getPromptAction();
+    const material = dialogMaterial();
+    const version = ++this.confirmVersion;
+    this.confirmOpening = true;
+    try {
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.DeleteDialog(row); },
+        width: 420, alignment: DialogAlignment.Center, autoCancel: true, systemMaterial: material,
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined, cornerRadius: 20,
+        onDidDisappear: (): void => { if (version === this.confirmVersion) { this.confirmId = -1; } }
+      });
+      if (this.active && version === this.confirmVersion) { this.confirmId = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.active) { this.status = '无法打开确认弹窗'; }
+    } finally { this.confirmOpening = false; }
   }
 
   private rowActions(row: Object): MenuElement[] {
@@ -318,9 +517,9 @@ export struct DesktopSchedulePane {
   @Builder
   private Editor() {
     Text(this.editId.length > 0 ? '编辑任务' : '新建任务').fontSize(18).fontWeight(FontWeight.Medium)
-    TextInput({ text: this.title, placeholder: '任务名称' }).maxLength(120)
+    TextInput({ text: this.title, placeholder: '任务名称' }).key('desktopScheduleTitle').maxLength(120).enabled(!this.busy)
       .onChange((value: string): void => { this.title = value; })
-    TextArea({ text: this.prompt, placeholder: '为会话填写提示词' }).height(92)
+    TextArea({ text: this.prompt, placeholder: '为会话填写提示词' }).key('desktopSchedulePrompt').height(92).enabled(!this.busy)
       .onChange((value: string): void => { this.prompt = value; })
     Button(RULES.find((row: ScheduleRuleChoice): boolean => row.id === this.kind)?.title || '时间规则',
       { buttonStyle: ButtonStyleMode.TEXTUAL })
@@ -375,16 +574,18 @@ export struct DesktopSchedulePane {
         .onChange((value: string): void => { this.preset = value; })
     }
     Row({ space: 10 }) {
-      Button('保存任务').enabled(!this.busy).onClick((): void => { this.save(); })
+      Button('保存任务').key('desktopScheduleSave').enabled(!this.busy && !this.conflict).onClick((): void => { this.save(); })
+      if (this.conflict) {
+        Button($r('app.string.desktop_schedule_rebase'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopScheduleRebase').enabled(!this.busy).onClick((): void => { this.rebaseDraft(); })
+      }
       Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
-        .onClick((): void => { this.editing = false; this.status = ''; })
+        .onClick((): void => { this.closeDetail(); })
     }
   }
 
   @Builder
   private History() {
-    Button('返回任务列表', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
-      .onClick((): void => { this.historyId = ''; this.status = ''; })
     if (!this.busy && this.deliveries.length === 0) {
       Text('暂无投递记录').fontColor($r('sys.color.font_secondary'))
     }
@@ -413,59 +614,126 @@ export struct DesktopSchedulePane {
 
   @Builder
   private Task(row: Object) {
-    Row({ space: 10 }) {
-      Column({ space: 4 }) {
-        Text(getString(row, 'title') ?? '').fontSize(15).fontWeight(FontWeight.Medium)
-        Text(getString(row, 'prompt') ?? '').fontSize(13).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text((getString(row, 'status') === 'active' ? '运行中' : getString(row, 'status') === 'paused' ? '已暂停' :
-          '已结束') + ' · ' + formatTime(getString(row, 'scheduledAt') ?? ''))
-          .fontSize(12).fontColor($r('sys.color.font_secondary'))
-      }
-      .layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Button('更多', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
-        .accessibilityText('管理 ' + (getString(row, 'title') ?? '任务'))
+    Row({ space: 7 }) {
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Column({ space: 5 }) {
+          Text(getString(row, 'title') || getString(row, 'prompt') || '').width('100%').fontSize(15)
+            .fontWeight(FontWeight.Medium).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(getString(row, 'prompt') ?? '').width('100%').fontSize(12).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_secondary'))
+          Row({ space: 7 }) {
+            Text(this.statusLabel(getString(row, 'status') ?? '')).fontSize(11).fontColor($r('sys.color.font_secondary'))
+            Text(formatTime(desktopScheduleNextTime(row))).fontSize(11).fontColor($r('sys.color.font_secondary'))
+          }.width('100%')
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }.key('desktopScheduleTask-' + (getString(row, 'id') ?? '')).layoutWeight(1).height(76).borderRadius(8)
+        .accessibilitySelected(this.detailId() === getString(row, 'id')).enabled(!this.busy)
+        .onClick((): void => { this.chooseEditor(row); })
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Image($r('app.media.dsh_session_ellipsis')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+      }.key('desktopScheduleTaskMenu-' + (getString(row, 'id') ?? '')).width(32).height(32).padding(0)
+        .accessibilityText($r('app.string.desktop_schedule_task_options')).enabled(!this.busy)
         .bindMenu(this.rowActions(row), desktopMenuOptions(Placement.BottomRight))
-    }
-    .width('100%').padding(10).borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
+    }.width('100%').padding({ left: 2, right: 5 }).borderRadius(10)
+      .backgroundColor(this.detailId() === getString(row, 'id') ? $r('app.color.workspace_selection') :
+        $r('app.color.workspace_panel'))
+  }
+
+  @Builder
+  private List() {
+    Column({ space: 10 }) {
+      Row({ space: 4 }) {
+        ForEach(['active', 'paused', 'ended', 'all'], (item: string): void => {
+          Button(this.statusLabel(item), { buttonStyle: this.filter === item ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL })
+            .key('desktopScheduleFilter-' + item).layoutWeight(1).height(31).padding(0).fontSize(12)
+            .accessibilitySelected(this.filter === item).onClick((): void => { this.filter = item; this.refilter(); })
+        }, (item: string): string => item)
+      }.width('100%')
+      Row({ space: 5 }) {
+        Search({ value: this.search, placeholder: $r('app.string.desktop_schedule_search') })
+          .key('desktopScheduleSearch').layoutWeight(1).height(35)
+          .onChange((text: string): void => { this.search = text; this.refilter(); })
+        if (this.filter !== 'active' && this.endedCount() > 0) {
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.dsh_session_ellipsis')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+          }.key('desktopScheduleCatalogMore').width(35).height(35).padding(0)
+            .accessibilityText($r('app.string.desktop_schedule_catalog_options')).enabled(!this.busy)
+            .bindMenu(this.catalogActions(), desktopMenuOptions(Placement.BottomRight))
+        }
+      }.width('100%')
+      if (this.catalogLoading) { LoadingProgress().width(18).height(18) }
+      if (this.catalogError) {
+        Row({ space: 7 }) {
+          Text(this.catalogError).fontSize(12).key('desktopScheduleCatalogError').layoutWeight(1)
+          Button($r('app.string.desktop_schedule_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopScheduleCatalogRetry').onClick((): void => { this.refresh(); })
+        }.width('100%')
+      }
+      Scroll() {
+        Column({ space: 7 }) {
+          ForEach(this.rows, (row: Object): void => {
+            this.Task(row)
+          }, (row: Object): string => (getString(row, 'id') ?? '') + ':' + (getString(row, 'updatedAt') ?? '') +
+            ':' + (getString(row, 'status') ?? '') + ':' + desktopScheduleNextTime(row))
+          if (!this.catalogLoading && !this.catalogError && this.rows.length === 0) {
+            Text(this.search.trim() ? $r('app.string.desktop_schedule_no_matches') : $r('app.string.desktop_schedule_empty'))
+              .width('100%').fontColor($r('sys.color.font_secondary')).padding(16)
+          }
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }.width('100%').layoutWeight(1).align(Alignment.TopStart).key('desktopScheduleCatalog')
+    }.width(this.paneWidth >= 840 && this.hasDetail() ? '39%' : '100%').height('100%')
+      .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private Detail() {
+    Column({ space: 8 }) {
+      Row({ space: 6 }) {
+        if (this.detailId()) {
+          Button($r('app.string.desktop_schedule_rules'), {
+            buttonStyle: this.historyId ? ButtonStyleMode.TEXTUAL : ButtonStyleMode.NORMAL
+          }).key('desktopScheduleRuleTab').onClick((): void => { if (!this.busy) { this.historyId = ''; } })
+          Button($r('app.string.desktop_schedule_records'), {
+            buttonStyle: this.historyId ? ButtonStyleMode.NORMAL : ButtonStyleMode.TEXTUAL
+          }).key('desktopScheduleHistoryTab').onClick((): void => {
+            const row = this.taskById(this.detailId());
+            if (row !== undefined && !this.busy) { this.taskAction('history', row); }
+          })
+        }
+        Blank()
+        Button($r('app.string.desktop_schedule_close'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopScheduleCloseDetail').enabled(!this.busy).onClick((): void => { this.closeDetail(); })
+      }.width('100%')
+      Scroll() {
+        Column({ space: 8 }) {
+          if (this.historyId) { this.History() }
+          else { this.Editor() }
+        }.width('100%').alignItems(HorizontalAlign.Start)
+      }.width('100%').layoutWeight(1).align(Alignment.TopStart)
+    }.layoutWeight(1).height('100%').key('desktopScheduleDetail')
   }
 
   build() {
     Column({ space: 14 }) {
       Row({ space: 8 }) {
-        Text('自动化任务').fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
-        if (!this.editing && this.historyId.length === 0) {
-          Button('新建任务').enabled(!this.busy).onClick((): void => { this.chooseEditor(); })
-          Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
-            .onClick((): void => { this.refresh(); })
-        }
-        Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy).onClick(this.onWeb)
+        Text($r('app.string.desktop_experiment_schedule')).fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
+        Button($r('app.string.desktop_schedule_new')).key('desktopScheduleNew').enabled(!this.busy)
+          .onClick((): void => { this.chooseEditor(); })
+        Button($r('app.string.desktop_schedule_web'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .enabled(!this.busy).onClick(this.onWeb)
+      }.width('100%')
+      if (this.busy) { LoadingProgress().width(20).height(20) }
+      if (this.status) {
+        Text(this.status).key('desktopScheduleStatus').fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
       }
-      .width('100%')
-      if (this.busy) {
-        LoadingProgress().width(24).height(24)
-      }
-      if (this.status.length > 0) {
-        Text(this.status).fontSize(13).fontColor($r('sys.color.warning')).width('100%')
-      }
-      Scroll() {
-        Column({ space: 8 }) {
-          if (this.editing) {
-            this.Editor()
-          } else if (this.historyId.length > 0) {
-            this.History()
-          } else {
-            ForEach(this.tasks, (row: Object) => {
-              this.Task(row)
-            }, (row: Object): string => JSON.stringify(row))
-            if (!this.busy && this.tasks.length === 0) {
-              Text('暂无自动化任务').fontColor($r('sys.color.font_secondary'))
-            }
-          }
-        }
-        .width('100%').alignItems(HorizontalAlign.Start)
-      }
-      .width('100%').layoutWeight(1).align(Alignment.TopStart)
-    }
-    .padding(20).height('100%').layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Row({ space: 14 }) {
+        if (!this.hasDetail() || this.paneWidth >= 840) { this.List() }
+        if (this.hasDetail()) { this.Detail() }
+      }.width('100%').layoutWeight(1).alignItems(VerticalAlign.Top)
+    }.padding(20).height('100%').layoutWeight(1).alignItems(HorizontalAlign.Start)
+      .onAreaChange((_old: Area, area: Area): void => {
+        const width = Number(area.width);
+        if (Number.isFinite(width) && Math.abs(width - this.paneWidth) >= 1) { this.paneWidth = width; }
+      })
   }
 }

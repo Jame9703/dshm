@@ -4524,7 +4524,7 @@ struct DesktopWorkspace {
               })
             } else if (this.panel === 'schedule' && this.ready && this.data !== undefined) {
               DesktopSchedulePane({
-                host: this.data.actions,
+                host: this.data.actions, catalog: this.data.scheduleCatalog,
                 sessionId: this.sessionId,
                 workspacePath: this.data.workspacePath(this.workspaceId),
                 onOpenSession: (id: string): void => { this.openSessionById(id); },

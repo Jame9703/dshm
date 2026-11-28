@@ -1,5 +1,28 @@
 {
   "string": [
+    { "name": "desktop_schedule_active", "value": "Active" },
+    { "name": "desktop_schedule_paused", "value": "Paused" },
+    { "name": "desktop_schedule_ended", "value": "Ended" },
+    { "name": "desktop_schedule_all", "value": "All" },
+    { "name": "desktop_schedule_search", "value": "Search tasks" },
+    { "name": "desktop_schedule_clear", "value": "Clear ended tasks" },
+    { "name": "desktop_schedule_clear_message", "value": "Clear %1$d ended tasks in the catalog?" },
+    { "name": "desktop_schedule_clear_action", "value": "Clear" },
+    { "name": "desktop_schedule_delete", "value": "Delete scheduled task" },
+    { "name": "desktop_schedule_delete_action", "value": "Delete" },
+    { "name": "desktop_schedule_cancel", "value": "Cancel" },
+    { "name": "desktop_schedule_cleared", "value": "Cleared %1$d ended tasks" },
+    { "name": "desktop_schedule_rebase", "value": "Reload and keep changes" },
+    { "name": "desktop_schedule_task_options", "value": "Task actions" },
+    { "name": "desktop_schedule_catalog_options", "value": "More list actions" },
+    { "name": "desktop_schedule_retry", "value": "Retry" },
+    { "name": "desktop_schedule_no_matches", "value": "No matching tasks" },
+    { "name": "desktop_schedule_empty", "value": "No scheduled tasks" },
+    { "name": "desktop_schedule_rules", "value": "Rules" },
+    { "name": "desktop_schedule_records", "value": "Delivery records" },
+    { "name": "desktop_schedule_close", "value": "Close details" },
+    { "name": "desktop_schedule_new", "value": "New task" },
+    { "name": "desktop_schedule_web", "value": "Open in WebUI" },
     {
       "name": "module_desc",
       "value": "DSHM"
