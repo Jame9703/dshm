@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "desktop_question_receipt_sending", "value": "正在提交回答…" },
+    { "name": "desktop_question_receipt_sent", "value": "回答已发送，等待宿主确认…" },
+    { "name": "desktop_question_receipt_confirming", "value": "正在等待宿主确认回答状态…" },
+    { "name": "desktop_question_receipt_resubmit", "value": "回答未送达，工作已继续，请再提交一次。" }
+  ]
+}

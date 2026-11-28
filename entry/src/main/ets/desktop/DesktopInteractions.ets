@@ -40,11 +40,23 @@ interface DesktopContinuedAnswer {
   inboxSequence: number;
 }
 
+export type DesktopQuestionReceiptPhase = 'sending' | 'sent' | 'confirming' | 'resubmit';
+
+interface DesktopQuestionReceipt {
+  event: DesktopInteraction;
+  phase: DesktopQuestionReceiptPhase;
+  carrierEnded: boolean;
+  claimEnded: boolean;
+  releaseSender: () => void;
+}
+
 interface DesktopQuestionProjection {
   sequence: number;
   inboxSequence: number;
   continued: DesktopInteraction[];
   queued: Set<string>;
+  active: Set<string>;
+  settled: Set<string>;
   submissions: Map<string, DesktopContinuedAnswer>;
 }
 
@@ -65,6 +77,7 @@ export interface DesktopInteraction {
   questionProgress?: DesktopQuestionProgress;
   questionHidden?: boolean;
   questionHeld?: boolean;
+  questionReceipt?: DesktopQuestionReceiptPhase;
   waitDeadline?: number;
   waitPausedMs?: number;
 }
@@ -133,6 +146,8 @@ export class DesktopInteractions {
   private readonly events: Map<string, DesktopInteraction>;
   private readonly questionStates: Map<string, DesktopQuestionState>;
   private readonly questionProjections: Map<string, DesktopQuestionProjection>;
+  private readonly questionReceipts: Map<string, DesktopQuestionReceipt>;
+  private readonly retainedClaims: Map<string, () => void>;
   private readonly settling: Set<DesktopInteraction>;
   private readonly owner?: DesktopInteractions;
   private views?: Set<DesktopInteractions>;
@@ -160,6 +175,8 @@ export class DesktopInteractions {
     this.events = owner?.events ?? new Map<string, DesktopInteraction>();
     this.questionStates = owner?.questionStates ?? new Map<string, DesktopQuestionState>();
     this.questionProjections = owner?.questionProjections ?? new Map<string, DesktopQuestionProjection>();
+    this.questionReceipts = owner?.questionReceipts ?? new Map<string, DesktopQuestionReceipt>();
+    this.retainedClaims = owner?.retainedClaims ?? new Map<string, () => void>();
     this.settling = owner?.settling ?? new Set<DesktopInteraction>();
   }
 
@@ -190,7 +207,7 @@ export class DesktopInteractions {
   }
 
   closeView(): void {
-    this.releaseClaim();
+    this.releaseClaim(true);
     this.questionFocus = '';
     this.selected = '';
     if (this.owner?.views?.delete(this)) { this.owner.publish(); }
@@ -199,7 +216,7 @@ export class DesktopInteractions {
   select(sessionId: string): void {
     if (sessionId !== this.selected) {
       this.questionFocus = '';
-      this.releaseClaim();
+      this.releaseClaim(true);
       this.selected = sessionId;
       this.publish();
     }
@@ -215,6 +232,10 @@ export class DesktopInteractions {
     this.questionFocus = '';
     this.views?.forEach((view: DesktopInteractions): void => { view.questionFocus = ''; });
     if (this.events.size === 0) { return; }
+    this.questionReceipts.forEach((receipt: DesktopQuestionReceipt): void => {
+      receipt.phase = 'resubmit';
+      receipt.releaseSender();
+    });
     this.events.clear();
     this.publish();
   }
@@ -228,8 +249,14 @@ export class DesktopInteractions {
     }
     if (type === RemoteEventFrameType.CANCEL) {
       const row = this.events.get(id);
-      if (row?.kind === 'question' && (!row.timed || !row.callId)) {
-        this.forgetQuestion(this.questionKey(row), row.callId.length > 0);
+      const receipt = row === undefined ? undefined : this.pendingReceipt(row);
+      if (receipt !== undefined) {
+        receipt.carrierEnded = true;
+        this.publish();
+        return;
+      }
+      if (row?.kind === 'question' && !row.callId) {
+        this.forgetQuestion(this.questionKey(row), false);
       }
       if (this.events.delete(id)) {
         this.publish();
@@ -239,6 +266,7 @@ export class DesktopInteractions {
     if (type !== RemoteEventFrameType.WATERFALL) {
       return;
     }
+    if (this.events.has(id)) { return; }
     const name = getString(frame, 'event');
     const sessionId = getString(frame, 'agentId') ?? '';
     const request = getRecord(frame, 'request');
@@ -267,6 +295,8 @@ export class DesktopInteractions {
       timed: getBoolean(wait, 'timed') === true,
       planReview: approval ? undefined : planReviewOf(request, questions)
     };
+    const projection = this.questionProjections.get(sessionId);
+    if (!approval && row.callId && (projection?.settled.has(row.callId) || projection?.queued.has(row.callId))) { return; }
     this.events.set(id, row);
     this.publish();
   }
@@ -281,6 +311,7 @@ export class DesktopInteractions {
     let state = this.questionProjections.get(sessionId);
     if (state === undefined) {
       state = { sequence: -1, inboxSequence: -1, continued: [], queued: new Set<string>(),
+        active: new Set<string>(), settled: new Set<string>(),
         submissions: new Map<string, DesktopContinuedAnswer>() };
       this.questionProjections.set(sessionId, state);
     }
@@ -288,33 +319,50 @@ export class DesktopInteractions {
     const updateInbox = (inbox === null || getRecord(values, 'inbox') !== undefined) && sequence > state.inboxSequence;
     if (!updateQuestions && !updateInbox) { return; }
     if (updateQuestions) { this.readQuestionRows(sessionId, state, projection, sequence); }
-    if (updateInbox) { this.readQuestionInbox(state, inbox, sequence); }
+    if (updateInbox) { this.readQuestionInbox(sessionId, state, inbox, sequence); }
     this.publish();
   }
 
   private readQuestionRows(sessionId: string, state: DesktopQuestionProjection, projection: Object | undefined,
     sequence: number): void {
     const rows: DesktopInteraction[] = [];
+    const active = new Set<string>();
+    state.settled = new Set<string>();
     for (const settled of getArray(projection, 'settled') ?? []) {
       const callId = getString(settled, 'callId') ?? '';
       if (callId) {
+        state.settled.add(callId);
+        this.finishQuestionReceipt(sessionId, callId);
         this.forgetQuestion(sessionId + '\u0000' + callId, true);
         state.submissions.delete(callId);
       }
     }
     for (const item of getArray(projection, 'active') ?? []) {
       const callId = getString(item, 'callId') ?? '';
-      if (!callId || getString(item, 'state') !== 'continued') {
-        continue;
-      }
+      if (!callId) { continue; }
+      active.add(callId);
+      if (getString(item, 'state') !== 'continued') { continue; }
       const questions = questionsOf(item);
       if (questions.length > 0) {
+        const receipt = this.questionReceipts.get(sessionId + '\u0000' + callId);
+        if (receipt !== undefined && receipt.phase !== 'resubmit') {
+          this.removeReceiptEvent(receipt);
+          receipt.phase = 'resubmit';
+          receipt.releaseSender();
+        }
         rows.push({
           id: 'continued/' + callId, sessionId: sessionId, callId: callId, kind: 'question',
           tool: '', reason: '', questions: questions, continued: true, timed: false
         });
       }
     }
+    state.active.forEach((callId: string): void => {
+      if (!active.has(callId) && !state.settled.has(callId)) {
+        this.finishQuestionReceipt(sessionId, callId);
+        this.forgetQuestion(sessionId + '\u0000' + callId, true);
+      }
+    });
+    state.active = active;
     state.sequence = sequence;
     state.continued = rows;
     state.submissions.forEach((_submission: DesktopContinuedAnswer, callId: string): void => {
@@ -322,13 +370,17 @@ export class DesktopInteractions {
     });
   }
 
-  private readQuestionInbox(state: DesktopQuestionProjection, inbox: Object | undefined, sequence: number): void {
+  private readQuestionInbox(sessionId: string, state: DesktopQuestionProjection, inbox: Object | undefined,
+    sequence: number): void {
     const queued = new Set<string>();
     for (const lane of ['next-step', 'next-turn']) {
       for (const message of getArray(inbox, lane) ?? []) {
         const source = getRecord(message, 'source');
         const callId = getString(source, 'callId');
-        if (callId && getString(source, 'kind') === 'user-question-reply') { queued.add(callId); }
+        if (callId && getString(source, 'kind') === 'user-question-reply') {
+          queued.add(callId);
+          this.finishQuestionReceipt(sessionId, callId);
+        }
       }
     }
     state.queued = queued;
@@ -389,6 +441,31 @@ export class DesktopInteractions {
     return row.sessionId + '\u0000' + (row.callId || row.id);
   }
 
+  private pendingReceipt(row: DesktopInteraction): DesktopQuestionReceipt | undefined {
+    if (row.kind !== 'question' || !row.callId || row.continued) { return undefined; }
+    const receipt = this.questionReceipts.get(this.questionKey(row));
+    return receipt?.event === row && receipt.phase !== 'resubmit' ? receipt : undefined;
+  }
+
+  private removeReceiptEvent(receipt: DesktopQuestionReceipt): void {
+    if (this.events.get(receipt.event.id) === receipt.event) {
+      this.events.delete(receipt.event.id);
+    }
+  }
+
+  private finishQuestionReceipt(sessionId: string, callId: string): void {
+    const key = sessionId + '\u0000' + callId;
+    const receipt = this.questionReceipts.get(key);
+    if (receipt !== undefined) {
+      this.removeReceiptEvent(receipt);
+      this.questionReceipts.delete(key);
+      receipt.releaseSender();
+    }
+    this.events.forEach((row: DesktopInteraction, id: string): void => {
+      if (row.kind === 'question' && row.sessionId === sessionId && row.callId === callId) { this.events.delete(id); }
+    });
+  }
+
   private readQuestionState(row: DesktopInteraction): DesktopQuestionState | undefined {
     const key = this.questionKey(row);
     const existing = this.questionStates.get(key);
@@ -430,7 +507,7 @@ export class DesktopInteractions {
 
   saveQuestion(id: string, progress: DesktopQuestionProgress, engage: boolean): void {
     const row = this.questionRow(id);
-    if (row === undefined) { return; }
+    if (row === undefined || this.pendingReceipt(row) !== undefined) { return; }
     const state = this.questionState(row);
     state.progress = progress;
     const startedHold = engage && row.timed && !state.held;
@@ -452,7 +529,8 @@ export class DesktopInteractions {
   setQuestionFocus(id: string, focused: boolean): void {
     if (focused) {
       const row = this.events.get(id);
-      if (id === this.questionFocus || row?.sessionId !== this.selected || !row.timed || !row.callId) { return; }
+      if (id === this.questionFocus || row?.sessionId !== this.selected || !row.timed || !row.callId ||
+        this.pendingReceipt(row) !== undefined) { return; }
       const state = this.readQuestionState(row);
       if (state?.held || state?.hidden) { return; }
       this.questionFocus = id;
@@ -466,6 +544,7 @@ export class DesktopInteractions {
   async closeQuestion(id: string): Promise<string> {
     const row = this.questionRow(id);
     if (row === undefined) { return '这项提问已结束'; }
+    if (this.pendingReceipt(row) !== undefined) { return '正在提交这项回答'; }
     if (row.callId) {
       this.questionState(row).hidden = true;
       if (this.questionFocus === id) { this.questionFocus = ''; }
@@ -494,6 +573,8 @@ export class DesktopInteractions {
     }
     const encoded: Record<string, Object> = { 'answers': answers };
     if (!event.continued) {
+      // Only timed ask_user_question calls publish a correlated host projection.
+      if (event.timed && event.callId) { return this.sendNamedAnswer(event, encoded); }
       this.holdQuestion(id);
       return this.settle(id, encoded, 'result', !event.callId);
     }
@@ -517,6 +598,30 @@ export class DesktopInteractions {
     }
     this.publish();
     return '';
+  }
+
+  private async sendNamedAnswer(event: DesktopInteraction, encoded: Object): Promise<string> {
+    if (this.pendingReceipt(event) !== undefined || this.settling.has(event)) { return '正在提交这项回答'; }
+    const key = this.questionKey(event);
+    let releaseSender: () => void = (): void => {};
+    const projected = new Promise<string>((resolve: (value: string) => void): void => {
+      releaseSender = (): void => { resolve(''); };
+    });
+    const receipt: DesktopQuestionReceipt = { event: event, phase: 'sending', carrierEnded: false, claimEnded: false,
+      releaseSender: releaseSender };
+    this.questionReceipts.set(key, receipt);
+    this.holdQuestion(event.id);
+    this.publish();
+    const error = await Promise.race<Promise<string>[]>([this.send(event.id, 'result', encoded), projected]);
+    if (this.questionReceipts.get(key) === receipt && receipt.phase === 'sending') {
+      if (error && !receipt.carrierEnded) {
+        this.questionReceipts.delete(key);
+      } else {
+        receipt.phase = error ? 'confirming' : 'sent';
+      }
+      this.publish();
+    }
+    return error;
   }
 
   private async settle(id: string, value: Object, kind: string = 'result', clearDraft: boolean = false): Promise<string> {
@@ -553,6 +658,14 @@ export class DesktopInteractions {
   private publish(): void {
     if (this.owner !== undefined) { this.owner.publish(); return; }
     const all = Array.from(this.events.values());
+    this.retainedClaims.forEach((stop: () => void, id: string): void => {
+      const row = this.events.get(id);
+      const receipt = row === undefined ? undefined : this.pendingReceipt(row);
+      if (receipt === undefined || receipt.carrierEnded || receipt.claimEnded) {
+        this.retainedClaims.delete(id);
+        stop();
+      }
+    });
     const claims = new Map<string, DesktopInteractions>();
     const focused = new Set<string>();
     this.reserveClaim(claims, focused);
@@ -588,8 +701,11 @@ export class DesktopInteractions {
   }
 
   private syncClaim(all: DesktopInteraction[], claims: Map<string, DesktopInteractions>, focused: Set<string>): void {
-    const claim = this.events.get(this.claimEvent) ?? all.find((row: DesktopInteraction): boolean =>
-      row.sessionId === this.selected && row.timed && row.callId.length > 0 && !claims.has(row.id));
+    const current = this.events.get(this.claimEvent);
+    const claim = current !== undefined && this.canKeepClaim(current) ? current :
+      all.find((row: DesktopInteraction): boolean =>
+        row.sessionId === this.selected && row.timed && row.callId.length > 0 && !claims.has(row.id) &&
+        !this.retainedClaims.has(row.id) && this.canKeepClaim(row));
     if ((claim?.id ?? '') !== this.claimEvent) {
       this.releaseClaim();
     }
@@ -601,6 +717,11 @@ export class DesktopInteractions {
       this.updateCountdownFocus(claim, shouldPause);
       if (!this.claimEvent) { this.attachClaim(claim); }
     }
+  }
+
+  private canKeepClaim(row: DesktopInteraction): boolean {
+    const receipt = this.pendingReceipt(row);
+    return receipt === undefined || (!receipt.carrierEnded && !receipt.claimEnded);
   }
 
   private publishView(all: DesktopInteraction[], claims: Map<string, DesktopInteractions>): void {
@@ -616,11 +737,15 @@ export class DesktopInteractions {
         return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: reason,
           kind: 'approval', questions: [], continued: false, timed: false, approvalSubmitting: this.settling.has(row) };
       }
-      if (row.kind !== 'question' || row.planReview !== undefined) { return row; }
+      if (row.kind !== 'question') { return row; }
       const state = this.readQuestionState(row);
       const claim = claims.get(row.id);
+      const receipt = this.questionReceipts.get(this.questionKey(row));
+      const phase = row.continued ? (receipt?.phase === 'resubmit' ? receipt.phase : undefined) :
+        this.pendingReceipt(row)?.phase;
       return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: row.reason,
         kind: row.kind, questions: row.questions, continued: row.continued, timed: row.timed,
+        planReview: row.planReview, reviewHidden: row.reviewHidden, questionReceipt: phase,
         questionProgress: state?.progress, questionHidden: state?.hidden, questionHeld: state?.held,
         waitDeadline: claim?.claimDeadline,
         waitPausedMs: claim?.claimPausedMs };
@@ -634,13 +759,20 @@ export class DesktopInteractions {
     this.claimPausedMs = undefined;
   }
 
-  private releaseClaim(): void {
+  private releaseClaim(retainReceipt: boolean = false): void {
     this.clearCountdown();
     const stop = this.stopClaim;
+    const id = this.claimEvent;
+    const row = this.events.get(id);
     this.stopClaim = undefined;
     this.claimEvent = '';
     this.claimFocused = false;
-    stop?.();
+    if (retainReceipt && stop !== undefined && row !== undefined && this.pendingReceipt(row) !== undefined &&
+      this.canKeepClaim(row)) {
+      this.retainedClaims.set(id, stop);
+    } else {
+      stop?.();
+    }
   }
 
   private updateCountdownFocus(row: DesktopInteraction, focused: boolean): void {
@@ -686,14 +818,18 @@ export class DesktopInteractions {
         this.setCountdown(row, Math.max(0, remaining));
         this.publish();
       },
-      onError: (): void => { this.endCountdown(row.id); },
-      onEnd: (): void => { this.endCountdown(row.id); }
+      onError: (): void => { this.endCountdown(row); },
+      onEnd: (): void => { this.endCountdown(row); }
     });
   }
 
-  private endCountdown(id: string): void {
-    if (this.claimEvent !== id || (this.claimDeadline === 0 && this.claimPausedMs === undefined)) { return; }
-    this.clearCountdown();
+  private endCountdown(row: DesktopInteraction): void {
+    const retained = this.retainedClaims.delete(row.id);
+    if (this.claimEvent !== row.id && !retained) { return; }
+    const receipt = this.pendingReceipt(row);
+    if (receipt !== undefined) { receipt.claimEnded = true; }
+    if (!retained && receipt === undefined && this.claimDeadline === 0 && this.claimPausedMs === undefined) { return; }
+    if (this.claimEvent === row.id) { this.clearCountdown(); }
     this.publish();
   }
 }

@@ -141,12 +141,18 @@ export struct DesktopInteractionPane {
     }
     Row({ space: 8 }) {
       Blank()
-      Button('要求修改', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
+      Button('要求修改', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.questionLocked())
         .onClick((): void => { this.onPlanDecision(this.request?.id ?? '', false); })
-      Button('同意执行').enabled(!this.busy)
+      Button('同意执行').enabled(!this.questionLocked())
         .onClick((): void => { this.onPlanDecision(this.request?.id ?? '', true); })
     }
     .width('100%')
+    this.QuestionReceipt()
+  }
+
+  private questionLocked(): boolean {
+    const phase = this.request?.questionReceipt;
+    return this.busy || (phase !== undefined && phase !== 'resubmit');
   }
 
   private isLast(): boolean { return this.questionIndex >= this.drafts.length - 1; }
@@ -173,6 +179,7 @@ export struct DesktopInteractionPane {
   }
 
   private select(question: DesktopQuestion, label: string): void {
+    if (this.questionLocked()) { return; }
     const current = this.drafts[this.questionIndex];
     const selected = current?.selected ?? [];
     const next = question.multi || this.isLast() ? this.questionIndex : this.questionIndex + 1;
@@ -185,6 +192,7 @@ export struct DesktopInteractionPane {
   }
 
   private updateText(question: DesktopQuestion, text: string): void {
+    if (this.questionLocked()) { return; }
     const draft = this.drafts[this.questionIndex];
     if (draft?.id !== question.id || draft.custom === text) { return; }
     this.update({ id: question.id, selected: question.multi ? this.drafts[this.questionIndex]?.selected ?? [] : [],
@@ -197,7 +205,7 @@ export struct DesktopInteractionPane {
 
   private canFocusCustom(question: DesktopQuestion): boolean {
     const request = this.request;
-    return this.mounted && !this.collapsed && !this.busy && request?.kind === 'question' &&
+    return this.mounted && !this.collapsed && !this.questionLocked() && request?.kind === 'question' &&
       request.planReview === undefined && !request.timed && question.custom && question.options.length === 0 &&
       question.id === request.questions[this.questionIndex]?.id && !this.focusedQuestions.has(this.questionIndex);
   }
@@ -215,7 +223,7 @@ export struct DesktopInteractionPane {
     if (event.type !== KeyType.Down ||
       (event.keyCode !== KeyCode.KEYCODE_ENTER && event.keyCode !== KeyCode.KEYCODE_NUMPAD_ENTER) ||
       this.composingCustom) { return false; }
-    if (!this.busy) {
+    if (!this.questionLocked()) {
       if (event.getModifierKeyState?.(['Shift']) === true) { this.insertLineBreak(question); }
       else if (this.answered(this.drafts[this.questionIndex])) { this.nextQuestion(); }
       else { this.incomplete = true; }
@@ -240,11 +248,13 @@ export struct DesktopInteractionPane {
   }
 
   private nextQuestion(): void {
+    if (this.questionLocked()) { return; }
     if (this.isLast()) { this.submit(); }
     else { this.save(this.questionIndex + 1); }
   }
 
   private skip(question: DesktopQuestion): void {
+    if (this.questionLocked()) { return; }
     const last = this.isLast();
     this.update({ id: question.id, selected: [], custom: '', skipped: true },
       last ? this.questionIndex : this.questionIndex + 1);
@@ -252,6 +262,7 @@ export struct DesktopInteractionPane {
   }
 
   private submit(): void {
+    if (this.questionLocked()) { return; }
     const missing = this.drafts.findIndex((draft: DesktopQuestionDraft): boolean => !draft.skipped && !this.answered(draft));
     if (missing !== -1) {
       this.save(missing);
@@ -279,12 +290,16 @@ export struct DesktopInteractionPane {
 
 
   @Builder
-  private IconButton(icon: Resource, label: Resource, id: string, enabled: boolean, action: () => void) {
+  private IconButton(icon: Resource, label: Resource, id: string, enabled: boolean, lockWithQuestion: boolean,
+    action: () => void) {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
       Image(icon).width(15).height(15).supportSvg2(true).draggable(false).accessibilityLevel('no')
         .fillColor($r('sys.color.font_secondary'))
     }.width(32).height(32).borderRadius(7).padding(0).key(id)
-    .accessibilityText(label).enabled(enabled).onClick(action)
+    .accessibilityText(label).enabled(enabled && (!lockWithQuestion || !this.questionLocked()))
+    .onClick((): void => {
+      if (!lockWithQuestion || !this.questionLocked()) { action(); }
+    })
   }
 
   @Builder
@@ -301,17 +316,17 @@ export struct DesktopInteractionPane {
           $r('app.string.desktop_question_countdown', this.waitSeconds())).key('desktopQuestionCountdown').fontSize(12)
           .fontColor($r('sys.color.font_secondary'))
         Button($r('app.string.desktop_question_hold'), { buttonStyle: ButtonStyleMode.NORMAL }).key('desktopQuestionHold')
-          .height(28).enabled(!this.busy).onClick((): void => { this.onQuestionHold(this.request?.id ?? ''); })
+          .height(28).enabled(!this.questionLocked()).onClick((): void => { this.onQuestionHold(this.request?.id ?? ''); })
       }
       this.IconButton(this.collapsed ? $r('app.media.dsh_queue_chevron_up_outline') :
         $r('app.media.dsh_queue_chevron_down_outline'), this.collapsed ? $r('app.string.desktop_question_expand_card') :
-        $r('app.string.desktop_question_collapse_card'), 'desktopQuestionCollapse', !this.busy,
+        $r('app.string.desktop_question_collapse_card'), 'desktopQuestionCollapse', true, true,
         (): void => {
           if (!this.collapsed) { this.releaseAnswerFocus(); }
           this.collapsed = !this.collapsed;
         })
       this.IconButton($r('app.media.dsh_dock_close'), this.request?.callId ? $r('app.string.desktop_question_hide') :
-        $r('app.string.desktop_question_cancel'), 'desktopQuestionClose', !this.busy,
+        $r('app.string.desktop_question_cancel'), 'desktopQuestionClose', true, true,
         (): void => { this.onQuestionClose(this.request?.id ?? ''); })
     }.width('100%')
   }
@@ -344,7 +359,7 @@ export struct DesktopInteractionPane {
       }
       .layoutWeight(1).padding(8).borderRadius(8).key('desktopQuestionOption-' + index)
       .backgroundColor(this.selected(option.label) ? $r('app.color.workspace_selection') : Color.Transparent)
-      .accessibilityText(option.caption).accessibilitySelected(this.selected(option.label)).enabled(!this.busy)
+      .accessibilityText(option.caption).accessibilitySelected(this.selected(option.label)).enabled(!this.questionLocked())
       .onClick((): void => { this.select(question, option.label); })
       if (option.detail) {
         this.DetailToggle(option.label, 'desktopQuestionOptionDetail-' + index)
@@ -357,7 +372,7 @@ export struct DesktopInteractionPane {
     this.IconButton(this.expanded.includes(id) ? $r('app.media.dsh_queue_chevron_up_outline') :
       $r('app.media.dsh_queue_chevron_down_outline'), this.expanded.includes(id) ?
       $r('app.string.desktop_question_collapse') : $r('app.string.desktop_question_expand'), keyName,
-      true, (): void => { this.toggleDetail(id); })
+      true, false, (): void => { this.toggleDetail(id); })
   }
 
   @Builder
@@ -381,7 +396,7 @@ export struct DesktopInteractionPane {
             TextArea({ text: this.drafts[this.questionIndex]?.custom ?? '',
               placeholder: $r('app.string.desktop_question_input'), controller: this.customController })
               .width('100%').constraintSize({ minHeight: 42, maxHeight: 120 }).fontSize(14)
-              .borderRadius(8).key('desktopQuestionCustom').id(this.customFocusId()).enabled(!this.busy)
+              .borderRadius(8).key('desktopQuestionCustom').id(this.customFocusId()).enabled(!this.questionLocked())
               .onAppear((): void => { this.focusCustom(question); })
               .onFocus((): void => {
                 if (question.options.length === 0) { this.focusedQuestions.add(this.questionIndex); }
@@ -401,7 +416,21 @@ export struct DesktopInteractionPane {
         Text($r('app.string.desktop_question_incomplete')).key('desktopQuestionIncomplete')
           .fontSize(12).fontColor($r('sys.color.warning'))
       }
+      this.QuestionReceipt()
       this.QuestionFooter(question)
+    }
+  }
+
+  @Builder
+  private QuestionReceipt() {
+    if (this.request?.questionReceipt === 'resubmit') {
+      Text($r('app.string.desktop_question_receipt_resubmit')).key('desktopQuestionResubmit')
+        .width('100%').fontSize(12).fontColor($r('sys.color.warning'))
+    } else if (this.request?.questionReceipt !== undefined) {
+      Text(this.request?.questionReceipt === 'sending' ? $r('app.string.desktop_question_receipt_sending') :
+        this.request?.questionReceipt === 'sent' ? $r('app.string.desktop_question_receipt_sent') :
+        $r('app.string.desktop_question_receipt_confirming')).key('desktopQuestionReceipt')
+        .width('100%').fontSize(12).fontColor($r('sys.color.font_secondary'))
     }
   }
 
@@ -410,16 +439,17 @@ export struct DesktopInteractionPane {
     Row({ space: 6 }) {
       if (this.drafts.length > 1) {
         this.IconButton($r('app.media.dsh_browser_chevron_left_outline'), $r('app.string.desktop_question_previous'),
-          'desktopQuestionPrevious', this.questionIndex > 0 && !this.busy, (): void => { this.save(this.questionIndex - 1); })
+          'desktopQuestionPrevious', this.questionIndex > 0, true,
+          (): void => { this.save(this.questionIndex - 1); })
         Text(`${this.questionIndex + 1} / ${this.drafts.length}`).fontSize(12).fontColor($r('sys.color.font_secondary'))
         this.IconButton($r('app.media.dsh_browser_chevron_right_outline'), $r('app.string.desktop_question_next'),
-          'desktopQuestionNext', !this.isLast() && !this.busy, (): void => { this.save(this.questionIndex + 1); })
+          'desktopQuestionNext', !this.isLast(), true, (): void => { this.save(this.questionIndex + 1); })
       }
       Blank()
       Button($r('app.string.desktop_question_skip'), { buttonStyle: ButtonStyleMode.NORMAL }).key('desktopQuestionSkip')
-        .enabled(!this.busy).onClick((): void => { this.skip(question); })
+        .enabled(!this.questionLocked()).onClick((): void => { this.skip(question); })
       Button(this.isLast() ? $r('app.string.desktop_question_submit') : $r('app.string.desktop_question_next'))
-        .key('desktopQuestionContinue').enabled(!this.busy && this.answered(this.drafts[this.questionIndex]))
+        .key('desktopQuestionContinue').enabled(!this.questionLocked() && this.answered(this.drafts[this.questionIndex]))
         .onClick((): void => { this.nextQuestion(); })
     }.width('100%')
   }

@@ -858,6 +858,7 @@ export struct DesktopPluginsPane {
             Column() {
               DesktopPluginArtwork({ icon: row.artwork, packageName: row.id })
             }.width(48).height(48).justifyContent(FlexAlign.Center).borderRadius(10)
+              .key('desktopPluginBundleArtwork-' + row.id)
               .border({ width: 0.5, color: $r('app.color.workspace_border') })
             Column({ space: 4 }) {
               Row({ space: 6 }) {
@@ -1159,8 +1160,10 @@ export struct DesktopPluginsPane {
         { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
         .onClick((): void => { this.closeBundle(); })
       Row({ space: 8 }) {
-        DesktopPluginArtwork({ icon: this.bundles.find((row: DesktopPluginRow): boolean =>
-          row.id === this.detailName)?.artwork ?? '', packageName: this.detailName })
+        Column() {
+          DesktopPluginArtwork({ icon: this.bundles.find((row: DesktopPluginRow): boolean =>
+            row.id === this.detailName)?.artwork ?? '', packageName: this.detailName })
+        }.width(36).height(36).key('desktopPluginDetailArtwork-' + this.detailName)
         Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') ||
           this.bundles.find((row: DesktopPluginRow): boolean => row.id === this.detailName)?.title || this.detailName)
           .key('desktopPluginDetailTitle').fontSize(22).fontWeight(FontWeight.Medium)

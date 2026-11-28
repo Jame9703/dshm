@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "desktop_question_receipt_sending", "value": "Sending reply…" },
+    { "name": "desktop_question_receipt_sent", "value": "Reply sent. Waiting for the host to confirm…" },
+    { "name": "desktop_question_receipt_confirming", "value": "Waiting for the host to confirm the reply status…" },
+    { "name": "desktop_question_receipt_resubmit", "value": "The answer did not arrive before work continued; submit it again." }
+  ]
+}
