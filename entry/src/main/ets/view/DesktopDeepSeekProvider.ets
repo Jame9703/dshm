@@ -1,5 +1,6 @@
 import { checkBaseURL, Radius, SessionHub, SettingsWriteOutcome, Sp } from 'appstate';
 import type { CredentialItem, PiAiModelRow } from 'appstate';
+import { getBoolean } from 'connection';
 import { desktopHostProblem } from '../desktop/DesktopHostActions';
 import { desktopMenuOptions } from '../desktop/DesktopMenuOptions';
 import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
@@ -16,7 +17,15 @@ const RETRY_PATH: string[] = ['retryPolicy'];
 @Component
 export struct DesktopDeepSeekProvider {
   @Prop credentials: CredentialItem[] = [];
+  @Prop @Watch('setupChanged') desktopPage: boolean = false;
+  @Prop @Watch('setupChanged') setupRequested: boolean = false;
+  @Prop @Watch('setupChanged') setupDescription: Object | undefined = undefined;
+  @Prop @Watch('setupCredentialChanged') setupCredential: DesktopDeepSeekCredential | undefined = undefined;
+  @Prop adapterError: string = '';
+  onFinished: (changed: boolean, wasSetup: boolean) => void = (): void => {};
   @State private isOpen: boolean = false;
+  @State private automaticSetup: boolean = false;
+  @State private setupWritable: boolean = false;
   @State private loading: boolean = false;
   @State private busy: boolean = false;
   @State private conflict: boolean = false;
@@ -35,8 +44,45 @@ export struct DesktopDeepSeekProvider {
   @State private retryChange: DesktopRetryChange = { operations: [], problem: '', problemField: '' };
   @State private authHelp: boolean = false;
   private generation: number = 0;
+  private setupDismissed: boolean = false;
+
+  aboutToAppear(): void { this.setupChanged(); }
 
   aboutToDisappear(): void { this.closeEditor(); }
+
+  private setupChanged(): void {
+    if (!this.desktopPage || !this.setupRequested) {
+      if (this.automaticSetup && !this.busy) { this.closeEditor(); }
+      return;
+    }
+    const description = this.setupDescription;
+    if (description === undefined || this.setupDismissed) { return; }
+    if (this.automaticSetup) {
+      // Authorization is live. The editor still owns the revision and draft it started with.
+      this.setupWritable = getBoolean(description, 'writable') === true;
+      return;
+    }
+    if (this.isOpen) { return; }
+    const document = readDesktopDeepSeekProvider(description);
+    if (document === undefined) { return; }
+    this.isOpen = true;
+    this.automaticSetup = true;
+    this.setupWritable = document.writable;
+    this.credential = this.setupCredential;
+    this.initializeEditor(document, description);
+  }
+
+  private setupCredentialChanged(): void {
+    if (this.automaticSetup && !this.busy) { this.credential = this.setupCredential; }
+  }
+
+  private finishEditor(changed: boolean): void {
+    const wasSetup = this.automaticSetup;
+    if (wasSetup) { this.setupDismissed = true; }
+    this.closeEditor();
+    this.onFinished(changed, wasSetup);
+    if (!wasSetup) { this.setupChanged(); }
+  }
 
   private closeEditor(): void {
     this.generation++;
@@ -45,6 +91,8 @@ export struct DesktopDeepSeekProvider {
     this.keyClearApplied = false;
     this.authHelp = false;
     this.isOpen = false;
+    this.automaticSetup = false;
+    this.setupWritable = false;
     this.loading = false;
     this.busy = false;
     this.advanced = false;
@@ -54,6 +102,15 @@ export struct DesktopDeepSeekProvider {
     this.credential = undefined;
     this.retryDocument = undefined;
     this.retryChange = { operations: [], problem: '', problemField: '' };
+  }
+
+  private initializeEditor(document: DesktopDeepSeekProviderDocument, description: Object | undefined): void {
+    this.endpoint = document.userEndpoint;
+    this.models = (document.userModels ?? document.inheritedModels).slice();
+    this.modelsOverridden = document.userModels !== undefined;
+    this.draftVersion++;
+    this.retryDocument = readDesktopRetryDocument(description, DEEPSEEK_SETTINGS_NS, RETRY_PATH);
+    this.original = document;
   }
 
   private async openEditor(): Promise<void> {
@@ -70,15 +127,10 @@ export struct DesktopDeepSeekProvider {
         this.notice = reply.ok ? $r('app.string.desktop_deepseek_unavailable') : desktopHostProblem(reply);
         return;
       }
-      this.endpoint = document.userEndpoint;
-      this.models = (document.userModels ?? document.inheritedModels).slice();
-      this.modelsOverridden = document.userModels !== undefined;
-      this.draftVersion++;
-      this.retryDocument = readDesktopRetryDocument(reply.value, DEEPSEEK_SETTINGS_NS, RETRY_PATH);
       const credential = await hub.readCredentialDescription(document.credentialRef);
       if (generation !== this.generation) { return; }
       this.credential = credential.ok ? readDesktopDeepSeekCredential(credential.value, document.credentialRef) : undefined;
-      this.original = document;
+      this.initializeEditor(document, reply.value);
     } catch (_) {
       if (generation === this.generation) { this.notice = $r('app.string.desktop_deepseek_unavailable'); }
     } finally {
@@ -86,7 +138,12 @@ export struct DesktopDeepSeekProvider {
     }
   }
 
-  private canEdit(): boolean { return this.original?.writable === true && !this.loading && !this.busy && !this.conflict; }
+  private canEdit(): boolean {
+    const original = this.original;
+    if (original === undefined) { return false; }
+    const writable = this.automaticSetup ? this.setupWritable : original.writable;
+    return writable && !this.loading && !this.busy && !this.conflict;
+  }
 
   private changeModels(models: PiAiModelRow[]): void {
     if (!this.canEdit()) { return; }
@@ -179,11 +236,14 @@ export struct DesktopDeepSeekProvider {
           return;
         }
       }
-      this.closeEditor();
+      this.finishEditor(true);
     } catch (_) {
       if (generation === this.generation) { this.notice = $r('app.string.desktop_deepseek_save_failed'); }
     } finally {
-      if (generation === this.generation) { this.busy = false; }
+      if (generation === this.generation) {
+        this.busy = false;
+        this.setupChanged();
+      }
     }
   }
 
@@ -207,7 +267,7 @@ export struct DesktopDeepSeekProvider {
     TextInput({ text: this.keyDraft, placeholder: this.keyPlaceholder() })
       .key('desktopDeepSeekProviderKey').type(InputType.Password).showPasswordIcon(true)
       .accessibilityText($r('app.string.desktop_deepseek_key_label'))
-      .enabled(this.canEdit() && !this.keyClearApplied && this.credential?.writable !== false)
+      .enabled(this.canEdit() && !this.keyClearApplied && (this.desktopPage || this.credential?.writable !== false))
       .onChange((value: string): void => {
         if (value === this.keyDraft) { return; }
         this.keyDraft = value;
@@ -233,6 +293,13 @@ export struct DesktopDeepSeekProvider {
   @Builder
   private Editor() {
     Column({ space: Sp.S }) {
+      if (this.automaticSetup) {
+        Flex({ alignItems: ItemAlign.Baseline }) {
+          Text($r('app.string.desktop_deepseek_provider')).fontSize(14).lineHeight(22).fontWeight(FontWeight.Medium)
+          Text($r('app.string.desktop_deepseek_route')).fontSize(12).lineHeight(18).margin({ left: 8 })
+            .fontColor($r('sys.color.font_tertiary'))
+        }.key('desktopDeepSeekSetupTitle').width('100%')
+      }
       this.Credential()
       Button($r('app.string.desktop_deepseek_advanced'), { buttonStyle: ButtonStyleMode.TEXTUAL })
         .key('desktopDeepSeekProviderAdvanced').accessibilitySelected(this.advanced)
@@ -268,7 +335,7 @@ export struct DesktopDeepSeekProvider {
       Row({ space: Sp.S }) {
         Blank()
         Button($r('app.string.desktop_deepseek_cancel'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopDeepSeekProviderCancel').enabled(!this.busy).onClick((): void => { this.closeEditor(); })
+          .key('desktopDeepSeekProviderCancel').enabled(!this.busy).onClick((): void => { this.finishEditor(false); })
         Button($r('app.string.desktop_deepseek_save'), { buttonStyle: ButtonStyleMode.EMPHASIZED })
           .key('desktopDeepSeekProviderSave').enabled(this.canEdit() && this.keyProblem() === '' &&
             !this.retryChange.problem && (!this.modelsOverridden || desktopDeepSeekCatalogProblem(this.models) === ''))
@@ -277,23 +344,32 @@ export struct DesktopDeepSeekProvider {
     }.key('desktopDeepSeekProviderEditor').width('100%').alignItems(HorizontalAlign.Start)
   }
 
-  build() {
-    Column({ space: Sp.S }) {
-      Row({ space: Sp.S }) {
-        Column({ space: 4 }) {
-          Text($r('app.string.desktop_deepseek_provider')).fontSize(16)
-          Text($r('app.string.desktop_deepseek_route')).fontSize(12).fontColor($r('sys.color.font_secondary'))
-        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        if (!this.isOpen) {
-          if (this.credentials.some((entry: CredentialItem): boolean => entry.namespace === DEEPSEEK_SETTINGS_NS &&
-              entry.configured)) {
-            Text($r('app.string.desktop_deepseek_key_configured')).fontSize(12)
-              .fontColor($r('sys.color.font_secondary'))
-          }
-          Button($r('app.string.desktop_deepseek_edit'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopDeepSeekProviderEdit').onClick((): void => { this.openEditor(); })
+  @Builder
+  private ProviderRow() {
+    Row({ space: Sp.S }) {
+      Column({ space: 4 }) {
+        Text($r('app.string.desktop_deepseek_provider')).fontSize(16)
+        Text($r('app.string.desktop_deepseek_route')).fontSize(12).fontColor($r('sys.color.font_secondary'))
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (!this.isOpen) {
+        if (this.credentials.some((entry: CredentialItem): boolean => entry.namespace === DEEPSEEK_SETTINGS_NS &&
+            entry.configured)) {
+          Text($r('app.string.desktop_deepseek_key_configured')).fontSize(12)
+            .fontColor($r('sys.color.font_secondary'))
         }
-      }.width('100%')
+        Button($r('app.string.desktop_deepseek_edit'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopDeepSeekProviderEdit').onClick((): void => { this.openEditor(); })
+      }
+    }.width('100%')
+  }
+
+  build() {
+    Column({ space: this.automaticSetup ? 14 : Sp.S }) {
+      if (!this.automaticSetup) { this.ProviderRow() }
+      if (this.adapterError) {
+        Text(this.adapterError).key('desktopDeepSeekProviderAdapterError').fontSize(12).width('100%')
+          .fontColor($r('app.color.workspace_status_error'))
+      }
       if (this.loading) {
         LoadingProgress().width(22).height(22)
       } else if (this.original !== undefined) {
@@ -302,12 +378,15 @@ export struct DesktopDeepSeekProvider {
         Text(this.notice).fontSize(12).width('100%').fontColor($r('app.color.workspace_status_error'))
         Row({ space: Sp.S }) {
           Button($r('app.string.desktop_deepseek_cancel'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopDeepSeekProviderCancel').onClick((): void => { this.closeEditor(); })
+            .key('desktopDeepSeekProviderCancel').onClick((): void => { this.finishEditor(false); })
           Button($r('app.string.desktop_deepseek_reload'), { buttonStyle: ButtonStyleMode.TEXTUAL })
             .onClick((): void => { this.openEditor(); })
         }.width('100%')
       }
-    }.width('100%').alignItems(HorizontalAlign.Start).padding(Sp.M).borderRadius(Radius.M)
-      .backgroundColor($r('sys.color.background_secondary'))
+    }.key(this.automaticSetup ? 'desktopDeepSeekSetupCard' : 'desktopDeepSeekProviderCard')
+      .width('100%').alignItems(HorizontalAlign.Start)
+      .padding({ top: this.automaticSetup ? 14 : Sp.M, bottom: this.automaticSetup ? 14 : Sp.M,
+        left: this.automaticSetup ? 16 : Sp.M, right: this.automaticSetup ? 16 : Sp.M })
+      .borderRadius(this.automaticSetup ? 16 : Radius.M).backgroundColor($r('sys.color.background_secondary'))
   }
 }

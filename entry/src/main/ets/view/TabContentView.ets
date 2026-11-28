@@ -30,6 +30,7 @@ import { SettingsPane } from './SettingsPane';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
 import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
+import type { DesktopModelProviderAccess } from '../desktop/DesktopModelProviderReadiness';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
@@ -55,6 +56,7 @@ export interface TabContentFacade {
   desktopSettingsCompact: boolean;
   desktopAccountHost?: DesktopHostActions;
   desktopGeneralHost?: DesktopGeneralHostAccess;
+  desktopModelProviders?: DesktopModelProviderAccess;
   desktopAccountDetails?: DesktopAccountDetailsAccess;
   desktopAccountIdentity?: DesktopAccountSettingsIdentity;
   desktopCodingTools: DesktopCodingToolsSnapshot;
@@ -236,6 +238,7 @@ export struct TabContentView {
         desktopShortcuts: this.f.desktopShortcuts,
         settingsCompact: this.f.desktopSettingsCompact,
         desktopAccountHost: this.f.desktopAccountHost, desktopAccountIdentity: this.f.desktopAccountIdentity,
+        desktopModelProviders: this.f.desktopModelProviders,
         desktopGeneralHost: this.f.desktopGeneralHost,
         desktopAccountDetails: this.f.desktopAccountDetails,
         codingTools: this.f.desktopCodingTools, onCodingToolsChange: this.f.onDesktopCodingToolsChange,

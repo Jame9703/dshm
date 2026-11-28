@@ -22,22 +22,25 @@ export struct DesktopDeepSeekKeyDialog {
   @State private failure: ResourceStr = '';
   private active: boolean = false;
   private refreshVersion: number = 0;
-  private stopCatalogWatch?: () => void;
+  private refreshTimer: number = -1;
+  private stopProviderWatch?: () => void;
 
   aboutToAppear(): void {
     this.active = true;
     this.target = this.initialTarget;
     const host = this.host;
     if (host !== undefined) {
-      this.stopCatalogWatch = host.watchModelCatalog((): void => { this.refreshTarget(host); });
+      this.stopProviderWatch = host.watchModelProviders((): void => { this.scheduleTargetRefresh(host); });
     }
   }
 
   aboutToDisappear(): void {
     this.active = false;
     this.refreshVersion++;
-    this.stopCatalogWatch?.();
-    this.stopCatalogWatch = undefined;
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = -1;
+    this.stopProviderWatch?.();
+    this.stopProviderWatch = undefined;
     this.draft = '';
     this.revealed = false;
   }
@@ -50,6 +53,14 @@ export struct DesktopDeepSeekKeyDialog {
 
   private canSave(): boolean {
     return this.target !== undefined && !this.busy && this.draft.trim().length > 0 && this.validation() === '';
+  }
+
+  private scheduleTargetRefresh(host: DesktopHostActions): void {
+    if (!this.active || this.refreshTimer >= 0) { return; }
+    this.refreshTimer = setTimeout((): void => {
+      this.refreshTimer = -1;
+      this.refreshTarget(host);
+    }, 80);
   }
 
   private async refreshTarget(host: DesktopHostActions): Promise<void> {

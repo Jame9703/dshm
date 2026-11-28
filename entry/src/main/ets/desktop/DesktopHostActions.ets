@@ -12,6 +12,7 @@ export class DesktopHostActions {
   private readonly skillCatalogs: Map<string, Promise<DesktopSkill[] | undefined>> = new Map();
   private readonly changes: Map<string, Promise<DesktopChangeSummary | undefined>> = new Map();
   private modelCatalogWatchers?: Set<() => void>;
+  private modelProviderWatchers?: Set<() => void>;
   private modelCatalogRequest?: Promise<DesktopModelCatalogResult>;
   private modelCatalogSettled: boolean = false;
 
@@ -52,6 +53,18 @@ export class DesktopHostActions {
     this.modelCatalogRequest = undefined;
     this.modelCatalogSettled = false;
     this.modelCatalogWatchers?.forEach((listener: () => void): void => { listener(); });
+    this.modelProvidersChanged();
+  }
+
+  watchModelProviders(listener: () => void): () => void {
+    const watchers = this.modelProviderWatchers ?? new Set<() => void>();
+    this.modelProviderWatchers = watchers;
+    watchers.add(listener);
+    return (): void => { watchers.delete(listener); };
+  }
+
+  modelProvidersChanged(): void {
+    this.modelProviderWatchers?.forEach((listener: () => void): void => { listener(); });
   }
 
   modelCatalog(refresh: boolean = false): Promise<DesktopModelCatalogResult> {

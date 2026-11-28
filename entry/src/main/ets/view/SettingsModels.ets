@@ -25,6 +25,11 @@ import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { DEEPSEEK_ACCOUNT_ROUTE, DEEPSEEK_API_ROUTE, DEEPSEEK_SETTINGS_NS } from '../desktop/DesktopDeepSeekProviderModel';
 import { DesktopDeepSeekProvider } from './DesktopDeepSeekProvider';
 import { DesktopModelProviderAddFlow } from './DesktopModelProviderAddFlow';
+import { desktopAddProviderDocument } from '../desktop/DesktopProviderAddModel';
+import type { DesktopAddProviderDocument } from '../desktop/DesktopProviderAddModel';
+import { desktopProviderNeedsSetup } from '../desktop/DesktopModelProviderReadiness';
+import type { DesktopModelProviderAccess, DesktopModelProviderReadiness,
+  DesktopModelProviderReadinessRow } from '../desktop/DesktopModelProviderReadiness';
 
 
 /**
@@ -103,6 +108,7 @@ export struct SettingsModels {
   @Prop piAiProviders: PiAiProviderView[] = [];
   @Prop nativeProviderAdd: boolean = false;
   settingsHost?: DesktopHostActions;
+  modelProviderAccess?: DesktopModelProviderAccess;
 
   /** 点提供方卡片上的「编辑」 */
   onEditProvider: (route: string) => void = () => {
@@ -134,6 +140,122 @@ export struct SettingsModels {
   /** 候选模型过滤词 */
   @State candidateQuery: string = '';
   @State private expandedPiAiRetry: string = '';
+  @State private providerReadiness: DesktopModelProviderReadiness | undefined = undefined;
+  @State private providerAddDocument: DesktopAddProviderDocument = desktopAddProviderDocument(undefined, []);
+  @State private providerReadFailed: boolean = false;
+  @State private deepSeekSetupDismissed: boolean = false;
+  @State private savedProviderName: string = '';
+  private providerPageActive: boolean = false;
+  private providerPageEpoch: number = 0;
+  private providerReadInFlight: boolean = false;
+  private providerReadAgain: boolean = false;
+  private providerReadTimer: number = -1;
+  private announceProviderSave: boolean = false;
+  private savedTargetName: string = '';
+  private stopProviderWatch?: () => void;
+
+  aboutToAppear(): void {
+    if (!this.nativeProviderAdd) { return; }
+    this.providerPageActive = true;
+    this.providerPageEpoch++;
+    this.stopProviderWatch = this.modelProviderAccess?.observe((): void => { this.scheduleProviderRead(); });
+    this.readProviderFacts();
+  }
+
+  aboutToDisappear(): void {
+    this.providerPageActive = false;
+    this.providerPageEpoch++;
+    clearTimeout(this.providerReadTimer);
+    this.providerReadTimer = -1;
+    this.stopProviderWatch?.();
+    this.stopProviderWatch = undefined;
+    this.providerReadInFlight = false;
+    this.providerReadAgain = false;
+  }
+
+  private scheduleProviderRead(): void {
+    if (!this.providerPageActive || this.providerReadTimer >= 0) { return; }
+    this.providerReadTimer = setTimeout((): void => {
+      this.providerReadTimer = -1;
+      this.readProviderFacts();
+    }, 80);
+  }
+
+  private async readProviderFacts(): Promise<void> {
+    const access = this.modelProviderAccess;
+    if (!this.providerPageActive) { return; }
+    if (access === undefined) { this.providerReadFailed = true; return; }
+    if (this.providerReadInFlight) { this.providerReadAgain = true; return; }
+    const epoch = this.providerPageEpoch;
+    const announce = this.announceProviderSave;
+    this.providerReadInFlight = true;
+    try {
+      const facts = await access.read();
+      if (epoch !== this.providerPageEpoch || this.providerReadAgain) { return; }
+      this.providerReadFailed = facts === undefined;
+      if (facts === undefined) { return; }
+      this.providerReadiness = facts;
+      this.providerAddDocument = desktopAddProviderDocument(facts.describe, facts.directory, facts.registered);
+      if (announce) {
+        this.savedProviderName = this.deepSeekRow()?.displayName || this.savedTargetName;
+        this.announceProviderSave = false;
+      }
+    } catch (_) {
+      if (epoch === this.providerPageEpoch) { this.providerReadFailed = true; }
+    } finally {
+      if (epoch === this.providerPageEpoch) {
+        this.providerReadInFlight = false;
+        if (this.providerReadAgain) { this.providerReadAgain = false; this.scheduleProviderRead(); }
+      }
+    }
+  }
+
+  private deepSeekRow(): DesktopModelProviderReadinessRow | undefined {
+    return this.providerReadiness?.rows.find((row: DesktopModelProviderReadinessRow): boolean =>
+      row.provider === DEEPSEEK_API_ROUTE && row.namespace === DEEPSEEK_SETTINGS_NS && row.path.length === 0);
+  }
+
+  private showsDeepSeekProvider(): boolean {
+    if (this.nativeProviderAdd && this.providerReadiness !== undefined) { return this.deepSeekRow()?.configured === true; }
+    return (!this.nativeProviderAdd || this.providerReadFailed) && this.allGroups.some((group: SettingGroup): boolean =>
+      group.title === DEEPSEEK_SETTINGS_NS);
+  }
+
+  private showsDeepSeekSetup(): boolean {
+    const facts = this.providerReadiness;
+    const row = this.deepSeekRow();
+    return facts !== undefined && row !== undefined && !this.deepSeekSetupDismissed &&
+      desktopProviderNeedsSetup(row, facts.anyUsable);
+  }
+
+  private deepSeekFinished(changed: boolean, wasSetup: boolean): void {
+    if (wasSetup) { this.deepSeekSetupDismissed = true; }
+    if (changed) {
+      this.savedTargetName = this.deepSeekRow()?.displayName || DEEPSEEK_API_ROUTE;
+      this.announceProviderSave = true;
+      this.scheduleProviderRead();
+    }
+  }
+
+  @Builder
+  private ProviderFeedback() {
+    if (this.providerReadFailed) {
+      Row({ space: Sp.S }) {
+        Text($r('app.string.desktop_model_providers_unavailable')).layoutWeight(1).fontSize(Fs.CAPTION)
+          .fontColor($r('app.color.workspace_status_error'))
+        Button($r('app.string.desktop_deepseek_reload'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .onClick((): void => { this.scheduleProviderRead(); })
+      }.width('100%')
+    }
+    if (this.providerReadiness?.writable === false) {
+      Text($r('app.string.desktop_model_provider_read_only')).key('desktopModelProviderReadOnly')
+        .fontSize(Fs.CAPTION).fontColor($r('sys.color.font_secondary')).width('100%')
+    }
+    if (this.savedProviderName) {
+      Text($r('app.string.desktop_model_provider_saved', this.savedProviderName)).key('desktopModelProviderSetupSaved')
+        .fontSize(Fs.CAPTION).fontColor($r('sys.color.font_secondary')).width('100%')
+    }
+  }
 
   // 【ArkUI 约束】组件的 build() 只能有一个根节点 ⇒ 多段内容包进 Column
   build() {
@@ -142,6 +264,7 @@ export struct SettingsModels {
            * E128：先按官方形态列出**提供方卡片**（状态点 + 首要的密钥动作 + 可展开的自定义设置），
            * 下面的「模型凭据」「新会话默认」「全部模型」是我们已有的补充信息，保持向后兼容。
            */
+          if (this.nativeProviderAdd) { this.ProviderFeedback() }
           this.providerCards()
 
           /*
@@ -544,11 +667,7 @@ export struct SettingsModels {
      * 路由，官方给的是**逐字段编辑器**（显示名 / 端点 / API 协议 / 模型目录）。
      * 这里按同一粒度呈现，字段完全来自 Host 的设置文档。
      */
-    this.piAiCards()
-
-    if (this.allGroups.some((group: SettingGroup): boolean => group.title === DEEPSEEK_SETTINGS_NS)) {
-      DesktopDeepSeekProvider({ credentials: this.credentials })
-    }
+    if (!this.nativeProviderAdd) { this.piAiCards() }
     if (this.models.some((row: ModelOption): boolean => row.provider === DEEPSEEK_ACCOUNT_ROUTE)) {
       Row({ space: Sp.S }) {
         Text($r('app.string.desktop_deepseek_account')).layoutWeight(1).fontSize(Fs.BODY)
@@ -557,10 +676,17 @@ export struct SettingsModels {
       }.key('desktopDeepSeekAccountProvider').width('100%').padding(Sp.M).borderRadius(Radius.M)
         .backgroundColor($r('sys.color.background_secondary'))
     }
+    if (this.showsDeepSeekProvider()) {
+      DesktopDeepSeekProvider({ credentials: this.credentials, desktopPage: this.nativeProviderAdd,
+        setupRequested: this.nativeProviderAdd && this.showsDeepSeekSetup(), setupDescription: this.providerReadiness?.describe,
+        setupCredential: this.deepSeekRow()?.credential, adapterError: this.deepSeekRow()?.error ?? '',
+        onFinished: (changed: boolean, wasSetup: boolean): void => { this.deepSeekFinished(changed, wasSetup); } })
+    }
+    if (this.nativeProviderAdd) { this.piAiCards() }
 
     ForEach(this.providerGroups().filter((g: ModelProviderGroup): boolean => g.provider !== DEEPSEEK_ACCOUNT_ROUTE &&
-      (g.provider !== DEEPSEEK_API_ROUTE || !this.allGroups.some((group: SettingGroup): boolean =>
-        group.title === DEEPSEEK_SETTINGS_NS))), (g: ModelProviderGroup) => {
+      (g.provider !== DEEPSEEK_API_ROUTE || (!this.showsDeepSeekProvider() &&
+        (!this.nativeProviderAdd || this.providerReadFailed && this.providerReadiness === undefined)))), (g: ModelProviderGroup) => {
       Column({ space: Sp.XS }) {
         Row({ space: Sp.S }) {
           Row()
@@ -701,7 +827,8 @@ export struct SettingsModels {
       .backgroundColor($r('sys.color.background_secondary'))
     }, (g: ModelProviderGroup) => g.provider)
     if (this.nativeProviderAdd) {
-      DesktopModelProviderAddFlow({ host: this.settingsHost })
+      DesktopModelProviderAddFlow({ host: this.settingsHost, availableDocument: this.providerAddDocument,
+        onSaved: (): void => { this.scheduleProviderRead(); } })
     }
   }
 

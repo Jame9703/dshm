@@ -6,7 +6,9 @@ import { projectSessionCreate, projectSessionList, projectSessionPrompt, PromptM
 import type { SessionListItem } from 'appstate';
 import { Connection, ConnectionState, getArray, getBoolean, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { EventSink, HostFacts, RpcResult, StreamSink } from 'connection';
-import { AGENT_PRESETS_SELECT_ENDPOINT, argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_PLUGIN_MANAGER_CHANGED, EVENT_SESSION_STATUS,
+import { AGENT_PRESETS_SELECT_ENDPOINT, argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_RECORD_UPDATED,
+  EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED,
+  EVENT_PLUGIN_MANAGER_CHANGED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SESSION_PROMPT_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
@@ -329,6 +331,9 @@ export class DesktopWorkspaceData {
         if (event === EVENT_LLM_ADAPTERS_UPDATED || event === EVENT_CREDENTIALS_REFERENCE_UPDATED) {
           this.onboarding.credentialsChanged();
         }
+        if (event === EVENT_CREDENTIALS_RECORD_UPDATED || event === EVENT_CREDENTIALS_REFERENCE_UPDATED) {
+          this.actions.modelProvidersChanged();
+        }
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
@@ -340,6 +345,8 @@ export class DesktopWorkspaceData {
           if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
             this.actions.modelCatalogChanged();
             if (namespace.startsWith('llm-')) { this.readConversationPreferences(); }
+          } else {
+            this.actions.modelProvidersChanged();
           }
         }
       },

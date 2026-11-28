@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_model_provider_read_only", "value": "The settings document is read-only in this deployment." },
+    { "name": "desktop_model_provider_saved", "value": "Saved %1$s." },
+    { "name": "desktop_model_providers_unavailable", "value": "Could not load the model providers." }
+  ]
+}

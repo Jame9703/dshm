@@ -57,6 +57,8 @@ import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from 
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountDetailsAccess, DesktopAccountDetailsSnapshot } from '../desktop/DesktopAccountDetails';
 import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
+import { readDesktopModelProviderReadiness } from '../desktop/DesktopModelProviderReadiness';
+import type { DesktopModelProviderAccess } from '../desktop/DesktopModelProviderReadiness';
 import { desktopAccountContactUrl } from '../desktop/DesktopAccountContact';
 import { DesktopAccountQuotaDialog, DesktopQuotaToast, DESKTOP_QUOTA_TOAST_HOLD_MS, DESKTOP_QUOTA_TOAST_FADE_MS }
   from '../desktop/DesktopQuotaNotice';
@@ -2724,9 +2726,13 @@ struct DesktopWorkspace {
     const generalHost: DesktopGeneralHostAccess | undefined = actions === undefined ? undefined : {
       call: (endpoint: string, body?: Record<string, Object | null>): Promise<RpcResult> => actions.call(endpoint, body)
     };
+    const modelProviders: DesktopModelProviderAccess | undefined = actions === undefined ? undefined : {
+      read: () => readDesktopModelProviderReadiness(actions),
+      observe: (listener: () => void): (() => void) => actions.watchModelProviders(listener)
+    };
     return { compact: this.settingsSurfaceSize?.compact ?? false, mode: this.workspaceColorMode(),
       section: this.settingsSection, accountNotices: this.data?.accountNotices, accountDetails: accountDetails,
-      host: actions, generalHost: generalHost,
+      host: actions, generalHost: generalHost, modelProviders: modelProviders,
       codingTools: this.codingTools, changeCodingTools: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
       close: (): void => { this.closeSettings(); },
       startCreator: (): void => { this.startPresetCreator(); },

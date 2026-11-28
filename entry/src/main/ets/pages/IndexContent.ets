@@ -21,6 +21,7 @@
 import type { DesktopAccountNotices } from '../desktop/DesktopAccountNotices';
 import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
 import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
+import type { DesktopModelProviderAccess } from '../desktop/DesktopModelProviderReadiness';
 import { desktopPiAiAdoptedKeys, desktopPiAiModelInsertionIndex } from '../desktop/DesktopPiAiModelOrder';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
@@ -376,6 +377,7 @@ export struct IndexContent {
   desktopAccountDetails?: DesktopAccountDetailsAccess;
   desktopAccountHost?: DesktopHostActions;
   desktopGeneralHost?: DesktopGeneralHostAccess;
+  desktopModelProviders?: DesktopModelProviderAccess;
   @Prop desktopCodingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   onDesktopCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
   @State private desktopAccountIdentity: DesktopAccountSettingsIdentity = emptyDesktopAccountSettingsIdentity();
@@ -4719,6 +4721,7 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
     desktopShortcuts: this.desktopSettingsEntry,
     desktopSettingsCompact: this.desktopSettingsCompact,
     desktopAccountHost: this.desktopAccountHost, desktopAccountIdentity: this.desktopAccountIdentity,
+    desktopModelProviders: this.desktopModelProviders,
     desktopGeneralHost: this.desktopGeneralHost,
     desktopAccountDetails: this.desktopAccountDetails,
     desktopCodingTools: this.desktopCodingTools, onDesktopCodingToolsChange: this.onDesktopCodingToolsChange,

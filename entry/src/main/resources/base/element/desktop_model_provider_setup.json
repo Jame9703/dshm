@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_model_provider_read_only", "value": "当前部署的设置文档为只读。" },
+    { "name": "desktop_model_provider_saved", "value": "已保存 %1$s。" },
+    { "name": "desktop_model_providers_unavailable", "value": "暂时无法读取模型提供方。" }
+  ]
+}

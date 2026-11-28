@@ -45,6 +45,7 @@ import { DesktopAccountSettings } from '../desktop/DesktopAccountSettings';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
 import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
+import type { DesktopModelProviderAccess } from '../desktop/DesktopModelProviderReadiness';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 
@@ -141,6 +142,7 @@ export struct SettingsPane {
   @Prop settingsCompact: boolean = false;
   desktopAccountHost?: DesktopHostActions;
   desktopGeneralHost?: DesktopGeneralHostAccess;
+  desktopModelProviders?: DesktopModelProviderAccess;
   desktopAccountDetails?: DesktopAccountDetailsAccess;
   @Prop desktopAccountIdentity?: DesktopAccountSettingsIdentity = undefined;
   @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
@@ -289,6 +291,7 @@ export struct SettingsPane {
               piAiProviders: this.piAiProviders,
               nativeProviderAdd: this.desktopShortcuts,
               settingsHost: this.desktopAccountHost,
+              modelProviderAccess: this.desktopModelProviders,
               onEditProvider: (route: string) => {
                 this.onEditProvider(route);
               },

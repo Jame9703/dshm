@@ -101,6 +101,8 @@ export const EVENT_SESSION_ERROR: string = 'api-session/error';
 export const EVENT_SETTINGS_DOCUMENT_UPDATED: string = 'settings/document-updated';
 /** 凭据引用变化 */
 export const EVENT_CREDENTIALS_REFERENCE_UPDATED: string = 'credentials/reference-updated';
+/** 凭据存储状态变化 */
+export const EVENT_CREDENTIALS_RECORD_UPDATED: string = 'credentials/record-updated';
 /** 模型适配器变化 */
 export const EVENT_LLM_ADAPTERS_UPDATED: string = 'llm/adapters-updated';
 /** 斜杠命令集变化 */
