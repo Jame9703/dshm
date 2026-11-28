@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_terminal_copy_selection", "value": "复制选中文本" },
+    { "name": "desktop_terminal_paste", "value": "粘贴" },
+    { "name": "desktop_terminal_select_all", "value": "全选" }
+  ]
+}

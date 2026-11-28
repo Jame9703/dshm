@@ -428,6 +428,10 @@ export class DesktopTerminalClient {
     this.draw();
   }
 
+  scrollToBottom(): void {
+    if (this.emulator?.scrollToBottom()) { this.draw(); }
+  }
+
   visibleText(): string {
     return this.emulator?.visibleText() ?? '';
   }

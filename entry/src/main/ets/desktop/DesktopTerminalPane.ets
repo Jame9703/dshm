@@ -6,16 +6,26 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
+import { DesktopTerminalSelection } from './DesktopTerminalSelection';
+import type { DesktopTerminalSelectionSpan } from './DesktopTerminalSelection';
 import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
   DesktopTerminalState } from './DesktopTerminalClient';
 import type { TerminalCellPaint, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
 const INSET: number = 10;
 const INPUT_ID: string = 'desktopNativeTerminalInput';
+const MULTI_CLICK_MS: number = 400;
+const SCROLL_INTERVAL_MS: number = 70;
 const ESC: string = '\x1b';
 const CANVAS_FONT_FAMILIES: Set<string> = new Set(['monospace', 'sans-serif', 'serif']);
 const FUNCTION_KEYS: string[] = ['OP', 'OQ', 'OR', 'OS', '[15~', '[17~',
   '[18~', '[19~', '[20~', '[21~', '[23~', '[24~'];
+let nextTerminalInput: number = 0;
+
+interface TerminalHit {
+  column: number;
+  row: number;
+}
 
 @Component
 export struct DesktopTerminalPane {
@@ -41,6 +51,22 @@ export struct DesktopTerminalPane {
   @State private input: string = '';
   @State private inputFocused: boolean = false;
   @State private visibleScreen: string = '';
+  @State private selectionActive: boolean = false;
+  @State private selectionMenu: boolean = false;
+  @State private selectionMenuAnchor: Position = { x: 0, y: 0 };
+  private readonly selection: DesktopTerminalSelection = new DesktopTerminalSelection();
+  private readonly inputFocusId: string = `${INPUT_ID}:${nextTerminalInput++}`;
+  private mouseSelecting: boolean = false;
+  private dragX: number = 0;
+  private dragY: number = 0;
+  private dragRow: number = -1;
+  private dragColumn: number = -1;
+  private scrollDirection: number = 0;
+  private scrollTimer: number = -1;
+  private lastClickAt: number = 0;
+  private lastClickRow: number = -1;
+  private lastClickColumn: number = -1;
+  private clickCount: number = 0;
   private canvas: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private client?: DesktopTerminalClient;
   private frame?: TerminalPaintFrame;
@@ -65,12 +91,14 @@ export struct DesktopTerminalPane {
 
   aboutToDisappear(): void {
     this.active = false;
+    this.clearSelection();
     this.dismissCloseDialog();
     this.client?.dispose();
     this.client = undefined;
   }
 
   private reloadSession(): void {
+    this.clearSelection();
     this.dismissCloseDialog();
     this.client?.dispose();
     this.client = undefined;
@@ -89,6 +117,7 @@ export struct DesktopTerminalPane {
       const previous = this.state?.selected ?? '';
       const previousTitle = this.selected()?.title ?? '';
       this.state = state;
+      if (state.selected !== previous) { this.clearSelection(); }
       const title = this.selected()?.title ?? '';
       if (state.selected !== previous || title !== previousTitle) {
         this.onTerminalSelected(id, state.selected, title);
@@ -99,6 +128,7 @@ export struct DesktopTerminalPane {
         return;
       }
       this.frame = frame;
+      this.selectionActive = frame !== undefined && this.selection.hasSelection(frame);
       this.visibleScreen = this.client?.visibleText() ?? '';
       this.draw();
     }, this.observeRetention, this.openInNewTab, this.observeRoster);
@@ -108,6 +138,7 @@ export struct DesktopTerminalPane {
 
   private visibilityChanged(): void {
     if (!this.active) { return; }
+    if (!this.shown) { this.clearSelection(); }
     if (this.shown && this.client === undefined) { this.reloadSession(); }
     else { this.client?.setShown(this.shown); }
   }
@@ -163,20 +194,29 @@ export struct DesktopTerminalPane {
     return items;
   }
 
-  private async copyScreen(): Promise<void> {
-    const text = this.client?.visibleText() ?? '';
+  private async writeClipboard(text: string): Promise<void> {
     if (text.length > 0) {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
       await pasteboard.getSystemPasteboard().setData(data);
     }
   }
 
+  private copyScreen(): Promise<void> { return this.writeClipboard(this.client?.visibleText() ?? ''); }
+
+  private copySelection(): void {
+    const frame = this.frame;
+    if (frame !== undefined) { this.writeClipboard(this.selection.text(frame)).catch((): void => {}); }
+  }
+
   private async pasteScreen(): Promise<void> {
+    const owner = this.client;
+    const terminal = this.state?.selected;
+    if (!this.active || !this.shown || this.state?.writable !== true || owner === undefined || !terminal) { return; }
     const data = await pasteboard.getSystemPasteboard().getData();
-    if (this.active) {
+    if (this.active && this.shown && this.client === owner && this.state?.selected === terminal && this.state?.writable) {
       const value = data.getPrimaryText();
       if (value !== undefined) {
-        this.client?.paste(value);
+        this.pasteInput(value);
       }
     }
   }
@@ -191,7 +231,7 @@ export struct DesktopTerminalPane {
       { value: '粘贴', action: (): void => {
         this.pasteScreen().catch((): void => {});
       } },
-      { value: '发送 Ctrl+C', action: (): void => { this.client?.write('\x03'); } },
+      { value: '发送 Ctrl+C', action: (): void => { this.writeInput('\x03'); } },
       { value: '关闭终端', action: (): void => { this.confirmClose(); } }
     ];
   }
@@ -257,9 +297,152 @@ export struct DesktopTerminalPane {
   }
 
   private focusInput(): void {
-    if (this.state?.writable) {
-      this.getUIContext().getFocusController().requestFocus(INPUT_ID);
+    if (this.active && this.shown && this.state?.selected) {
+      try { this.getUIContext().getFocusController().requestFocus(this.inputFocusId); } catch (_) {}
     }
+  }
+
+  private hit(x: number, y: number): TerminalHit {
+    const maximum = Math.max(0, (this.frame?.rows.length ?? 1) - 1);
+    return { column: Math.max(0, Math.floor((x - INSET) / this.charWidth)),
+      row: Math.max(0, Math.min(maximum, Math.floor((y - INSET) / this.lineHeight()))) };
+  }
+
+  private updateSelection(): void {
+    const frame = this.frame;
+    this.selectionActive = frame !== undefined && this.selection.hasSelection(frame);
+    this.draw();
+  }
+
+  private clearSelection(): void {
+    this.endSelectionDrag();
+    this.selection.clear();
+    const repaint = this.selectionActive;
+    this.selectionActive = false;
+    this.selectionMenu = false;
+    this.clickCount = 0;
+    if (repaint) { this.draw(); }
+  }
+
+  private startMouseSelection(event: MouseEvent): void {
+    const frame = this.frame;
+    if (frame === undefined) { return; }
+    const point = this.hit(event.x, event.y);
+    const time = Date.now();
+    const repeated = time - this.lastClickAt < MULTI_CLICK_MS && point.row === this.lastClickRow &&
+      point.column === this.lastClickColumn;
+    this.clickCount = repeated ? this.clickCount % 3 + 1 : 1;
+    this.lastClickAt = time;
+    this.lastClickRow = point.row;
+    this.lastClickColumn = point.column;
+    if (event.getModifierKeyState?.(['Shift']) === true && this.selectionActive) {
+      this.selection.extend(frame, point.column, point.row);
+    } else if (this.clickCount === 2) {
+      this.selection.selectWord(frame, point.column, point.row);
+    } else if (this.clickCount === 3) {
+      this.selection.selectLine(frame, point.column, point.row);
+    } else {
+      this.selection.begin(frame, point.column, point.row);
+    }
+    this.mouseSelecting = true;
+    this.dragRow = point.row;
+    this.dragColumn = point.column;
+    this.updateSelection();
+    this.focusInput();
+  }
+
+  private moveMouseSelection(x: number, y: number): void {
+    const frame = this.frame;
+    if (!this.mouseSelecting || frame === undefined) { return; }
+    this.dragX = x;
+    this.dragY = y;
+    const point = this.hit(x, y);
+    if (point.row !== this.dragRow || point.column !== this.dragColumn) {
+      this.dragRow = point.row;
+      this.dragColumn = point.column;
+      this.selection.extend(frame, point.column, point.row);
+      this.clickCount = 0;
+      this.updateSelection();
+    }
+    const bottom = INSET + frame.rows.length * this.lineHeight();
+    this.setSelectionScroll(y < INSET ? -1 : y >= bottom ? 1 : 0);
+  }
+
+  private setSelectionScroll(direction: number): void {
+    if (this.scrollDirection === direction) { return; }
+    clearInterval(this.scrollTimer);
+    this.scrollTimer = -1;
+    this.scrollDirection = direction;
+    if (direction === 0) { return; }
+    this.scrollTimer = setInterval((): void => {
+      if (!this.active || !this.shown || !this.mouseSelecting) { this.endSelectionDrag(); return; }
+      const previous = this.frame?.selection?.viewportTop;
+      this.client?.scroll(direction);
+      const frame = this.frame;
+      if (previous === frame?.selection?.viewportTop) { this.setSelectionScroll(0); return; }
+      if (frame !== undefined) {
+        const point = this.hit(this.dragX, this.dragY);
+        this.selection.extend(frame, point.column, point.row);
+        this.updateSelection();
+      }
+    }, SCROLL_INTERVAL_MS);
+  }
+
+  private endSelectionDrag(): void {
+    this.mouseSelecting = false;
+    this.setSelectionScroll(0);
+  }
+
+  private terminalMouse(event: MouseEvent): void {
+    if (event.button === MouseButton.Right) {
+      this.endSelectionDrag();
+    } else if (event.button === MouseButton.Left && event.action === MouseAction.Press) {
+      this.startMouseSelection(event);
+    } else if (event.action === MouseAction.Move) {
+      this.moveMouseSelection(event.x, event.y);
+    } else if (event.button === MouseButton.Left && event.action === MouseAction.Release) {
+      this.moveMouseSelection(event.x, event.y);
+      this.endSelectionDrag();
+    }
+  }
+
+  private openSelectionMenu(x: number, y: number): void {
+    this.endSelectionDrag();
+    this.selectionMenuAnchor = { x: Math.max(0, Math.min(this.canvasWidth - 1, x)),
+      y: Math.max(0, Math.min(this.canvasHeight - 1, y)) };
+    this.selectionMenu = true;
+  }
+
+  @Builder
+  private SelectionMenu() {
+    Menu() {
+      MenuItem({ content: $r('app.string.desktop_terminal_copy_selection') }).key('desktopTerminalCopySelection')
+        .enabled(this.selectionActive).onChange((): void => { this.selectionMenu = false; this.copySelection(); })
+      MenuItem({ content: $r('app.string.desktop_terminal_paste') }).key('desktopTerminalPaste')
+        .enabled(this.state?.writable === true)
+        .onChange((): void => { this.selectionMenu = false; this.pasteScreen().catch((): void => {}); })
+      MenuItem({ content: $r('app.string.desktop_terminal_select_all') }).key('desktopTerminalSelectAll')
+        .enabled(this.frame !== undefined).onChange((): void => {
+          const frame = this.frame;
+          this.selectionMenu = false;
+          if (frame !== undefined) { this.selection.selectAll(frame); this.updateSelection(); }
+          this.focusInput();
+        })
+    }
+  }
+
+  private writeInput(text: string): void {
+    if (this.state?.writable !== true || !text) { return; }
+    this.clearSelection();
+    this.client?.scrollToBottom();
+    this.client?.write(text);
+  }
+
+  private pasteInput(text: string): void {
+    if (this.state?.writable !== true || !text) { return; }
+    this.clearSelection();
+    this.client?.scrollToBottom();
+    this.client?.paste(text);
   }
 
   private handleTerminalKey(event: KeyEvent): boolean {
@@ -270,16 +453,24 @@ export struct DesktopTerminalPane {
       return false;
     }
     if (this.onShortcut(event)) { return true; }
-    if (!down || !this.state?.writable) {
-      return false;
+    if (!down) { return false; }
+    const control = event.getModifierKeyState?.(['Ctrl']) ?? this.ctrl;
+    const shift = event.getModifierKeyState?.(['Shift']) === true;
+    if (control && shift && code === KeyCode.KEYCODE_C) { this.copySelection(); return true; }
+    if (control && shift && code === KeyCode.KEYCODE_V) { this.pasteScreen().catch((): void => {}); return true; }
+    if (shift && !control && (code === KeyCode.KEYCODE_PAGE_UP || code === KeyCode.KEYCODE_PAGE_DOWN)) {
+      const lines = Math.max(1, (this.frame?.rows.length ?? 1) - 1);
+      this.client?.scroll(code === KeyCode.KEYCODE_PAGE_UP ? -lines : lines);
+      return true;
     }
+    if (!this.state?.writable) { return false; }
     let text = '';
-    if (this.ctrl && code >= KeyCode.KEYCODE_A && code <= KeyCode.KEYCODE_Z) {
+    if (control && code >= KeyCode.KEYCODE_A && code <= KeyCode.KEYCODE_Z) {
       if (code === KeyCode.KEYCODE_V) {
         return false;
       }
       text = String.fromCharCode(code - KeyCode.KEYCODE_A + 1);
-    } else if (this.ctrl && code === KeyCode.KEYCODE_SPACE) {
+    } else if (control && code === KeyCode.KEYCODE_SPACE) {
       text = '\x00';
     } else if (code >= KeyCode.KEYCODE_DPAD_UP && code <= KeyCode.KEYCODE_DPAD_RIGHT) {
       const prefix = this.client?.applicationCursor() ? 'O' : '[';
@@ -291,7 +482,7 @@ export struct DesktopTerminalPane {
         case KeyCode.KEYCODE_ENTER:
         case KeyCode.KEYCODE_NUMPAD_ENTER: text = '\r'; break;
         case KeyCode.KEYCODE_DEL: text = '\x7f'; break;
-        case KeyCode.KEYCODE_TAB: text = '\t'; break;
+        case KeyCode.KEYCODE_TAB: text = shift ? ESC + '[Z' : '\t'; break;
         case KeyCode.KEYCODE_ESCAPE: text = ESC; break;
         case KeyCode.KEYCODE_MOVE_HOME: text = ESC + '[H'; break;
         case KeyCode.KEYCODE_MOVE_END: text = ESC + '[F'; break;
@@ -302,7 +493,7 @@ export struct DesktopTerminalPane {
         default: return false;
       }
     }
-    this.client?.write(text);
+    this.writeInput(text);
     return true;
   }
 
@@ -368,6 +559,9 @@ export struct DesktopTerminalPane {
     canvas.textBaseline = 'top';
     const lineHeight = this.lineHeight();
     const baseFont = this.fontSpec();
+    const ranges: DesktopTerminalSelectionSpan[] = this.selectionActive ? this.selection.spans(frame) : [];
+    const highlight = dark ? '#365584' : '#c6defc';
+    let rangeIndex = 0;
     let font = '';
     let foreground = '';
     for (let row = 0; row < frame.rows.length; row++) {
@@ -375,12 +569,26 @@ export struct DesktopTerminalPane {
       if (y >= this.canvasHeight) {
         break;
       }
+      const range = ranges[rangeIndex]?.row === row ? ranges[rangeIndex++] : undefined;
+      if (range !== undefined) {
+        canvas.fillStyle = highlight;
+        canvas.fillRect(INSET + range.start * this.charWidth, y, (range.end - range.start) * this.charWidth, lineHeight);
+        foreground = '';
+      }
       for (const cell of frame.rows[row]) {
         const x = INSET + cell.column * this.charWidth;
         const width = cell.cells * this.charWidth;
         if (cell.background) {
           canvas.fillStyle = cell.background === 'foreground' ? ink : cell.background;
           canvas.fillRect(x, y, width, lineHeight);
+          if (range !== undefined) {
+            const start = Math.max(range.start, cell.column);
+            const end = Math.min(range.end, cell.column + cell.cells);
+            if (start < end) {
+              canvas.fillStyle = highlight;
+              canvas.fillRect(INSET + start * this.charWidth, y, (end - start) * this.charWidth, lineHeight);
+            }
+          }
           foreground = '';
         }
         const next = cell.foreground === 'background' ? paper : cell.foreground || ink;
@@ -426,6 +634,7 @@ export struct DesktopTerminalPane {
   private TerminalScreen() {
     Stack({ alignContent: Alignment.BottomStart }) {
       Canvas(this.canvas)
+        .key('desktopNativeTerminalScreen')
         .width('100%').height('100%')
         .onReady((): void => {
           this.measured = true;
@@ -440,14 +649,19 @@ export struct DesktopTerminalPane {
         })
         .accessibilityText('终端屏幕')
         .accessibilityDescription(this.visibleScreen)
+        .accessibilitySelected(this.selectionActive)
         .onClick((): void => { this.focusInput(); })
+        .onMouse((event: MouseEvent): void => { this.terminalMouse(event); })
+        .bindContextMenu(this.SelectionMenu(), ResponseType.RightClick, {
+          systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial
+        })
         .onAxisEvent((event: AxisEvent): void => {
           const vertical = event.getVerticalAxisValue();
           if (vertical !== 0) {
             this.client?.scroll(vertical > 0 ? 3 : -3);
           }
         })
-        .gesture(PanGesture({ direction: PanDirection.Vertical })
+        .gesture(PanGesture({ direction: PanDirection.Vertical }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
           .onActionStart((): void => { this.scrollY = 0; })
           .onActionUpdate((event: GestureEvent): void => {
             const lines = Math.trunc((this.scrollY - event.offsetY) / this.lineHeight());
@@ -456,29 +670,57 @@ export struct DesktopTerminalPane {
               this.client?.scroll(lines);
             }
           }))
+        .parallelGesture(PanGesture({ direction: PanDirection.All, distance: 3 }).allowedTypes([SourceTool.MOUSE])
+          .onActionUpdate((event: GestureEvent): void => {
+            const point = event.fingerList[0];
+            if (point !== undefined) { this.moveMouseSelection(point.localX, point.localY); }
+          }).onActionEnd((): void => { this.endSelectionDrag(); })
+          .onActionCancel((): void => { this.endSelectionDrag(); }))
+        .parallelGesture(LongPressGesture({ duration: 450 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+          .onAction((event: GestureEvent): void => {
+            const point = event.fingerList[0];
+            if (point !== undefined) {
+              const frame = this.frame;
+              if (frame !== undefined && !this.selectionActive) {
+                const hit = this.hit(point.localX, point.localY);
+                this.selection.selectWord(frame, hit.column, hit.row);
+                this.updateSelection();
+              }
+              this.openSelectionMenu(point.localX, point.localY);
+            }
+          }))
       TextInput({ text: this.input })
         .key(INPUT_ID)
+        .id(this.inputFocusId)
         .width(80).height(30).opacity(0.01).backgroundColor(Color.Transparent)
         .caretColor(Color.Transparent).fontColor(Color.Transparent)
         .accessibilityText('终端输入')
-        .enabled(this.state?.writable === true)
+        .enabled(this.state?.selected !== undefined)
+        .enableKeyboardOnFocus(this.state?.writable === true)
+        .hitTestBehavior(HitTestMode.None)
         .enablePreviewText(false)
         .enterKeyType(EnterKeyType.Done)
         .onFocus((): void => { this.inputFocused = true; this.draw(); })
         .onBlur((): void => { this.inputFocused = false; this.ctrl = false; this.draw(); })
         .onKeyPreIme((event: KeyEvent): boolean => this.handleTerminalKey(event))
-        .onSubmit((): void => { this.client?.write('\r'); })
+        .onSubmit((): void => { this.writeInput('\r'); })
         .onPaste((value: string, event: PasteEvent): void => {
           event.preventDefault?.();
-          this.client?.paste(value);
+          this.pasteInput(value);
         })
         .onChange((value: string): void => {
           if (!value) {
             return;
           }
           this.input = value;
-          this.client?.write(value);
+          this.writeInput(value);
           setTimeout((): void => { this.input = ''; }, 0);
+        })
+      Row().width(1).height(1).position(this.selectionMenuAnchor).hitTestBehavior(HitTestMode.None)
+        .bindContextMenu(this.selectionMenu, this.SelectionMenu(), {
+          placement: Placement.BottomLeft,
+          systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial,
+          onDisappear: (): void => { this.selectionMenu = false; }
         })
     }
     .width('100%').layoutWeight(1)

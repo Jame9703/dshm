@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_terminal_copy_selection", "value": "Copy selection" },
+    { "name": "desktop_terminal_paste", "value": "Paste" },
+    { "name": "desktop_terminal_select_all", "value": "Select all" }
+  ]
+}

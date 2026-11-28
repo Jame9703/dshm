@@ -1,3 +1,5 @@
+let selectionEpoch = 0;
+
 export async function loadTerminalEmulator() {
   const { Terminal } = await import('./xterm-headless.js');
   return (cols, rows, scrollback, onReply) => new TerminalEmulator(Terminal, cols, rows, scrollback, onReply);
@@ -39,6 +41,11 @@ class TerminalEmulator {
   constructor(Terminal, cols, rows, scrollback, onReply) {
     this.terminal = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
     this.terminal.onData(onReply);
+    this.selectionEpoch = ++selectionEpoch;
+    this.selectionActive = true;
+    this.terminal.buffer.onBufferChange(() => {
+      this.selectionEpoch = ++selectionEpoch;
+    });
     this.cursorVisible = true;
     for (const final of ['h', 'l']) {
       this.terminal.parser.registerCsiHandler({ prefix: '?', final }, params => {
@@ -49,10 +56,18 @@ class TerminalEmulator {
   }
 
   write(data, done) {
-    this.terminal.write(data, done);
+    this.terminal.write(data, () => {
+      // xterm only registers stable markers on its normal buffer.
+      if (this.terminal.buffer.active.type === 'alternate') this.selectionEpoch = ++selectionEpoch;
+      done();
+    });
   }
 
   resize(cols, rows) {
+    if (cols !== this.terminal.cols ||
+        (rows !== this.terminal.rows && this.terminal.buffer.active.type === 'alternate')) {
+      this.selectionEpoch = ++selectionEpoch;
+    }
     this.terminal.resize(cols, rows);
   }
 
@@ -60,12 +75,20 @@ class TerminalEmulator {
     this.terminal.scrollLines(lines);
   }
 
+  scrollToBottom() {
+    const buffer = this.terminal.buffer.active;
+    if (buffer.viewportY === buffer.baseY) return false;
+    this.terminal.scrollToBottom();
+    return true;
+  }
+
   isApplicationCursor() {
     return this.terminal.modes.applicationCursorKeysMode;
   }
 
   paste(value) {
-    return this.terminal.modes.bracketedPasteMode ? '\x1b[200~' + value + '\x1b[201~' : value;
+    const input = value.replace(/\r?\n/g, '\r');
+    return this.terminal.modes.bracketedPasteMode ? '\x1b[200~' + input + '\x1b[201~' : input;
   }
 
   visibleText() {
@@ -105,10 +128,50 @@ class TerminalEmulator {
       cursorColumn: Math.min(terminal.cols - 1, buffer.cursorX),
       cursorRow: buffer.baseY - buffer.viewportY + buffer.cursorY,
       cursorVisible: this.cursorVisible && buffer.viewportY === buffer.baseY,
+      selection: this.selectionBuffer(buffer),
+    };
+  }
+
+  selectionBuffer(buffer) {
+    const terminal = this.terminal;
+    const epoch = this.selectionEpoch;
+    const current = () => this.selectionActive && this.selectionEpoch === epoch;
+    const scratch = buffer.getNullCell();
+    return {
+      epoch,
+      columns: terminal.cols,
+      viewportTop: buffer.viewportY,
+      length: buffer.length,
+      lineAt(row) {
+        if (!current() || row < 0 || row >= buffer.length) return undefined;
+        const line = buffer.getLine(row);
+        if (!line) return undefined;
+        return {
+          wrapped: line.isWrapped,
+          cellAt(column) {
+            const cell = line.getCell(column, scratch);
+            return cell ? { width: cell.getWidth(), text: cell.getChars() } : undefined;
+          },
+          text(start, end) {
+            return line.translateToString(true, start, end);
+          },
+        };
+      },
+      markerAt(row) {
+        if (!current() || !Number.isInteger(row) || row < 0 || row >= buffer.length) return undefined;
+        if (buffer.type === 'normal') return terminal.registerMarker(row - buffer.baseY - buffer.cursorY);
+        let disposed = false;
+        return {
+          get line() { return disposed || !current() ? -1 : row; },
+          get isDisposed() { return disposed || !current(); },
+          dispose() { disposed = true; },
+        };
+      },
     };
   }
 
   dispose() {
+    this.selectionActive = false;
     this.terminal.dispose();
   }
 }
