@@ -1,12 +1,13 @@
 import { DEFAULT_DESKTOP_TRANSCRIPT_POLICY, readDesktopTranscriptPolicy } from './DesktopTranscriptPresentation';
 import type { DesktopTranscriptPolicy } from './DesktopTranscriptPresentation';
-import { projectSessionCreate, projectSessionList, sessionCreatePayload, sessionListEndpoint, sessionListPayload } from 'appstate';
+import { projectSessionCreate, projectSessionList, projectSessionPrompt, PromptMode, promptPayload, sessionCreatePayload,
+  sessionListEndpoint, sessionListPayload, textPart } from 'appstate';
 import type { SessionListItem } from 'appstate';
-import { Connection, ConnectionState, getArray, getRecord, getString, toStringArray } from 'connection';
+import { Connection, ConnectionState, getArray, getBoolean, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { EventSink, HostFacts, StreamSink } from 'connection';
 import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
-  PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
+  PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SESSION_PROMPT_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
@@ -33,6 +34,7 @@ import { DesktopTerminalRetentions } from './DesktopTerminalRetentions';
 import { DesktopTerminalRosters } from './DesktopTerminalRosters';
 import { DEFAULT_DESKTOP_TIMELINE_PREFERENCES, DESKTOP_TIMELINE_NS, desktopTimelinePreferences } from './DesktopTimelinePreferences';
 import type { DesktopTimelinePreferences } from './DesktopTimelinePreferences';
+import { DesktopTimelineDiscussionDrafts } from './DesktopTimelineDiscussionDrafts';
 
 export interface DesktopForkResult {
   id: string;
@@ -89,6 +91,7 @@ export class DesktopWorkspaceData {
   readonly actions: DesktopHostActions = new DesktopHostActions(this.connection);
   readonly terminalRetentions: DesktopTerminalRetentions = new DesktopTerminalRetentions(this.actions);
   readonly terminalRosters: DesktopTerminalRosters = new DesktopTerminalRosters(this.actions);
+  readonly timelineDrafts = new DesktopTimelineDiscussionDrafts();
   readonly pluginInstall: DesktopPluginInstall = new DesktopPluginInstall(this.actions);
   readonly pluginMaintenance: DesktopPluginMaintenance = new DesktopPluginMaintenance(this.actions);
   readonly cordis: DesktopCordisRuntime = new DesktopCordisRuntime(this.actions);
@@ -167,6 +170,27 @@ export class DesktopWorkspaceData {
   }
 
   accountLanguagePreference(): string { return this.accountLocalePreference; }
+
+  async sendTimelineNotice(sessionId: string, text: string, child: boolean): Promise<string> {
+    if (!this.active) { return '会话已切换'; }
+    const state = await this.actions.call('session/state', { 'sessionId': sessionId });
+    if (!this.active) { return '会话已切换'; }
+    const running = getBoolean(state.value, 'running');
+    if (!state.ok || running === undefined) { return '无法确认会话是否正在运行'; }
+    const mode = running ? PromptMode.STEER : PromptMode.QUEUE;
+    const requestId = 'req-' + randomUuid();
+    const content = [textPart(text)];
+    if (child) {
+      const result = await this.actions.call('subagents/prompt', {
+        'childSessionId': sessionId, 'requestId': requestId, 'delivery': mode, 'content': content
+      }, 15000, undefined, true);
+      return result.ok && getString(result.value, 'messageId') ? '' : (desktopHostProblem(result) || '宿主未确认发送');
+    }
+    const args = promptPayload(requestId, sessionId, mode, content, '');
+    if (args === undefined) { return '宿主未确认发送'; }
+    const result = await this.connection.call(SESSION_PROMPT_ENDPOINT, args, { sensitiveBody: true });
+    return result.ok && projectSessionPrompt(result.value).accepted ? '' : (desktopHostProblem(result) || '宿主未确认发送');
+  }
 
   async completeAccountLogin(state: Object): Promise<void> {
     if (!this.active || getString(state, 'status') !== 'credential-stored') { return; }

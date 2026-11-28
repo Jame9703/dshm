@@ -4107,11 +4107,18 @@ struct DesktopWorkspace {
     };
   }
 
+  private timelineNotifier(session: string): (owner: string, text: string) => Promise<string> {
+    const data = this.data;
+    const child = this.selectedSubagent?.mode === 'continuable';
+    return (owner: string, text: string): Promise<string> =>
+      data !== undefined && owner === session ? data.sendTimelineNotice(owner, text, child) : Promise.resolve('会话已切换');
+  }
+
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.TIMELINE) {
       DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId, location: this.timelineLocation,
-        savedBrowse: this.timelineBrowse,
+        savedBrowse: this.timelineBrowse, draftBook: this.data?.timelineDrafts,
         onBrowse: (owner: string, state: DesktopTimelineBrowseState): void => {
           if (owner === this.sessionId && this.pageActive) {
             this.timelineBrowses.set(owner, state);
@@ -4128,8 +4135,7 @@ struct DesktopWorkspace {
         active: this.hasTimeline() && (index < 0 || (this.rightDock.expanded && this.rightDock.panes[index]?.active === tab.id)),
         writable: this.hasTimeline() && (this.selectedSubagent === undefined || this.selectedSubagent.mode === 'continuable'),
         running: this.chat?.sessionId === this.sessionId && this.chat?.running === true,
-        onNotify: (id: string, text: string): Promise<string> =>
-          this.data?.conversation.sendTimelineNotice(id, text) ?? Promise.resolve('会话已切换'),
+        onNotify: this.timelineNotifier(this.sessionId),
         onWeb: (): void => { this.openWeb(false); },
         onLink: (href: string): void => this.openConversationLink(href) })
     } else if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
