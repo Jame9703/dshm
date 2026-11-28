@@ -6,7 +6,7 @@ import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopPluginSettings } from './DesktopPluginSettings';
-import { DESKTOP_FORGE_BUNDLE, desktopPluginConfigurationScopes, readDesktopPluginConfiguration, SHELL_PLUGIN_SETTINGS,
+import { AGENT_LOOP_SETTINGS, DESKTOP_FORGE_BUNDLE, desktopPluginConfigurationScopes, readDesktopPluginConfiguration, SHELL_PLUGIN_SETTINGS,
   SUBAGENT_SETTINGS, WEB_PLUGIN_SETTINGS, WORKTREE_SETTINGS } from './DesktopPluginSettingsModel';
 import { DesktopPluginBundleComponents, desktopPluginComponents } from './DesktopPluginBundleComponents';
 import type { DesktopPluginComponent, DesktopPluginComponentView } from './DesktopPluginBundleComponents';
@@ -31,6 +31,7 @@ import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
 import type { DesktopConnectorAccount, DesktopConnectorAction, DesktopConnectorPrompt } from './DesktopConnectorAccounts';
 import { DesktopConnectorAccountView, DesktopConnectorBadge, DesktopConnectorDialog } from './DesktopConnectorAccountView';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
+import type { DesktopPluginLocation } from './DesktopWorkspaceHandoff';
 
 const MARKET_BUNDLE: string = '@deepseek-ai/dsh-experimental-plugin-market-bundle';
 
@@ -127,10 +128,11 @@ export struct DesktopPluginsPane {
   @ObjectLink maintenance: DesktopPluginMaintenance;
   @Prop @Watch('catalogLocaleChanged') localePreference: string = 'system';
   @ObjectLink connectorAccounts: DesktopConnectorAccounts;
-  @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
+  @Prop requestedBundle: string = '';
+  @Prop @Watch('requestedLocationChanged') requestedLocation: DesktopPluginLocation = { kind: 'list', name: '', rowId: '' };
   @Prop requestedTitle: string = '';
   @Prop requestedDescription: string = '';
-  onWeb: (name: string) => void = (_name: string): void => {};
+  onWeb: (location: DesktopPluginLocation) => void = (_location: DesktopPluginLocation): void => {};
   @State private detailName: string = '';
   @State private detailText: string = '';
   @State private detailError: string = '';
@@ -143,6 +145,7 @@ export struct DesktopPluginsPane {
   @State private optionalNamespaces: string[] = [];
   @State private componentDetail: boolean = false;
   @State private worktreeVisited: boolean = false;
+  private pendingComponent: string = '';
   @State private settingsDetail: string = '';
   @State private bundles: DesktopPluginRow[] = [];
   @State private plugins: DesktopPluginRow[] = [];
@@ -203,7 +206,7 @@ export struct DesktopPluginsPane {
     this.stopCatalog = this.installer.watchCatalog((): void => { this.refresh(); });
     this.stopAccounts = this.connectorAccounts.watch((): void => { this.updateActivation(); });
     this.refresh();
-    this.requestedBundleChanged();
+    this.requestedLocationChanged();
   }
 
   aboutToDisappear(): void {
@@ -220,9 +223,36 @@ export struct DesktopPluginsPane {
     this.stopVoiceSetup();
   }
 
-  private requestedBundleChanged(): void {
-    if (this.requestedBundle) { this.moreOpen = false; this.openBundle(this.requestedBundle); }
-    else { this.closeBundle(); }
+  private requestedLocationChanged(): void {
+    const location = this.requestedLocation;
+    if (location.kind === 'package' || location.kind === 'row') {
+      this.moreOpen = false;
+      this.openBundle(location.name);
+      if (location.kind === 'row') {
+        this.pendingComponent = location.rowId;
+        this.restoreRequestedComponent();
+      }
+      return;
+    }
+    this.closeBundle();
+    this.tab = 'bundles';
+    this.marketDetail = undefined;
+    this.moreOpen = location.kind === 'more';
+    const scopes = [SUBAGENT_SETTINGS, WEB_PLUGIN_SETTINGS, AGENT_LOOP_SETTINGS, SHELL_PLUGIN_SETTINGS];
+    this.settingsDetail = location.kind === 'item' && scopes.includes(location.name) ? location.name : '';
+  }
+
+  private webPluginLocation(): DesktopPluginLocation {
+    if (this.settingsDetail) { return { kind: 'item', name: this.settingsDetail, rowId: '' }; }
+    if (this.detailName) {
+      if (this.componentDetail) {
+        const bundle = this.bundles.find((item: DesktopPluginRow): boolean => item.id === this.detailName);
+        const component = bundle?.components.find((item: DesktopPluginComponent): boolean => item.rowId === WORKTREE_SETTINGS);
+        return { kind: 'row', name: this.detailName, rowId: WORKTREE_SETTINGS, entryId: component?.entryId };
+      }
+      return { kind: 'package', name: this.detailName, rowId: '' };
+    }
+    return { kind: this.moreOpen ? 'more' : 'list', name: '', rowId: '' };
   }
 
   private catalogLocaleChanged(): void { this.refresh(); }
@@ -234,6 +264,7 @@ export struct DesktopPluginsPane {
     }
     this.detailRead++;
     this.detailName = '';
+    this.pendingComponent = '';
     this.componentDetail = false;
     this.worktreeVisited = false;
     this.resetVersions();
@@ -246,6 +277,7 @@ export struct DesktopPluginsPane {
     this.marketDetail = undefined;
     this.resetVersions();
     this.detailName = name;
+    this.pendingComponent = '';
     this.scrollToTop();
     const cached = this.versionScan?.result(name);
     if (cached !== undefined) { this.showVersionResult(cached); }
@@ -313,6 +345,7 @@ export struct DesktopPluginsPane {
       this.optionalNamespaces = (getArray(result.value, 'namespaces') ?? [])
         .map((entry: Object): string => getString(entry, 'ns') ?? '')
         .filter((id: string): boolean => id === WORKTREE_SETTINGS || id === DESKTOP_TIMELINE_NS);
+      this.restoreRequestedComponent();
     }
   }
 
@@ -356,6 +389,7 @@ export struct DesktopPluginsPane {
       }
     }
     this.catalogError = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
+    this.restoreRequestedComponent();
     this.updateActivation();
     return results[0].ok && results[1].ok;
   }
@@ -956,7 +990,9 @@ export struct DesktopPluginsPane {
       }.key('desktopPluginMoreBack').width(32).height(32).padding(0)
         .accessibilityText($r('app.string.desktop_plugin_list_back'))
         .onClick((): void => { this.showMore(false); })
-      Text($r('app.string.desktop_plugin_list_experimental')).fontSize(26).fontWeight(FontWeight.Medium)
+      Text($r('app.string.desktop_plugin_list_experimental')).fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
+      Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginOpenWeb')
+        .enabled(!this.busy).onClick((): void => { this.onWeb(this.webPluginLocation()); })
     }.width('100%')
   }
 
@@ -1122,6 +1158,20 @@ export struct DesktopPluginsPane {
     });
   }
 
+  private openComponentSettings(rowId: string): void {
+    const bundle = this.bundles.find((item: DesktopPluginRow): boolean => item.id === this.detailName);
+    if (bundle === undefined || !this.bundleComponentState(bundle).some((row: DesktopPluginComponentView): boolean =>
+      row.settings && row.component.rowId === rowId)) { return; }
+    this.pendingComponent = '';
+    this.worktreeVisited = true;
+    this.componentDetail = true;
+    this.scrollToTop();
+  }
+
+  private restoreRequestedComponent(): void {
+    if (this.pendingComponent) { this.openComponentSettings(this.pendingComponent); }
+  }
+
   private toggleBundleComponent(bundleId: string, entryId: string, enabled: boolean): void {
     const current = this.bundles.find((row: DesktopPluginRow): boolean => row.id === bundleId);
     if (this.detailName !== bundleId || current === undefined || this.catalogBusy || this.installer.busy() ||
@@ -1183,7 +1233,7 @@ export struct DesktopPluginsPane {
           if (row.components.length > 0) {
             DesktopPluginBundleComponents({ rows: this.bundleComponentState(row),
               busy: this.busy || this.catalogBusy || this.installer.busy() || this.maintenance.phase === 'running',
-              onSettings: (_rowId: string): void => { this.worktreeVisited = true; this.componentDetail = true; },
+              onSettings: (rowId: string): void => { this.openComponentSettings(rowId); },
               onToggle: (entryId: string, enabled: boolean): void => { this.toggleBundleComponent(row.id, entryId, enabled); } })
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
@@ -1358,7 +1408,7 @@ export struct DesktopPluginsPane {
           .enabled(!this.busy && !this.catalogBusy && !this.versionScanState.scanning)
           .onClick((): void => { this.refreshInstalledPlugins(); })
         Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginOpenWeb')
-          .enabled(!this.busy).onClick((): void => { this.onWeb(this.detailName); })
+          .enabled(!this.busy).onClick((): void => { this.onWeb(this.webPluginLocation()); })
       }
       .width('100%')
       }

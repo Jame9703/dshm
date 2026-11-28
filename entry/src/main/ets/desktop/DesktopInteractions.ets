@@ -3,6 +3,7 @@ import { RemoteEventFrameType, WATERFALL_APPROVAL, WATERFALL_QUESTION } from 'ds
 import { DesktopSidebarPending } from './DesktopSidebarStatus';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopPlanTitle, DesktopPlanReview } from './DesktopPlan';
+import type { RpcResult } from 'connection';
 import type { DesktopQuestionDrafts, DesktopQuestionProgress } from './DesktopQuestionDrafts';
 
 export interface DesktopQuestionOption {
@@ -35,9 +36,7 @@ interface DesktopQuestionState {
 }
 
 interface DesktopContinuedAnswer {
-  sending: boolean;
-  seenInInbox: boolean;
-  inboxSequence: number;
+  releaseSender: () => void;
 }
 
 export type DesktopQuestionReceiptPhase = 'sending' | 'sent' | 'confirming' | 'resubmit';
@@ -334,7 +333,7 @@ export class DesktopInteractions {
         state.settled.add(callId);
         this.finishQuestionReceipt(sessionId, callId);
         this.forgetQuestion(sessionId + '\u0000' + callId, true);
-        state.submissions.delete(callId);
+        this.finishContinuedAnswer(state, callId);
       }
     }
     for (const item of getArray(projection, 'active') ?? []) {
@@ -366,7 +365,9 @@ export class DesktopInteractions {
     state.sequence = sequence;
     state.continued = rows;
     state.submissions.forEach((_submission: DesktopContinuedAnswer, callId: string): void => {
-      if (!rows.some((row: DesktopInteraction): boolean => row.callId === callId)) { state.submissions.delete(callId); }
+      if (!rows.some((row: DesktopInteraction): boolean => row.callId === callId)) {
+        this.finishContinuedAnswer(state, callId);
+      }
     });
   }
 
@@ -380,23 +381,21 @@ export class DesktopInteractions {
         if (callId && getString(source, 'kind') === 'user-question-reply') {
           queued.add(callId);
           this.finishQuestionReceipt(sessionId, callId);
+          if (state.submissions.has(callId)) {
+            const row = state.continued.find((question: DesktopInteraction): boolean => question.callId === callId);
+            if (row !== undefined) { this.hideSubmittedQuestion(row); }
+            this.finishContinuedAnswer(state, callId);
+          }
         }
       }
     }
     state.queued = queued;
     state.inboxSequence = sequence;
-    state.submissions.forEach((submission: DesktopContinuedAnswer, callId: string): void => {
-      if (queued.has(callId)) { submission.seenInInbox = true; }
-      if (!submission.sending && (submission.seenInInbox || sequence > submission.inboxSequence)) {
-        state.submissions.delete(callId);
-      }
-    });
   }
 
   private answerableQuestions(state: DesktopQuestionProjection | undefined): DesktopInteraction[] {
     if (state === undefined) { return []; }
-    return state.continued.filter((row: DesktopInteraction): boolean =>
-      !state.queued.has(row.callId) && state.submissions.get(row.callId)?.sending !== false);
+    return state.continued.filter((row: DesktopInteraction): boolean => !state.queued.has(row.callId));
   }
 
   async approve(id: string, allow: boolean): Promise<string> {
@@ -505,9 +504,26 @@ export class DesktopInteractions {
     return state;
   }
 
+  private answeringContinued(row: DesktopInteraction): boolean {
+    return row.continued && this.questionProjections.get(row.sessionId)?.submissions.has(row.callId) === true;
+  }
+
+  private hideSubmittedQuestion(row: DesktopInteraction): void {
+    this.questionState(row).hidden = true;
+    const key = this.questionKey(row);
+    if (this.questionReceipts.get(key)?.phase === 'resubmit') { this.questionReceipts.delete(key); }
+  }
+
+  private finishContinuedAnswer(state: DesktopQuestionProjection, callId: string): void {
+    const submission = state.submissions.get(callId);
+    if (submission === undefined) { return; }
+    state.submissions.delete(callId);
+    submission.releaseSender();
+  }
+
   saveQuestion(id: string, progress: DesktopQuestionProgress, engage: boolean): void {
     const row = this.questionRow(id);
-    if (row === undefined || this.pendingReceipt(row) !== undefined) { return; }
+    if (row === undefined || this.pendingReceipt(row) !== undefined || this.answeringContinued(row)) { return; }
     const state = this.questionState(row);
     state.progress = progress;
     const startedHold = engage && row.timed && !state.held;
@@ -544,7 +560,7 @@ export class DesktopInteractions {
   async closeQuestion(id: string): Promise<string> {
     const row = this.questionRow(id);
     if (row === undefined) { return '这项提问已结束'; }
-    if (this.pendingReceipt(row) !== undefined) { return '正在提交这项回答'; }
+    if (this.pendingReceipt(row) !== undefined || this.answeringContinued(row)) { return '正在提交这项回答'; }
     if (row.callId) {
       this.questionState(row).hidden = true;
       if (this.questionFocus === id) { this.questionFocus = ''; }
@@ -556,7 +572,7 @@ export class DesktopInteractions {
 
   reopenQuestion(id: string): void {
     const row = this.questionRow(id);
-    if (row === undefined) { return; }
+    if (row === undefined || this.pendingReceipt(row) !== undefined || this.answeringContinued(row)) { return; }
     this.questionState(row).hidden = false;
     this.publish();
   }
@@ -578,26 +594,38 @@ export class DesktopInteractions {
       this.holdQuestion(id);
       return this.settle(id, encoded, 'result', !event.callId);
     }
+    return this.sendContinuedAnswer(event, encoded);
+  }
+
+  private async sendContinuedAnswer(event: DesktopInteraction, encoded: Object): Promise<string> {
     const state = this.questionProjections.get(event.sessionId);
     if (state === undefined || state.submissions.has(event.callId)) { return '正在提交这项回答'; }
-    const submission: DesktopContinuedAnswer = { sending: true, seenInInbox: false, inboxSequence: state.inboxSequence };
-    state.submissions.set(event.callId, submission);
-    const rpc = await this.actions.call('userQuestions/answer', {
-      'agentId': event.sessionId, 'callId': event.callId, 'answer': encoded
+    if (this.readQuestionState(event)?.hidden === true) { return '请先重新打开这项提问'; }
+    let releaseSender: () => void = (): void => {};
+    const projected = new Promise<string>((resolve: (value: string) => void): void => {
+      releaseSender = (): void => { resolve(''); };
     });
-    if (!rpc.ok || rpc.value !== true) {
-      if (state.submissions.get(event.callId) === submission) { state.submissions.delete(event.callId); }
-      return rpc.error?.message ?? '宿主未接受回答，提问可能已由其他客户端处理';
-    }
-    if (state.submissions.get(event.callId) === submission) {
-      if (submission.seenInInbox) { state.submissions.delete(event.callId); }
-      else {
-        submission.sending = false;
-        submission.inboxSequence = state.inboxSequence;
+    const submission: DesktopContinuedAnswer = { releaseSender: releaseSender };
+    state.submissions.set(event.callId, submission);
+    this.publish();
+    const request = this.actions.call('userQuestions/answer', {
+      'agentId': event.sessionId, 'callId': event.callId, 'answer': encoded
+    }).then((rpc: RpcResult): string => {
+      if (state.submissions.get(event.callId) !== submission) { return ''; }
+      if (!rpc.ok || rpc.value !== true) {
+        return rpc.error?.message ?? '宿主未接受回答，提问可能已由其他客户端处理';
+      }
+      this.hideSubmittedQuestion(event);
+      return '';
+    });
+    try {
+      return await Promise.race<Promise<string>[]>([request, projected]);
+    } finally {
+      if (state.submissions.get(event.callId) === submission) {
+        this.finishContinuedAnswer(state, event.callId);
+        this.publish();
       }
     }
-    this.publish();
-    return '';
   }
 
   private async sendNamedAnswer(event: DesktopInteraction, encoded: Object): Promise<string> {
@@ -687,7 +715,9 @@ export class DesktopInteractions {
     };
     items.forEach(record);
     this.questionProjections.forEach((state: DesktopQuestionProjection): void => {
-      this.answerableQuestions(state).forEach(record);
+      this.answerableQuestions(state).forEach((row: DesktopInteraction): void => {
+        if (this.readQuestionState(row)?.hidden !== true) { record(row); }
+      });
     });
     if (this.sidebarPending.size === pending.size && Array.from(pending.keys()).every((id: string): boolean =>
       this.sidebarPending.get(id) === pending.get(id))) { return; }
@@ -741,8 +771,8 @@ export class DesktopInteractions {
       const state = this.readQuestionState(row);
       const claim = claims.get(row.id);
       const receipt = this.questionReceipts.get(this.questionKey(row));
-      const phase = row.continued ? (receipt?.phase === 'resubmit' ? receipt.phase : undefined) :
-        this.pendingReceipt(row)?.phase;
+      const phase = this.answeringContinued(row) ? 'sending' :
+        row.continued ? (receipt?.phase === 'resubmit' ? receipt.phase : undefined) : this.pendingReceipt(row)?.phase;
       return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: row.reason,
         kind: row.kind, questions: row.questions, continued: row.continued, timed: row.timed,
         planReview: row.planReview, reviewHidden: row.reviewHidden, questionReceipt: phase,

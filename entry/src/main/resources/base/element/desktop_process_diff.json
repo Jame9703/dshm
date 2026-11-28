@@ -1,0 +1,11 @@
+{
+  "string": [
+    { "name": "desktop_process_diff_planned", "value": "待执行变更" },
+    { "name": "desktop_process_diff_applied", "value": "已应用变更" },
+    { "name": "desktop_process_diff_written", "value": "已写入内容" },
+    { "name": "desktop_process_diff_files", "value": "待变更文件" },
+    { "name": "desktop_process_diff_delete", "value": "删除" },
+    { "name": "desktop_process_diff_context", "value": "已折叠 %1$d 行未变动内容" },
+    { "name": "desktop_process_diff_truncated", "value": "仅显示部分变更，原始参数和结果见下方" }
+  ]
+}

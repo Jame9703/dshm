@@ -1,0 +1,11 @@
+{
+  "string": [
+    { "name": "desktop_process_diff_planned", "value": "Proposed changes" },
+    { "name": "desktop_process_diff_applied", "value": "Applied changes" },
+    { "name": "desktop_process_diff_written", "value": "Written content" },
+    { "name": "desktop_process_diff_files", "value": "Files to change" },
+    { "name": "desktop_process_diff_delete", "value": "Delete" },
+    { "name": "desktop_process_diff_context", "value": "%1$d unchanged lines hidden" },
+    { "name": "desktop_process_diff_truncated", "value": "Preview shortened. See the original arguments and result below." }
+  ]
+}

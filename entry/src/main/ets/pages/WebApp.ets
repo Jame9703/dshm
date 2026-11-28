@@ -31,7 +31,7 @@
  */
 
 import { DESKTOP_WORKSPACE_PAGE, setDesktopWorkspaceEnabled } from '../desktop/DesktopWorkspacePreference';
-import { buildDesktopPluginDetailScript, buildDesktopWebContextScript, readDesktopWebContext,
+import { buildDesktopPluginDetailScript, buildDesktopPluginViewScript, buildDesktopWebContextScript, readDesktopWebContext,
   readDesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import type { DesktopWebContext } from '../desktop/DesktopWorkspaceHandoff';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -5939,8 +5939,9 @@ struct WebApp {
     const openAction = (): void => {
       if (target.action !== 'new-session' && target.action !== 'plugins' &&
         target.action !== 'schedule' && target.action !== 'add-workspace') { return; }
-      const script = target.action === 'plugins' && target.bundle ?
-        buildDesktopPluginDetailScript(target.bundle) : buildDesktopWorkspaceActionScript(target.action);
+      const script = target.action === 'plugins' && target.plugin !== undefined ? buildDesktopPluginViewScript(target.plugin) :
+        target.action === 'plugins' && target.bundle ? buildDesktopPluginDetailScript(target.bundle) :
+        buildDesktopWorkspaceActionScript(target.action);
       this.runDesktopWorkspaceScript(script, target.host, document, (opened: boolean): void => {
         if (!opened) {
           this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });

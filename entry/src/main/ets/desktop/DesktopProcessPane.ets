@@ -1,4 +1,5 @@
-import { presentTool, ToolKind, ToolState, toolStateLabel, toolSummaryOf } from 'appstate';
+import { DiffLineKind, presentTool, ToolKind, ToolState, toolStateLabel, toolSummaryOf } from 'appstate';
+import type { DiffLine } from 'appstate';
 import { getString, parseJson } from 'connection';
 import { DesktopProcessGroup, DesktopToolStep } from './DesktopToolLog';
 import { desktopFileName } from './DesktopArtifacts';
@@ -6,6 +7,8 @@ import type { DesktopInteraction } from './DesktopInteractions';
 import { desktopTimelineStatus } from './DesktopTimelineModel';
 import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import type { DesktopTimelineReceipt, DesktopTimelineReceiptTask } from './DesktopTimelineReceipt';
+import { desktopProcessDiff } from './DesktopProcessDiffModel';
+import type { DesktopProcessDiffFile, DesktopProcessDiffPreview, DesktopProcessDiffStage } from './DesktopProcessDiffModel';
 
 @Component
 export struct DesktopProcessPane {
@@ -69,6 +72,95 @@ export struct DesktopProcessPane {
     const question = this.questionId(id);
     if (question) { this.onQuestionResume(question); }
     else if (!this.onQuestionReview(id)) { this.onInspect(id); }
+  }
+
+  private filePreviews(row: DesktopToolStep): DesktopProcessDiffPreview[] {
+    const pending = row.resultSequence < 0 && !row.interrupted;
+    const successful = row.resultSequence >= 0 && row.item.toolState === ToolState.SUCCESS;
+    const preview = desktopProcessDiff(row.item.toolName, row.item.toolArgs, pending, successful,
+      row.nested === true || row.depth > 0, row.diffMeta);
+    return preview === undefined ? [] : [preview];
+  }
+
+  private diffTitle(stage: DesktopProcessDiffStage): Resource {
+    switch (stage) {
+      case 'applied': return $r('app.string.desktop_process_diff_applied');
+      case 'written': return $r('app.string.desktop_process_diff_written');
+      case 'planned-files': return $r('app.string.desktop_process_diff_files');
+      default: return $r('app.string.desktop_process_diff_planned');
+    }
+  }
+
+  private diffLineBackground(kind: DiffLineKind): ResourceColor {
+    if (kind === DiffLineKind.ADDED) { return $r('app.color.desktop_diff_added'); }
+    if (kind === DiffLineKind.REMOVED) { return $r('app.color.desktop_diff_deleted'); }
+    return Color.Transparent;
+  }
+
+  @Builder
+  private PreviewLine(line: DiffLine, key: string) {
+    Row({ space: 4 }) {
+      if (line.kind === DiffLineKind.SKIPPED) {
+        Text($r('app.string.desktop_process_diff_context', line.skipped)).fontSize(11)
+          .fontColor($r('sys.color.font_secondary'))
+      } else {
+        Text(line.kind === DiffLineKind.ADDED ? '+' : line.kind === DiffLineKind.REMOVED ? '-' : ' ')
+          .fontFamily(this.codeFamily).fontSize(this.codeSize).width(13)
+        Text(line.text).fontFamily(this.codeFamily).fontSize(this.codeSize).layoutWeight(1)
+          .wordBreak(WordBreak.BREAK_ALL).copyOption(CopyOptions.LocalDevice)
+      }
+    }.key(key).width('100%').padding({ left: 6, right: 6, top: 2, bottom: 2 })
+    .alignItems(VerticalAlign.Top).backgroundColor(this.diffLineBackground(line.kind))
+  }
+
+  @Builder
+  private DiffFile(file: DesktopProcessDiffFile, key: string, lineKey: string) {
+    Column({ space: 4 }) {
+      Row({ space: 6 }) {
+        if (file.action === 'delete') {
+          Text(file.path).fontSize(12).layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text($r('app.string.desktop_process_diff_delete')).fontSize(11)
+            .fontColor($r('app.color.desktop_diff_delete_count'))
+        } else {
+          Button(file.moveTo === undefined ? file.path : file.path + ' → ' + file.moveTo,
+            { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key(key + '-Open').height(26).layoutWeight(1).fontSize(12).padding(0)
+            .onClick((): void => {
+              const path = file.moveTo ?? file.path;
+              this.onFile(path, desktopFileName(path));
+            })
+        }
+        if (file.added > 0) {
+          Text('+' + file.added.toString()).fontSize(11).fontColor($r('app.color.desktop_diff_add_count'))
+        }
+        if (file.removed > 0) {
+          Text('-' + file.removed.toString()).fontSize(11).fontColor($r('app.color.desktop_diff_delete_count'))
+        }
+      }.width('100%')
+      ForEach(file.lines, (line: DiffLine, index: number): void => {
+        this.PreviewLine(line, lineKey + index.toString())
+      }, (_line: DiffLine, index: number): string => index.toString())
+    }.key(key).width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private FileReview(row: DesktopToolStep) {
+    ForEach(this.filePreviews(row), (preview: DesktopProcessDiffPreview): void => {
+      Column({ space: 5 }) {
+        Text(this.diffTitle(preview.stage)).key('desktopProcessDiffStatus-' + row.id).fontSize(12)
+          .fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_secondary'))
+        ForEach(preview.files, (file: DesktopProcessDiffFile, index: number): void => {
+          this.DiffFile(file, 'desktopProcessDiffFile-' + row.id + '-' + index.toString(),
+            'desktopProcessDiffLine-' + row.id + '-' + index.toString() + '-')
+        }, (_file: DesktopProcessDiffFile, index: number): string => index.toString())
+        if (preview.truncated) {
+          Text($r('app.string.desktop_process_diff_truncated')).fontSize(11)
+            .fontColor($r('sys.color.font_secondary'))
+        }
+      }.key((preview.stage === 'planned-files' ? 'desktopProcessPatchFiles-' : 'desktopProcessDiff-') + row.id)
+      .alignItems(HorizontalAlign.Start).width('100%').padding(8).borderRadius(8)
+      .backgroundColor($r('app.color.workspace_panel'))
+    }, (preview: DesktopProcessDiffPreview): string => row.id + ':' + preview.stage + ':' + (row.diffRevision ?? 0))
   }
 
   @Builder
@@ -232,6 +324,7 @@ export struct DesktopProcessPane {
       }.key('desktopProcessStep-' + row.id).padding({ left: 6, right: 6 }).width('100%').height(34).borderRadius(7)
       .onClick((): void => { this.inspect(row.id); })
       if (this.inspected === row.id) {
+        this.FileReview(row)
         this.Details(row)
       }
     }.width('100%')
@@ -257,7 +350,8 @@ export struct DesktopProcessPane {
       }
       if (this.expanded || !this.grouped) {
         ForEach(this.group?.steps ?? [], (row: DesktopToolStep): void => { this.Step(row) },
-          (row: DesktopToolStep): string => row.id + (row.timelineRevision === 0 ? '' : ':' + row.timelineRevision))
+          (row: DesktopToolStep): string => row.id + (row.timelineRevision === 0 ? '' : ':' + row.timelineRevision) +
+            (row.diffRevision === undefined ? '' : ':diff:' + row.diffRevision))
       }
     }.width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start)
   }

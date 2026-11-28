@@ -92,7 +92,7 @@ import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/Des
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopAccountSessionNotice, DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
-import type { DesktopNativeDestination, DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
+import type { DesktopNativeDestination, DesktopPluginLocation, DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
@@ -262,6 +262,7 @@ struct DesktopWorkspace {
   private settingsOpeningPlugins: boolean = false;
   @State @Watch('onPanelChanged') private panel: string = 'session';
   @State private pluginName: string = '';
+  @State private pluginLocation: DesktopPluginLocation = { kind: 'list', name: '', rowId: '' };
   private pluginTitle: string = '';
   private pluginDescription: string = '';
   @State private workspaceBusy: boolean = false;
@@ -700,6 +701,7 @@ struct DesktopWorkspace {
     const returned = readDesktopNativeDestination(this.nativeHandoff);
     this.nativeHandoff = '';
     const destination = returned?.host === this.hostUrl ? returned : undefined;
+    const selection = destination?.preserveSession === true ? undefined : destination;
     const byMember = new Map<string, DesktopWorkspaceGroup>();
     const byPath = new Map<string, DesktopWorkspaceGroup>();
     this.groups = workspaces.map((row: DesktopWorkspaceRow): DesktopWorkspaceGroup => {
@@ -716,7 +718,7 @@ struct DesktopWorkspace {
     for (const session of sessions) {
       const group = byMember.get(session.id) ?? byPath.get(session.cwd) ?? ungrouped;
       group.sessions.push(session);
-      if (destination === undefined && session.id === this.sessionId && this.selectedSubagent === undefined &&
+      if (selection === undefined && session.id === this.sessionId && this.selectedSubagent === undefined &&
         !this.archivedIds.includes(session.id)) {
         this.selectSession(group, session);
       }
@@ -724,8 +726,8 @@ struct DesktopWorkspace {
     if (ungrouped.sessions.length > 0) {
       this.groups.push(ungrouped);
     }
-    if (destination !== undefined) {
-      this.restoreWebSelection(destination);
+    if (selection !== undefined) {
+      this.restoreWebSelection(selection);
     } else if (this.archivedIds.includes(this.sessionId) || (this.selectedSubagent === undefined &&
       !sessions.some((session: SessionListItem): boolean => session.id === this.sessionId))) {
       this.clearSession();
@@ -745,6 +747,7 @@ struct DesktopWorkspace {
       this.pendingForkSource = '';
     }
     this.openPendingCreator();
+    if (destination?.plugin !== undefined) { this.openPlugins('', '', '', destination.plugin); }
   }
 
   private restoreWebSelection(destination: DesktopNativeDestination): void {
@@ -757,6 +760,11 @@ struct DesktopWorkspace {
     } else if (destination.sessionId) {
       this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
     }
+  }
+
+  private isRestoringWebPlugin(location?: DesktopPluginLocation): boolean {
+    return this.panel === 'plugins' && location !== undefined && this.pluginLocation.kind === location.kind &&
+      this.pluginLocation.name === location.name && this.pluginLocation.rowId === location.rowId;
   }
 
   private async restoreWebSubagent(destination: DesktopNativeDestination): Promise<void> {
@@ -775,7 +783,8 @@ struct DesktopWorkspace {
     if (owner !== undefined && group !== undefined && !archived() && !accepts(entry)) {
       const result = await owner.actions.call('session/projections', { 'sessionId': parentId });
       if (!this.pageActive || this.data !== owner || this.hostUrl !== destination.host ||
-        selection !== this.nativeSelectionVersion || this.panel !== 'session') { return; }
+        selection !== this.nativeSelectionVersion || (this.panel !== 'session' &&
+          !this.isRestoringWebPlugin(destination.plugin))) { return; }
       const children = result.ok ? desktopSubagentCatalog(parentId, getRecord(result.value, 'values')) : undefined;
       entry = children?.find((child: DesktopSubagentEntry): boolean => accepts(child));
       group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
@@ -789,9 +798,10 @@ struct DesktopWorkspace {
     const parent = group.sessions.find((session: SessionListItem): boolean => session.id === parentId);
     const session: SessionListItem = summary ?? { id: childId, title: entry.label || entry.name, cwd: parent?.cwd ?? group.path,
       createdAt: entry.createdAt, updatedAt: 0, running: false, blank: false, raw: '' };
+    const keepPlugin = this.isRestoringWebPlugin(destination.plugin);
     this.subagentAddresses.set(entry.id, entry);
     this.selectSession(group, session, entry);
-    this.panel = 'session';
+    this.panel = keepPlugin ? 'plugins' : 'session';
     this.revealWorkspace(group.id);
     this.revealSidebarSession(group.id, parentId);
   }
@@ -2392,10 +2402,11 @@ struct DesktopWorkspace {
     }
   }
 
-  private openPlugins(name: string = '', title: string = '', description: string = ''): void {
+  private openPlugins(name: string = '', title: string = '', description: string = '', location?: DesktopPluginLocation): void {
     this.pluginTitle = title;
     this.pluginDescription = description;
     this.pluginName = name;
+    this.pluginLocation = location ?? { kind: name ? 'package' : 'list', name: name, rowId: '' };
     this.panel = 'plugins';
   }
 
@@ -2859,7 +2870,7 @@ struct DesktopWorkspace {
   }
 
   private async openWeb(leaveExperiment: boolean, action: string = '', session: string = this.sessionId,
-    bundle: string = ''): Promise<void> {
+    plugin?: DesktopPluginLocation): Promise<void> {
     if (this.switching) {
       return;
     }
@@ -2878,7 +2889,8 @@ struct DesktopWorkspace {
         this.groups.find((group: DesktopWorkspaceGroup): boolean =>
           group.sessions.some((row: SessionListItem): boolean => row.id === session))?.id ?? '';
       const target: DesktopWebDestination = {
-        host: this.hostUrl, sessionId: sessionId, workspaceId: workspaceId, action: action, bundle: bundle
+        host: this.hostUrl, sessionId: sessionId, workspaceId: workspaceId, action: action,
+        bundle: plugin?.kind === 'package' ? plugin.name : '', plugin: plugin
       };
       this.webHandoff = leaveExperiment ? '' : JSON.stringify(target);
       hilog.warn(DOMAIN, TAG, 'DSHM-TRACE 从 ArkUI 打开 WebUI');
@@ -4669,9 +4681,9 @@ struct DesktopWorkspace {
               DesktopPluginsPane({
                 host: this.data.actions, installer: this.data.pluginInstall, maintenance: this.data.pluginMaintenance,
                 connectorAccounts: this.data.connectorAccounts, localePreference: this.data.accountLanguagePreference(),
-                requestedBundle: this.pluginName, requestedTitle: this.pluginTitle,
+                requestedBundle: this.pluginName, requestedLocation: this.pluginLocation, requestedTitle: this.pluginTitle,
                 requestedDescription: this.pluginDescription,
-                onWeb: (name: string): void => { this.openWeb(false, 'plugins', this.sessionId, name); }
+                onWeb: (location: DesktopPluginLocation): void => { this.openWeb(false, 'plugins', this.sessionId, location); }
               })
             } else if (this.panel === 'schedule' && this.ready && this.data !== undefined) {
               DesktopSchedulePane({
