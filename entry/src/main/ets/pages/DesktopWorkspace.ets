@@ -37,6 +37,9 @@ import { desktopWorkspaceSearchQuery } from '../desktop/DesktopWorkspaceSearchMo
 import { desktopSubagentCatalog, desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
 import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
+import { DesktopAccountOnboardingLayer } from '../desktop/DesktopAccountOnboardingLayer';
+import { emptyDesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
+import type { DesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
 import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
@@ -333,6 +336,10 @@ struct DesktopWorkspace {
   @State private accountDialog: number = -1;
   @State private accountDismissRequest: number = 0;
   @State private accountNotices: DesktopAccountNotice[] = [];
+  @State private accountOnboarding: DesktopOnboardingView = emptyDesktopOnboardingView();
+  private onboardingBrowser?: DesktopWorkspaceData;
+  private onboardingBrowserLeft: boolean = false;
+  private onboardingBrowserTimer: number = -1;
   @State private accountNoticesWindowShown: boolean = true;
   private quotaNotice?: DesktopQuotaNotice;
   private quotaAccount = emptyDesktopAccountSettingsIdentity();
@@ -357,8 +364,10 @@ struct DesktopWorkspace {
     }
     if (event === window.WindowEventType.WINDOW_HIDDEN || event === window.WindowEventType.WINDOW_INACTIVE) {
       this.noteQuotaBrowserFocus(false);
+      this.noteOnboardingBrowserFocus(false);
     } else if (event === window.WindowEventType.WINDOW_ACTIVE) {
       this.noteQuotaBrowserFocus(true);
+      this.noteOnboardingBrowserFocus(true);
       this.showQuotaSurface();
     }
     this.readingFocused = event === window.WindowEventType.WINDOW_ACTIVE ||
@@ -408,6 +417,7 @@ struct DesktopWorkspace {
     try { this.readingWindow?.off('windowEvent', this.readingWindowEvent); } catch (_) {}
     this.readingWindow = undefined;
     this.closeAccount();
+    this.resetAccountOnboarding();
     this.resetQuota();
     this.closeSettings();
     this.closeLogDialog();
@@ -425,6 +435,7 @@ struct DesktopWorkspace {
   onPageShow(): void {
     this.pageVisible = true;
     this.noteQuotaBrowserFocus(true);
+    this.noteOnboardingBrowserFocus(true);
     this.showQuotaSurface();
     this.reloadShortcutBindings();
     this.attachReadingWindow();
@@ -434,6 +445,7 @@ struct DesktopWorkspace {
   onPageHide(): void {
     this.pageVisible = false;
     this.noteQuotaBrowserFocus(false);
+    this.noteOnboardingBrowserFocus(false);
     this.shortcutsOpen = false;
     this.clearSessionDrag();
     this.clearWorkspaceDrag();
@@ -442,7 +454,8 @@ struct DesktopWorkspace {
 
   private syncReading(): void {
     const chat = this.chat?.sessionId === this.sessionId ? this.chat : undefined;
-    const visible = this.pageActive && this.pageVisible && !this.settingsOpen && this.quotaDialogToken < 0 &&
+    const visible = this.pageActive && this.pageVisible && !this.settingsOpen && !this.accountOnboarding.visible &&
+      this.quotaDialogToken < 0 &&
       this.panel === 'session' &&
       this.readingFocused;
     this.data?.reading.show(this.sessionId, chat?.historyLoaded === true, chat?.receivedTurn ?? 0, visible);
@@ -510,6 +523,7 @@ struct DesktopWorkspace {
       return;
     }
     this.closeAccount();
+    this.resetAccountOnboarding();
     this.closeFeedback();
     this.closeImagePreview();
     this.closeArchiveConfirmation();
@@ -625,7 +639,8 @@ struct DesktopWorkspace {
       this.timelinePreferences = value;
       this.timelinePreferencesReady = true;
       this.openFirstTimelineTree();
-    }, localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
+    }, (view: DesktopOnboardingView): void => { this.showAccountOnboarding(view); },
+    localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
     const data = this.data;
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
   }
@@ -2476,7 +2491,7 @@ struct DesktopWorkspace {
   }
 
   private async openAccount(): Promise<void> {
-    if (this.accountOpening || this.accountDialog >= 0) {
+    if (this.accountOpening || this.accountDialog >= 0 || this.accountOnboarding.visible) {
       return;
     }
     this.accountOpening = true;
@@ -2520,6 +2535,65 @@ struct DesktopWorkspace {
     }
   }
 
+  private showAccountOnboarding(view: DesktopOnboardingView): void {
+    if (!this.pageActive) { return; }
+    const previous = this.accountOnboarding.visible;
+    if (view.visible && !previous) {
+      this.closeAccount();
+      this.closeSettings();
+      this.closeQuotaSurface();
+      this.shortcutsOpen = false;
+    }
+    this.accountOnboarding = view;
+    if (!view.visible) {
+      this.clearOnboardingBrowser();
+      this.showQuotaSurface();
+    }
+    if (previous !== view.visible) { this.syncReading(); }
+  }
+
+  private resetAccountOnboarding(): void {
+    this.accountOnboarding = emptyDesktopOnboardingView();
+    this.clearOnboardingBrowser();
+  }
+
+  private clearOnboardingBrowser(): void {
+    clearTimeout(this.onboardingBrowserTimer);
+    this.onboardingBrowserTimer = -1;
+    this.onboardingBrowser = undefined;
+    this.onboardingBrowserLeft = false;
+  }
+
+  private async openOnboardingTopUp(href: string): Promise<void> {
+    const owner = this.data;
+    if (!href || owner === undefined || this.onboardingBrowser !== undefined || !this.accountOnboarding.visible) { return; }
+    this.onboardingBrowser = owner;
+    this.onboardingBrowserLeft = false;
+    const opened = await openExternalUrl(href);
+    if (this.onboardingBrowser !== owner) { return; }
+    if (!opened) {
+      this.clearOnboardingBrowser();
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_account_settings_open_failed') });
+    } else if (!this.onboardingBrowserLeft) {
+      this.onboardingBrowserTimer = setTimeout((): void => {
+        if (this.onboardingBrowser === owner && !this.onboardingBrowserLeft) {
+          this.clearOnboardingBrowser();
+          owner.onboarding.refreshBalance();
+        }
+      }, 1500);
+    }
+  }
+
+  private noteOnboardingBrowserFocus(focused: boolean): void {
+    if (this.onboardingBrowser === undefined) { return; }
+    if (!focused) { this.onboardingBrowserLeft = true; }
+    else if (this.onboardingBrowserLeft) {
+      const owner = this.onboardingBrowser;
+      this.clearOnboardingBrowser();
+      if (owner === this.data) { owner.onboarding.refreshBalance(); }
+    }
+  }
+
   private resetQuota(): void {
     this.quotaNotice = undefined;
     this.stopQuotaAccount?.();
@@ -2556,6 +2630,7 @@ struct DesktopWorkspace {
   private showQuotaSurface(): void {
     const notice = this.quotaNotice;
     if (notice === undefined || !this.pageActive || !this.pageVisible || !this.accountNoticesWindowShown ||
+        this.accountOnboarding.visible ||
         this.quotaBrowserVisit !== undefined || this.quotaDialogToken >= 0 || this.quotaToastToken >= 0) { return; }
     if (notice.code === 'ACCOUNT_QUOTA') {
       if (!this.quotaAccount.ready) { return; }
@@ -4512,8 +4587,8 @@ struct DesktopWorkspace {
     .width('100%').height('100%').padding({ left: 26, right: 26 }).justifyContent(FlexAlign.Center)
   }
 
-  build() {
-    WithTheme({ colorMode: this.workspaceColorMode() }) {
+  @Builder
+  private WorkbenchContent() {
       Stack({ alignContent: Alignment.Bottom }) {
         Column() {
           this.TopBar()
@@ -4598,6 +4673,22 @@ struct DesktopWorkspace {
         }
       }
       .width('100%').height('100%')
+      .visibility(this.accountOnboarding.visible ? Visibility.Hidden : Visibility.Visible)
+      .enabled(!this.accountOnboarding.visible)
+      .accessibilityLevel(this.accountOnboarding.visible ? 'no-hide-descendants' : 'auto')
+  }
+
+  build() {
+    WithTheme({ colorMode: this.workspaceColorMode() }) {
+      Stack() {
+        this.WorkbenchContent()
+        if (this.accountOnboarding.visible) {
+          DesktopAccountOnboardingLayer({ view: this.accountOnboarding, contentWidth: this.workbenchWidth,
+            controller: this.data?.onboarding, localePreference: this.data?.accountLanguagePreference() ?? 'system',
+            onTopUp: (href: string): void => { this.openOnboardingTopUp(href); }
+          })
+        }
+      }.width('100%').height('100%')
       .onAreaChange((_, area: Area): void => {
         this.workbenchBounds = area;
         this.workbenchWidth = Number(area.width);

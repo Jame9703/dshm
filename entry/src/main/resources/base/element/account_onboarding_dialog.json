@@ -1,0 +1,15 @@
+{
+  "string": [
+    { "name": "desktop_account_onboarding_loading", "value": "正在加载设置…" },
+    { "name": "desktop_account_onboarding_skip_title", "value": "跳过设置？" },
+    { "name": "desktop_account_onboarding_skip_description", "value": "你可以随时前往 设置 → 通用设置 中调整工作过程、性能与用量展示方式或开启代码工作工具。" },
+    { "name": "desktop_account_onboarding_keep_setting", "value": "继续设置" },
+    { "name": "desktop_account_onboarding_no_credit_title", "value": "暂时跳过充值？" },
+    { "name": "desktop_account_onboarding_no_credit_description", "value": "没有可用额度时，DeepSeek Harness 将无法开始新的任务。你可以稍后前往 设置 → 账号与余额 进行充值。" },
+    { "name": "desktop_account_onboarding_understood", "value": "我知道了" },
+    { "name": "desktop_account_onboarding_go_top_up", "value": "前往充值" },
+    { "name": "desktop_account_onboarding_confirm_enter", "value": "进入应用" },
+    { "name": "desktop_account_onboarding_confirm_close", "value": "关闭" },
+    { "name": "desktop_account_onboarding_confirm_failed", "value": "无法打开确认弹窗" }
+  ]
+}

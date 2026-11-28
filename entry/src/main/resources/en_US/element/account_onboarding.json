@@ -1,0 +1,31 @@
+{
+  "string": [
+    {"name":"desktop_account_onboarding_welcome_title","value":"Welcome to DeepSeek Harness"},
+    {"name":"desktop_account_onboarding_purpose_title","value":"What would you like DeepSeek Harness to help with?"},
+    {"name":"desktop_account_onboarding_intro","value":"DeepSeek Harness works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more."},
+    {"name":"desktop_account_onboarding_start","value":"Get started"},
+    {"name":"desktop_account_onboarding_credit_title","value":"Add credits"},
+    {"name":"desktop_account_onboarding_credit_description","value":"DeepSeek Harness charges credits based on the tokens used by models and tools. Add credits in advance to keep your tasks running without interruption. Your balance is only used while the agent is working on a task."},
+    {"name":"desktop_account_onboarding_recharge","value":"Add credits"},
+    {"name":"desktop_account_onboarding_later","value":"Next"},
+    {"name":"desktop_account_onboarding_purpose_description","value":"We’ll tailor the interface and tools to fit the way you work."},
+    {"name":"desktop_account_onboarding_office","value":"Office & creative work"},
+    {"name":"desktop_account_onboarding_office_description","value":"Edit documents, organize data, create presentations, and more"},
+    {"name":"desktop_account_onboarding_development","value":"Coding & development"},
+    {"name":"desktop_account_onboarding_development_description","value":"Edit code, debug issues, run commands, manage project files, and more"},
+    {"name":"desktop_account_onboarding_continue","value":"Continue"},
+    {"name":"desktop_account_onboarding_process_title","value":"How much detail would you like to see?"},
+    {"name":"desktop_account_onboarding_process_description","value":"This only changes how progress is shown, not what DeepSeek Harness can do."},
+    {"name":"desktop_account_onboarding_compact","value":"Results only"},
+    {"name":"desktop_account_onboarding_compact_description","value":"See just the results in a clean, simple interface"},
+    {"name":"desktop_account_onboarding_standard","value":"Key details"},
+    {"name":"desktop_account_onboarding_standard_description","value":"Focus on results, with only the most important steps and actions shown"},
+    {"name":"desktop_account_onboarding_detailed","value":"Full details"},
+    {"name":"desktop_account_onboarding_detailed_description","value":"See the full process for easier debugging and troubleshooting"},
+    {"name":"desktop_account_onboarding_enter","value":"Open app"},
+    {"name":"desktop_account_onboarding_back","value":"Back"},
+    {"name":"desktop_account_onboarding_skip","value":"Skip"},
+    {"name":"desktop_account_onboarding_save_failed","value":"Could not save settings. Try again."},
+    {"name":"desktop_account_onboarding_retry","value":"Retry"}
+  ]
+}

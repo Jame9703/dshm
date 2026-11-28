@@ -1,0 +1,15 @@
+{
+  "string": [
+    { "name": "desktop_account_onboarding_loading", "value": "Loading settings…" },
+    { "name": "desktop_account_onboarding_skip_title", "value": "Skip setup?" },
+    { "name": "desktop_account_onboarding_skip_description", "value": "You can change how progress, performance, and usage are displayed, or enable Coding Tools, anytime in Settings → General." },
+    { "name": "desktop_account_onboarding_keep_setting", "value": "Continue setup" },
+    { "name": "desktop_account_onboarding_no_credit_title", "value": "Skip adding credits?" },
+    { "name": "desktop_account_onboarding_no_credit_description", "value": "DeepSeek Harness can’t start new tasks without credits. You can add them later in Settings → Account." },
+    { "name": "desktop_account_onboarding_understood", "value": "Got it" },
+    { "name": "desktop_account_onboarding_go_top_up", "value": "Add credits" },
+    { "name": "desktop_account_onboarding_confirm_enter", "value": "Open app" },
+    { "name": "desktop_account_onboarding_confirm_close", "value": "Close" },
+    { "name": "desktop_account_onboarding_confirm_failed", "value": "Could not open the confirmation dialog" }
+  ]
+}

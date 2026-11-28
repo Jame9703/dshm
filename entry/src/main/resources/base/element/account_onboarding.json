@@ -1,0 +1,31 @@
+{
+  "string": [
+    {"name":"desktop_account_onboarding_welcome_title","value":"欢迎使用 DeepSeek Harness"},
+    {"name":"desktop_account_onboarding_purpose_title","value":"你希望 DeepSeek Harness 帮你做什么？"},
+    {"name":"desktop_account_onboarding_intro","value":"DeepSeek Harness 会以本地文件夹作为工作区，通过调用各种工具，读写本机文件，完成搜索整理资料、制作文档表格、编写代码、排查问题等各种任务。"},
+    {"name":"desktop_account_onboarding_start","value":"开始设置"},
+    {"name":"desktop_account_onboarding_credit_title","value":"准备可用额度"},
+    {"name":"desktop_account_onboarding_credit_description","value":"DeepSeek Harness 执行任务时，会根据模型与工具使用的 token 量扣除额度。请提前添加额度，避免任务在执行过程中被迫中断。你的余额只会在 Agent 实际执行任务时消耗。"},
+    {"name":"desktop_account_onboarding_recharge","value":"去充值"},
+    {"name":"desktop_account_onboarding_later","value":"下一步"},
+    {"name":"desktop_account_onboarding_purpose_description","value":"我们会根据你的选择调整界面和工具，以更适合你的工作方式。"},
+    {"name":"desktop_account_onboarding_office","value":"办公与创作"},
+    {"name":"desktop_account_onboarding_office_description","value":"编辑文档、整理数据和制作演示文稿等"},
+    {"name":"desktop_account_onboarding_development","value":"代码与开发"},
+    {"name":"desktop_account_onboarding_development_description","value":"修改代码、调试问题、运行命令和管理项目文件等"},
+    {"name":"desktop_account_onboarding_continue","value":"继续"},
+    {"name":"desktop_account_onboarding_process_title","value":"你希望看到多少工作过程？"},
+    {"name":"desktop_account_onboarding_process_description","value":"这只会影响工作过程的展示方式，不会影响 DeepSeek Harness 的工作能力。"},
+    {"name":"desktop_account_onboarding_compact","value":"聚焦结果"},
+    {"name":"desktop_account_onboarding_compact_description","value":"只看结果，保持界面简洁明了"},
+    {"name":"desktop_account_onboarding_standard","value":"关键细节"},
+    {"name":"desktop_account_onboarding_standard_description","value":"结果优先，仅展示重要步骤和关键操作"},
+    {"name":"desktop_account_onboarding_detailed","value":"完整过程"},
+    {"name":"desktop_account_onboarding_detailed_description","value":"查看完整工作过程，方便调试和排查问题"},
+    {"name":"desktop_account_onboarding_enter","value":"进入应用"},
+    {"name":"desktop_account_onboarding_back","value":"上一步"},
+    {"name":"desktop_account_onboarding_skip","value":"跳过"},
+    {"name":"desktop_account_onboarding_save_failed","value":"未能保存设置，请重试。"},
+    {"name":"desktop_account_onboarding_retry","value":"重试"}
+  ]
+}

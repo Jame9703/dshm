@@ -6,7 +6,7 @@ import { projectSessionCreate, projectSessionList, projectSessionPrompt, PromptM
 import type { SessionListItem } from 'appstate';
 import { Connection, ConnectionState, getArray, getBoolean, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { EventSink, HostFacts, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SESSION_PROMPT_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
@@ -18,6 +18,8 @@ import { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DESKTOP_THEME_NS, desktopThemeFrom } from './DesktopTheme';
 import type { DesktopTheme } from './DesktopTheme';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
+import { DESKTOP_ACCOUNT_ONBOARDING_NS, DesktopAccountOnboardingState } from './DesktopAccountOnboardingState';
+import type { DesktopOnboardingView } from './DesktopAccountOnboardingState';
 import { desktopAccountLocale } from './DesktopAccountClient';
 import type { DesktopAccountNotice } from './DesktopAccountNotices';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -102,6 +104,7 @@ export class DesktopWorkspaceData {
   readonly connectorAccounts: DesktopConnectorAccounts;
   readonly reading: DesktopSessionReading;
   readonly accountNotices: DesktopAccountNotices;
+  readonly onboarding: DesktopAccountOnboardingState;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private readonly afterFrame: (run: () => void) => void;
   private readonly onTheme: (theme: DesktopTheme) => void;
@@ -145,7 +148,8 @@ export class DesktopWorkspaceData {
     onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void,
     openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void,
     onQuotaNotice: (notice?: DesktopQuotaNotice) => void,
-    onTimelinePreferences: (value: DesktopTimelinePreferences) => void, questionDrafts?: DesktopQuestionDrafts) {
+    onTimelinePreferences: (value: DesktopTimelinePreferences) => void,
+    onOnboarding: (view: DesktopOnboardingView) => void, questionDrafts?: DesktopQuestionDrafts) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
@@ -153,8 +157,13 @@ export class DesktopWorkspaceData {
     this.onTimelinePreferences = onTimelinePreferences;
     this.questionDrafts = questionDrafts;
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
+    this.onboarding = new DesktopAccountOnboardingState(this.actions, onOnboarding,
+      (): Promise<void> => this.readConversationPreferences());
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices,
-      (state: Object): void => { this.completeAccountLogin(state); });
+      (state?: Object, changed?: boolean): void => {
+        this.onboarding.observeAccount(state, changed === true);
+        if (state !== undefined) { this.completeAccountLogin(state); }
+      });
     this.reading = new DesktopSessionReading(this.actions, onReading, afterFrame);
     this.interactions = new DesktopInteractions(this.connection, this.actions, onInteractions);
     this.interactions.setLocale(desktopAccountLocale());
@@ -282,15 +291,20 @@ export class DesktopWorkspaceData {
         }
         if (event === 'schedule/changed') { this.scheduleCatalog.refresh(); }
         if (event === EVENT_LLM_ADAPTERS_UPDATED) { this.actions.modelCatalogChanged(); }
+        if (event === EVENT_LLM_ADAPTERS_UPDATED || event === EVENT_CREDENTIALS_REFERENCE_UPDATED) {
+          this.onboarding.credentialsChanged();
+        }
         if (event === EVENT_SESSION_STATUS) { this.observeSessionStatus(frame); }
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
           if (namespace === 'ui-conversation' || namespace === 'ui-chat' || namespace === 'locale' ||
-            namespace === DESKTOP_THEME_NS || namespace === DESKTOP_TIMELINE_NS) {
+            namespace === DESKTOP_THEME_NS || namespace === DESKTOP_TIMELINE_NS || namespace === 'ui-settings' ||
+            namespace === DESKTOP_ACCOUNT_ONBOARDING_NS) {
             this.readConversationPreferences();
           }
           if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
             this.actions.modelCatalogChanged();
+            if (namespace.startsWith('llm-')) { this.readConversationPreferences(); }
           }
         }
       },
@@ -324,6 +338,7 @@ export class DesktopWorkspaceData {
     const result = await this.actions.call(SETTINGS_DESCRIBE_ENDPOINT, {});
     if (!this.active || version !== this.conversationPreferencesVersion) { return; }
     if (!result.ok) {
+      this.onboarding.observeSettings();
       if (this.timelinePreferences === undefined) { this.applyTimelinePreferences(DEFAULT_DESKTOP_TIMELINE_PREFERENCES); }
       return;
     }
@@ -343,6 +358,8 @@ export class DesktopWorkspaceData {
     if (appearance !== undefined) { this.onTheme(desktopThemeFrom(appearance)); }
     const language = getString(getRecord(locale, 'value'), 'preference') ?? 'system';
     this.accountLocalePreference = language;
+    this.onboarding.setLocale(language);
+    this.onboarding.observeSettings(result.value);
     this.interactions.setLocale(desktopAccountLocale(language));
     this.accountNotices.setLocale(language);
     this.connectorAccounts.setLocale(language);
@@ -518,6 +535,7 @@ export class DesktopWorkspaceData {
     this.pluginMaintenance.dispose();
     this.connectorAccounts.dispose();
     this.cordis.dispose();
+    this.onboarding.stop();
     this.accountNotices.stop();
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();
