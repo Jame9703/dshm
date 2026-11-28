@@ -1,4 +1,10 @@
-import { getBoolean, getField, getRecord, getString, parseJson } from 'connection';
+import { getArray, getBoolean, getField, getRecord, getString, parseJson } from 'connection';
+
+export interface DesktopHandoffSubagent {
+  parentSessionId: string;
+  childSessionId: string;
+  mode: string;
+}
 
 export interface DesktopPluginLocation {
   kind: 'list' | 'more' | 'item' | 'package' | 'row';
@@ -14,6 +20,7 @@ export interface DesktopWebDestination {
   action: string;
   bundle: string;
   plugin?: DesktopPluginLocation;
+  subagent?: DesktopHandoffSubagent;
 }
 
 export interface DesktopNativeDestination {
@@ -23,6 +30,7 @@ export interface DesktopNativeDestination {
   mode: string;
   plugin?: DesktopPluginLocation;
   preserveSession?: boolean;
+  ancestors?: DesktopHandoffSubagent[];
 }
 
 export interface DesktopWebContext {
@@ -41,6 +49,28 @@ function readPluginLocation(value?: Object): DesktopPluginLocation | undefined {
   return { kind: kind, name: name, rowId: rowId, entryId: getString(value, 'entryId') };
 }
 
+function readHandoffSubagent(value: Object | undefined, sessionId: string): DesktopHandoffSubagent | undefined {
+  const parentId = getString(value, 'parentSessionId') ?? '';
+  const mode = getString(value, 'mode') ?? '';
+  if (!parentId || !sessionId || parentId === sessionId || getString(value, 'childSessionId') !== sessionId ||
+    (mode !== 'one-shot' && mode !== 'continuable' && mode !== 'unknown')) { return undefined; }
+  return { parentSessionId: parentId, childSessionId: sessionId, mode: mode };
+}
+
+function readHandoffAncestors(values: Object[] | undefined, childId: string, parentId: string): DesktopHandoffSubagent[] {
+  const ancestors: DesktopHandoffSubagent[] = [];
+  const visited = new Set<string>([childId, parentId]);
+  let id = parentId;
+  for (const value of values ?? []) {
+    const ancestor = readHandoffSubagent(value, id);
+    if (ancestor === undefined || visited.has(ancestor.parentSessionId)) { return []; }
+    ancestors.push(ancestor);
+    id = ancestor.parentSessionId;
+    visited.add(id);
+  }
+  return ancestors;
+}
+
 export function readDesktopWebDestination(value: string): DesktopWebDestination | undefined {
   if (!value) { return undefined; }
   const raw = parseJson(value);
@@ -51,6 +81,11 @@ export function readDesktopWebDestination(value: string): DesktopWebDestination 
     bundle: getString(raw, 'bundle') ?? '' };
   const plugin = readPluginLocation(getRecord(raw, 'plugin'));
   if (plugin !== undefined) { destination.plugin = plugin; }
+  if (getField(raw, 'subagent') !== undefined) {
+    const child = readHandoffSubagent(getRecord(raw, 'subagent'), destination.sessionId);
+    if (child === undefined) { return undefined; }
+    destination.subagent = child;
+  }
   return destination;
 }
 
@@ -65,6 +100,14 @@ export function readDesktopNativeDestination(value: string): DesktopNativeDestin
   const plugin = readPluginLocation(getRecord(raw, 'plugin'));
   if (plugin !== undefined) { destination.plugin = plugin; }
   if (getBoolean(raw, 'preserveSession') === true) { destination.preserveSession = true; }
+  if (destination.parentId) {
+    if (!sessionId || destination.parentId === sessionId ||
+      (destination.mode !== 'one-shot' && destination.mode !== 'continuable' && destination.mode !== 'unknown')) {
+      return undefined;
+    }
+    const ancestors = readHandoffAncestors(getArray(raw, 'ancestors'), sessionId, destination.parentId);
+    if (ancestors.length > 0) { destination.ancestors = ancestors; }
+  }
   return destination;
 }
 
@@ -88,12 +131,12 @@ export function readDesktopWebContext(value: string, host: string): DesktopWebCo
   }
   const destination: DesktopNativeDestination = { host: host, sessionId: sessionId, parentId: '', mode: '' };
   if (child !== undefined) {
-    const parentId = getString(child, 'parentSessionId') ?? '';
-    const mode = getString(child, 'mode') ?? '';
-    if (!parentId || !sessionId || parentId === sessionId || getString(child, 'childSessionId') !== sessionId ||
-      (mode !== 'one-shot' && mode !== 'continuable' && mode !== 'unknown')) { return fallback; }
-    destination.parentId = parentId;
-    destination.mode = mode;
+    const address = readHandoffSubagent(child, sessionId);
+    if (address === undefined) { return fallback; }
+    destination.parentId = address.parentSessionId;
+    destination.mode = address.mode;
+    const ancestors = readHandoffAncestors(getArray(raw, 'ancestors'), sessionId, address.parentSessionId);
+    if (ancestors.length > 0) { destination.ancestors = ancestors; }
   }
   if (plugin !== undefined) { destination.plugin = plugin; }
   return { appearance: appearance, destination: destination };
@@ -117,8 +160,54 @@ export function buildDesktopWebContextScript(page: string): string {
     "    else if (name) plugin = {kind:'package',name};\n" +
     "    else plugin = {kind:panel.querySelector('[data-plugin-group=more]') ? 'more' : 'list'};\n" +
     "  }\n" +
-    "  return JSON.stringify({ appearance: document.documentElement.getAttribute('data-ds-theme-source'), selection, plugin });\n" +
+    "  var readAncestors = globalThis.__DSHM_READ_WORKSPACE_SUBAGENT_ANCESTORS__;\n" +
+    "  var ancestors;\n" +
+    "  if (selection?.subagentAddress && typeof readAncestors === 'function') {\n" +
+    "    try { ancestors = readAncestors(selection.subagentAddress); } catch (_) {}\n" +
+    "  }\n" +
+    "  return JSON.stringify({ appearance: document.documentElement.getAttribute('data-ds-theme-source'), selection, plugin, ancestors });\n" +
     "})()";
+}
+
+export function buildDesktopWorkspaceSessionScript(target: DesktopWebDestination): string {
+  return `(function () {
+    var id = ${JSON.stringify(target.sessionId)};
+    var workspace = ${JSON.stringify(target.workspaceId)};
+    var child = ${target.subagent === undefined ? 'null' : JSON.stringify(target.subagent)};
+    var exactRow = function (key) {
+      return document.querySelector('[data-row-key="' + CSS.escape(key) + '"]');
+    };
+    if (typeof globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ === 'function') {
+      if (!globalThis.__DSHM_OPEN_WORKSPACE_SESSION__(child || id)) return false;
+      try {
+        var selected = JSON.parse(localStorage.getItem('dsh.sessions.current'));
+        var address = selected?.subagentAddress;
+        return selected?.sessionId === id && (!child ||
+          (address?.parentSessionId === child.parentSessionId && address.childSessionId === id &&
+           address.mode === child.mode));
+      } catch (_) { return false; }
+    }
+    if (child) return false;
+    var row = exactRow('session:' + id);
+    if (row) {
+      if (row.getAttribute('aria-selected') === 'true') return true;
+      row.click();
+      return false;
+    }
+    var sidebar = globalThis.__DSHM_SIDEBAR__;
+    if (sidebar && sidebar.state() === 'collapsed') {
+      sidebar.toggle();
+      return false;
+    }
+    var group = exactRow('workspace:' + workspace);
+    if (group && group.getAttribute('aria-expanded') === 'false') {
+      group.click();
+      return false;
+    }
+    var more = exactRow('overflow:' + workspace);
+    if (more && more.getAttribute('aria-expanded') === 'false') more.click();
+    return false;
+  })()`;
 }
 
 export function buildDesktopPluginDetailScript(bundle: string): string {

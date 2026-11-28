@@ -1413,6 +1413,7 @@
     { "name": "desktop_account_title", "value": "账号" },
     { "name": "desktop_account_sign_in", "value": "登录" },
     { "name": "desktop_account_sign_out", "value": "退出登录" },
+    { "name": "desktop_account_feedback", "value": "意见反馈" },
     { "name": "desktop_account_add_key", "value": "添加 API Key" },
     { "name": "desktop_account_retry", "value": "重新登录" },
     { "name": "desktop_account_login_title", "value": "开始使用" },

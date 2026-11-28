@@ -1372,6 +1372,7 @@
     { "name": "desktop_account_title", "value": "Account" },
     { "name": "desktop_account_sign_in", "value": "Sign in" },
     { "name": "desktop_account_sign_out", "value": "Sign out" },
+    { "name": "desktop_account_feedback", "value": "Feedback" },
     { "name": "desktop_account_add_key", "value": "Add API Key" },
     { "name": "desktop_account_retry", "value": "Sign in again" },
     { "name": "desktop_account_login_title", "value": "Get started" },

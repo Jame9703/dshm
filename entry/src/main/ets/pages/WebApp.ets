@@ -31,8 +31,8 @@
  */
 
 import { DESKTOP_WORKSPACE_PAGE, setDesktopWorkspaceEnabled } from '../desktop/DesktopWorkspacePreference';
-import { buildDesktopPluginDetailScript, buildDesktopPluginViewScript, buildDesktopWebContextScript, readDesktopWebContext,
-  readDesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
+import { buildDesktopPluginDetailScript, buildDesktopPluginViewScript, buildDesktopWebContextScript,
+  buildDesktopWorkspaceSessionScript, readDesktopWebContext, readDesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import type { DesktopWebContext } from '../desktop/DesktopWorkspaceHandoff';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { webview } from '@kit.ArkWeb';
@@ -2989,41 +2989,6 @@ function buildDesktopWorkspaceActionScript(action: string): string {
   })()`;
 }
 
-function buildDesktopWorkspaceSessionScript(sessionId: string, workspaceId: string): string {
-  return `(function () {
-    var id = ${JSON.stringify(sessionId)};
-    var workspace = ${JSON.stringify(workspaceId)};
-    var exactRow = function (key) {
-      return document.querySelector('[data-row-key="' + CSS.escape(key) + '"]');
-    };
-    if (typeof globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ === 'function') {
-      if (!globalThis.__DSHM_OPEN_WORKSPACE_SESSION__(id)) return false;
-      try {
-        return JSON.parse(localStorage.getItem('dsh.sessions.current'))?.sessionId === id;
-      } catch (_) { return false; }
-    }
-    var row = exactRow('session:' + id);
-    if (row) {
-      if (row.getAttribute('aria-selected') === 'true') return true;
-      row.click();
-      return false;
-    }
-    var sidebar = globalThis.__DSHM_SIDEBAR__;
-    if (sidebar && sidebar.state() === 'collapsed') {
-      sidebar.toggle();
-      return false;
-    }
-    var group = exactRow('workspace:' + workspace);
-    if (group && group.getAttribute('aria-expanded') === 'false') {
-      group.click();
-      return false;
-    }
-    var more = exactRow('overflow:' + workspace);
-    if (more && more.getAttribute('aria-expanded') === 'false') more.click();
-    return false;
-  })()`;
-}
-
 /**
  * 卡片点击 →「直达当前会话」注入脚本（docs/178 第三轮增强）。
  *
@@ -5952,7 +5917,7 @@ struct WebApp {
       openAction();
       return;
     }
-    this.runDesktopWorkspaceScript(buildDesktopWorkspaceSessionScript(target.sessionId, target.workspaceId),
+    this.runDesktopWorkspaceScript(buildDesktopWorkspaceSessionScript(target),
       target.host, document, (opened: boolean): void => {
         if (opened) {
           hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');

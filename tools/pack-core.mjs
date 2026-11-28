@@ -38,6 +38,7 @@ import { patchWorkbenchStartupMode } from './lib/workbench-startup-mode.mjs';
 import { patchWorkbenchStartup } from './lib/workbench-startup.mjs';
 import { patchSettingsStartup } from './lib/settings-startup.mjs';
 import { patchSettingsController } from './lib/settings-controller.mjs';
+import { patchAccountContactDocument } from './lib/account-contact-document.mjs';
 import { patchCordisStartup } from './lib/cordis-startup.mjs';
 import { patchPostStartupImports } from './lib/post-startup-imports.mjs';
 import { patchNativeWebPickers } from './lib/native-web-pickers.mjs';
@@ -4578,32 +4579,66 @@ function patchSidebarTabIdLeak() {
   log('[pack-core]   侧栏页签守卫补丁：sidebarRight.tabs.register() 取号失败回滚');
 }
 
-// Route by Host session ID, including a blank session hidden by the Web sidebar.
+// Use the workspace service for listed sessions and directly addressed subagents.
 function patchDesktopWorkspaceSessionNavigation() {
   const target = join(STAGE, 'node_modules', '@deepseek-ai', 'dsh-client-ui-workspace', 'lib', 'client.js');
   if (!existsSync(target)) die(`ArkUI 会话交接：找不到 ${target}`);
-  const text = readFileSync(target, 'utf8');
+  let text = readFileSync(target, 'utf8');
   const name = '__DSHM_OPEN_WORKSPACE_SESSION__';
-  if (text.includes(name)) return;
+  const ancestorReader = '__DSHM_READ_WORKSPACE_SUBAGENT_ANCESTORS__';
+  if (text.includes(name) && text.includes(ancestorReader)) return;
+  if (text.includes(name)) {
+    const begin = '\n    ctx.effect(() => {\n      const openById = (id) => {';
+    const end = `        if (globalThis.${name} === openById) delete globalThis.${name};\n      };\n    });\n`;
+    const start = text.indexOf(begin);
+    const finish = text.indexOf(end, start);
+    if (start < 0 || finish < 0) die('ArkUI 会话交接：无法更新既有的会话 ID 补丁');
+    text = text.slice(0, start) + text.slice(finish + end.length);
+    if (text.includes(name)) die('ArkUI 会话交接：残留未知的会话 ID 补丁');
+  }
   const anchor = /const openSession\s*=\s*(?:\(sessionId\)|sessionId)\s*=>\s*\{\s*uiWorkspace\.openSession\(sessionId\);?\s*\};/g;
   if ([...text.matchAll(anchor)].length !== 1) {
     die('ArkUI 会话交接：WebUI 的会话导航接口已变化');
   }
   const bridge = `
     ctx.effect(() => {
-      const openById = (id) => {
-        if (typeof id !== 'string' || !sessions.list.getSnapshot().ids.includes(id)
-            || workspaces.list.getSnapshot().archivedSessionIds.includes(id)) return false;
+      const validSubagent = (address) => address && typeof address === 'object'
+        && typeof address.parentSessionId === 'string' && address.parentSessionId.length > 0
+        && typeof address.childSessionId === 'string' && address.childSessionId.length > 0
+        && address.parentSessionId !== address.childSessionId
+        && ['one-shot', 'continuable', 'unknown'].includes(address.mode);
+      const openById = (target) => {
+        const archived = workspaces.list.getSnapshot().archivedSessionIds;
+        if (typeof target === 'string') {
+          if (!sessions.list.getSnapshot().ids.includes(target) || archived.includes(target)) return false;
+        } else if (!validSubagent(target) || archived.includes(target.parentSessionId)
+            || archived.includes(target.childSessionId)) return false;
         try {
-          openSession(id);
+          openSession(target);
           return true;
         } catch (_) {
           return false;
         }
       };
+      const readAncestors = (address) => {
+        if (!validSubagent(address)) return [];
+        const ancestors = [];
+        const seen = new Set([address.childSessionId, address.parentSessionId]);
+        let id = address.parentSessionId;
+        while (true) {
+          const parent = sessions.subagentAddress(id);
+          if (!validSubagent(parent) || parent.childSessionId !== id || seen.has(parent.parentSessionId)) break;
+          ancestors.push(parent);
+          id = parent.parentSessionId;
+          seen.add(id);
+        }
+        return ancestors;
+      };
       globalThis.${name} = openById;
+      globalThis.${ancestorReader} = readAncestors;
       return () => {
         if (globalThis.${name} === openById) delete globalThis.${name};
+        if (globalThis.${ancestorReader} === readAncestors) delete globalThis.${ancestorReader};
       };
     });
 `;
@@ -5585,6 +5620,7 @@ patchSidebarTabIdLeak();
 patchDesktopWorkspaceSessionNavigation();
 patchDefaultWorkspaceToast();
 patchNativeWebPickers(STAGE, log);
+patchAccountContactDocument(STAGE);
 ensureRipgrepPlatformPackage();
 patchFsSearchFallback();
 patchAgentInstructionsScopeWalk();

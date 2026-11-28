@@ -132,6 +132,10 @@ export class DesktopHostActions {
       'sessionId': sessionId, 'seq': String(sequence), 'index': String(index)
     });
   }
+
+  accountContactDocument(): Promise<RpcResult> {
+    return this.connection.readApiDocument('dshm.account.contact', {});
+  }
 }
 
 export function desktopHostProblem(result: RpcResult): string {

@@ -47,7 +47,7 @@ export interface DesktopDockChatActions {
   openChanges: (target: DesktopChangeTarget) => void;
   openModels: () => void;
   openPlugin: (name: string, title: string, description: string) => void;
-  openWeb: (id: string) => void;
+  openWeb: (id: string, child?: DesktopSubagentEntry) => void;
   copy: (id: string) => void;
   exportLog: (id: string) => Promise<string>;
   feedback: (id: string, conversation: DesktopConversation) => Promise<string>;
@@ -286,7 +286,9 @@ export struct DesktopDockChatPane {
           onPluginDetails: (name: string, title: string, description: string): void => {
             this.actions?.openPlugin(name, title, description);
           },
-          onWeb: (): void => { if (this.target !== undefined) { this.actions?.openWeb(this.target.id); } },
+          onWeb: (): void => {
+            if (this.target !== undefined) { this.actions?.openWeb(this.target.id, this.target.subagent); }
+          },
           onLoadCommands: (): void => { this.binding?.conversation.loadCommands(this.target?.id ?? ''); },
           onCommand: (command: string): Promise<string> => this.run((binding, id): Promise<string> =>
             binding.conversation.runCommandChoice(id, command, (session: string): Promise<string> =>

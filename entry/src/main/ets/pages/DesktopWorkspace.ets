@@ -49,11 +49,12 @@ import { desktopAccountPlatformLink, desktopAccountSettingsProfile,
   emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import { desktopAccountLocale, desktopAccountMetadata } from '../desktop/DesktopAccountClient';
+import { desktopAccountContactUrl } from '../desktop/DesktopAccountContact';
 import { DesktopAccountQuotaDialog, DesktopQuotaToast, DESKTOP_QUOTA_TOAST_HOLD_MS, DESKTOP_QUOTA_TOAST_FADE_MS }
   from '../desktop/DesktopQuotaNotice';
 import type { DesktopQuotaNotice } from '../desktop/DesktopQuotaNoticeModel';
 import { controlMaterial, copyText, dialogMaterial, mimeTypeForName, openExternalUrl, openFileLocation, openSystemPreview, PickOutcome,
-  pickDocumentUris, pickFolder, readDocumentBytes, uriFromPath } from 'platform';
+  pickDocumentUris, pickFolder, readDeviceFacts, readDocumentBytes, uriFromPath } from 'platform';
 import { desktopMenuOptions, desktopPluginEntryItems } from '../desktop/DesktopMenuOptions';
 import { DesktopPluginsPane } from '../desktop/DesktopPluginsPane';
 import { DesktopSchedulePane } from '../desktop/DesktopSchedulePane';
@@ -95,7 +96,8 @@ import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/Des
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopAccountSessionNotice, DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
-import type { DesktopNativeDestination, DesktopPluginLocation, DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
+import type { DesktopHandoffSubagent, DesktopNativeDestination, DesktopPluginLocation,
+  DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
 import type { DesktopSessionCreation, DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
@@ -118,11 +120,20 @@ const TAG: string = 'DshDesktopWorkspace';
 const DOCK_HANDLE_WIDTH: number = 7;
 const DOCK_MIN_WIDTH: number = 220;
 const DOCK_SPLIT_MIN_WIDTH: number = 540;
+const DOCK_TAB_TITLE_HEIGHT: number = 28;
 
 interface DesktopDockDrag {
   session: string;
   pane: number;
   tab: string;
+}
+
+interface DesktopDockTabContext {
+  session: string;
+  pane: number;
+  tab: string;
+  serial: number;
+  offset: Position;
 }
 
 interface DesktopAccountSessionToast {
@@ -346,6 +357,8 @@ struct DesktopWorkspace {
   private readonly pendingTerminalRenames = new Set<string>();
   private terminalRenameVersion: number = 0;
   @State private terminalRename?: DesktopTerminalRenameTarget = undefined;
+  private dockTabContextSerial: number = 0;
+  @State private dockTabContext?: DesktopDockTabContext = undefined;
   private readonly agentTerminals = new DesktopAgentTerminalInventory();
   private agentTerminalSession: string = '';
   private stopAgentTerminals?: () => void;
@@ -359,6 +372,7 @@ struct DesktopWorkspace {
   @State private accountLauncherSignedIn: boolean = false;
   @State private accountLauncherName: string = '';
   @State private accountLauncherAvatar: string = '';
+  private accountLauncherUid: string = '';
   private accountLauncherRevision: number = -1;
   @State private accountNotices: DesktopAccountNotice[] = [];
   @State private accountSessionToasts: DesktopAccountSessionToast[] = [];
@@ -457,6 +471,7 @@ struct DesktopWorkspace {
     this.closeArchiveConfirmation();
     this.dismissArchiveNotice();
     this.terminalRename = undefined;
+    this.dockTabContext = undefined;
     this.clearAgentTerminalWatch();
     this.data?.stop();
     this.data = undefined;
@@ -492,7 +507,10 @@ struct DesktopWorkspace {
   }
 
   private onPanelChanged(): void {
-    if (this.panel !== 'session') { this.terminalRename = undefined; }
+    if (this.panel !== 'session') {
+      this.terminalRename = undefined;
+      this.dockTabContext = undefined;
+    }
     this.syncReading();
     this.syncAgentTerminalWatch();
   }
@@ -553,6 +571,7 @@ struct DesktopWorkspace {
       return;
     }
     const host = desktopWorkspaceSelectionHost(this.hostUrl);
+    this.dockTabContext = undefined;
     if (host && host !== this.selectionHost) {
       if (this.selectionHost) {
         this.nativeSelectionVersion++;
@@ -578,6 +597,7 @@ struct DesktopWorkspace {
     this.accountLauncherSignedIn = false;
     this.accountLauncherName = '';
     this.accountLauncherAvatar = '';
+    this.accountLauncherUid = '';
     this.accountLauncherRevision = -1;
     this.subagentAddresses.clear();
     this.attachmentsBySession.clear();
@@ -860,7 +880,7 @@ struct DesktopWorkspace {
 
   private restoreWebSelection(destination: DesktopNativeDestination): void {
     if (!destination.parentId && destination.sessionId && this.openSessionById(destination.sessionId, false)) { return; }
-    this.clearSession(true);
+    this.clearSession(!destination.parentId);
     this.selectedWorkspaceTitle =
       this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
     if (destination.parentId) {
@@ -880,38 +900,62 @@ struct DesktopWorkspace {
     const parentId = destination.parentId;
     const childId = destination.sessionId;
     const selection = this.nativeSelectionVersion;
-    const archived = (): boolean => this.archivedIds.includes(parentId) || this.archivedIds.includes(childId);
+    const context = this.getUIContext().getHostContext();
+    const remembered = context === undefined || !this.selectionHost ? undefined :
+      readDesktopSavedChildSelection(readDesktopWorkspaceSelection(context, this.selectionHost));
+    const ancestors = this.webSubagentAncestors(destination, remembered);
+    const root = ancestors.length > 0 ? ancestors[ancestors.length - 1].parentId : parentId;
+    const archived = (): boolean => this.archivedIds.includes(root) || this.archivedIds.includes(childId) ||
+      ancestors.some((entry: DesktopSubagentEntry): boolean => this.archivedIds.includes(entry.id));
     const accepts = (entry?: DesktopSubagentEntry): boolean => entry !== undefined &&
       entry.parentId === parentId && entry.id === childId && entry.mode !== 'external' &&
       (destination.mode === 'unknown' || entry.mode === destination.mode);
-    let group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
-      candidate.sessions.some((session: SessionListItem): boolean => session.id === parentId));
-    let summary = this.sessionSummaries.find((item: SessionListItem): boolean => item.id === childId);
-    let entry = summary === undefined ? undefined : desktopSubagentFromSummary(summary);
-    if (owner !== undefined && group !== undefined && !archived() && !accepts(entry)) {
+    const findGroup = (): DesktopWorkspaceGroup | undefined => this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
+      candidate.sessions.some((session: SessionListItem): boolean => session.id === root));
+    const summary = this.sessionSummaries.find((item: SessionListItem): boolean => item.id === childId);
+    const listed = summary === undefined ? undefined : desktopSubagentFromSummary(summary);
+    let entry = accepts(listed) ? listed : remembered?.children.find((item: DesktopSubagentEntry): boolean => accepts(item));
+    if (owner !== undefined && findGroup() !== undefined && !archived() && !accepts(entry)) {
       const result = await owner.actions.call('session/projections', { 'sessionId': parentId });
       if (!this.pageActive || this.data !== owner || this.hostUrl !== destination.host ||
         selection !== this.nativeSelectionVersion || (this.panel !== 'session' &&
           !this.isRestoringWebPlugin(destination.plugin))) { return; }
       const children = result.ok ? desktopSubagentCatalog(parentId, getRecord(result.value, 'values')) : undefined;
       entry = children?.find((child: DesktopSubagentEntry): boolean => accepts(child));
-      group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
-        candidate.sessions.some((session: SessionListItem): boolean => session.id === parentId));
-      summary = this.sessionSummaries.find((item: SessionListItem): boolean => item.id === childId);
+      if (entry === undefined && children === undefined && ancestors.length > 0) {
+        // A one-shot parent can be unlisted. The addressed follow validates the selected child on the Host.
+        entry = { id: childId, parentId: parentId, mode: destination.mode,
+          name: childId, label: summary?.title ?? '', createdAt: summary?.createdAt ?? 0 };
+      }
     }
-    if (group === undefined || archived() || entry === undefined || !accepts(entry)) {
+    const group = findGroup();
+    if (group === undefined || archived() || entry === undefined || !accepts(entry) ||
+      !this.restoreSavedChild({ workspaceId: group.id, children: [entry, ...ancestors] })) {
       this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
       return;
     }
-    const parent = group.sessions.find((session: SessionListItem): boolean => session.id === parentId);
-    const session: SessionListItem = summary ?? { id: childId, title: entry.label || entry.name, cwd: parent?.cwd ?? group.path,
-      createdAt: entry.createdAt, updatedAt: 0, running: false, blank: false, raw: '' };
-    const keepPlugin = this.isRestoringWebPlugin(destination.plugin);
-    this.subagentAddresses.set(entry.id, entry);
-    this.selectSession(group, session, entry);
-    this.panel = keepPlugin ? 'plugins' : 'session';
-    this.revealWorkspace(group.id);
-    this.revealSidebarSession(group.id, parentId);
+  }
+
+  private webSubagentAncestors(destination: DesktopNativeDestination,
+    remembered?: DesktopSavedChildSelection): DesktopSubagentEntry[] {
+    const ancestors: DesktopSubagentEntry[] = [];
+    const visited = new Set<string>([destination.sessionId]);
+    let id = destination.parentId;
+    while (id && !visited.has(id)) {
+      visited.add(id);
+      const summary = this.sessionSummaries.find((row: SessionListItem): boolean => row.id === id);
+      const listed = summary === undefined ? undefined : desktopSubagentFromSummary(summary);
+      const saved = remembered?.children.find((entry: DesktopSubagentEntry): boolean => entry.id === id);
+      const address = destination.ancestors?.find((entry: DesktopHandoffSubagent): boolean => entry.childSessionId === id);
+      const known = saved ?? listed;
+      const entry: DesktopSubagentEntry | undefined = address === undefined ? known :
+        { id: id, parentId: address.parentSessionId, mode: address.mode, name: known?.name ?? id,
+          label: known?.label || summary?.title || '', createdAt: known?.createdAt ?? summary?.createdAt ?? 0 };
+      if (entry === undefined || entry.mode === 'external' || visited.has(entry.parentId)) { break; }
+      ancestors.push(entry);
+      id = entry.parentId;
+    }
+    return ancestors;
   }
 
   private showRename(id: string, workspace: boolean, title: ResourceStr): void {
@@ -1481,6 +1525,7 @@ struct DesktopWorkspace {
     subagent: DesktopSubagentEntry | undefined = desktopSubagentFromSummary(session)): void {
     if (this.dockSessionId !== session.id) {
       this.dockSessionId = session.id;
+      this.dockTabContext = undefined;
       this.clearDockGesture();
       this.rightDock = this.docks.get(session.id) ?? readDesktopDock(this.getUIContext().getHostContext(), session.id);
       this.docks.set(session.id, this.rightDock);
@@ -1579,6 +1624,7 @@ struct DesktopWorkspace {
     this.sessionId = '';
     this.selectedSubagent = undefined;
     this.terminalCreateRequest = undefined;
+    this.dockTabContext = undefined;
     this.dockSessionId = '';
     this.clearDockGesture();
     this.rightDock = emptyDesktopDock();
@@ -2090,6 +2136,11 @@ struct DesktopWorkspace {
     if (!this.sessionId || layout === this.rightDock) { return; }
     const edit = this.terminalRename;
     if (edit !== undefined && this.findTerminalRenameTab(layout, edit) === undefined) { this.terminalRename = undefined; }
+    const menu = this.dockTabContext;
+    if (menu !== undefined && (!layout.expanded || !layout.panes[menu.pane]?.tabs.some(
+      (tab: DesktopDockTab): boolean => tab.id === menu.tab))) {
+      this.dockTabContext = undefined;
+    }
     this.rightDock = layout;
     this.docks.set(this.sessionId, layout);
     this.data?.terminalRetentions.setTabs(this.sessionId, desktopDockTerminalIds(layout));
@@ -2693,6 +2744,7 @@ struct DesktopWorkspace {
     this.accountLauncherRevision = identity.revision;
     this.accountLauncherName = '';
     this.accountLauncherAvatar = '';
+    this.accountLauncherUid = '';
     if (!identity.signedIn) { return; }
     const metadata = desktopAccountMetadata(desktopAccountLocale(owner.accountLanguagePreference()));
     const result = await owner.actions.call('account/getProfile', { 'client': metadata });
@@ -2702,6 +2754,22 @@ struct DesktopWorkspace {
     this.accountLauncherName = profile?.name || profile?.contact ||
       this.accessibilityLabel($r('app.string.desktop_account_settings_signed_in'));
     this.accountLauncherAvatar = profile?.avatarUrl ?? '';
+    this.accountLauncherUid = profile === undefined ? '' : getString(getRecord(result.value, 'value'), 'id') ?? '';
+  }
+
+  private async openAccountFeedback(): Promise<void> {
+    const owner = this.data;
+    if (!this.pageActive || !this.ready || owner === undefined) { return; }
+    const uid = this.accountLauncherUid;
+    const facts = readDeviceFacts();
+    const reply = await owner.actions.accountContactDocument();
+    if (!this.pageActive || this.data !== owner) { return; }
+    const href = reply.ok ? desktopAccountContactUrl(reply.value, uid, facts.osFullName,
+      facts.screenWidthVp * facts.density, facts.screenHeightVp * facts.density) : '';
+    const opened = href ? await openExternalUrl(href) : false;
+    if (!opened && this.pageActive && this.data === owner) {
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_account_settings_open_failed') });
+    }
   }
 
   private closeAccount(): void {
@@ -2971,6 +3039,8 @@ struct DesktopWorkspace {
       return [
         { value: $r('app.string.desktop_workspace_settings'), icon: $r('app.media.dsh_account_menu_settings'),
           action: (): void => { this.openSettings(); } },
+        { value: $r('app.string.desktop_account_feedback'), icon: $r('app.media.dsh_account_menu_feedback'),
+          enabled: this.ready, action: (): void => { this.openAccountFeedback(); } },
         { value: signedIn ? $r('app.string.desktop_account_sign_out') : $r('app.string.desktop_account_sign_in'),
           icon: signedIn ? $r('app.media.dsh_account_menu_sign_out') : $r('app.media.dsh_account_menu_sign_in'),
           enabled: this.ready, action: (): void => { this.openAccount(signedIn); } },
@@ -3013,7 +3083,7 @@ struct DesktopWorkspace {
   }
 
   private async openWeb(leaveExperiment: boolean, action: string = '', session: string = this.sessionId,
-    plugin?: DesktopPluginLocation): Promise<void> {
+    plugin?: DesktopPluginLocation, child?: DesktopSubagentEntry): Promise<void> {
     if (this.switching) {
       return;
     }
@@ -3035,6 +3105,11 @@ struct DesktopWorkspace {
         host: this.hostUrl, sessionId: sessionId, workspaceId: workspaceId, action: action,
         bundle: plugin?.kind === 'package' ? plugin.name : '', plugin: plugin
       };
+      const subagent = child ?? this.subagentAddresses.get(sessionId) ??
+        (sessionId === this.sessionId ? this.selectedSubagent : undefined);
+      if (subagent !== undefined && subagent.id === sessionId && subagent.mode !== 'external') {
+        target.subagent = { parentSessionId: subagent.parentId, childSessionId: subagent.id, mode: subagent.mode };
+      }
       this.webHandoff = leaveExperiment ? '' : JSON.stringify(target);
       hilog.warn(DOMAIN, TAG, 'DSHM-TRACE 从 ArkUI 打开 WebUI');
       await ui.getRouter().replaceUrl({ url: WEB_WORKSPACE_PAGE });
@@ -4154,27 +4229,83 @@ struct DesktopWorkspace {
   }
 
   private dockTabMenu(index: number, tab: DesktopDockTab): MenuElement[] {
+    const session = this.sessionId;
+    const data = this.data;
+    const guarded = (action: () => void): (() => void) => (): void => {
+      if (!this.pageActive || this.panel !== 'session' || !this.rightDock.expanded ||
+        session !== this.sessionId || data !== this.data || this.dockStoredTab(index, tab.id) === undefined) { return; }
+      if (this.isDockTabContext(index, tab.id)) { this.dockTabContext = undefined; }
+      action();
+    };
     const items: MenuElement[] = [];
     if (this.dockStoredTab(index, tab.id)?.terminalId) {
-      items.push({ value: $r('app.string.desktop_terminal_rename_action'), action: (): void => {
+      items.push({ value: $r('app.string.desktop_terminal_rename_action'), action: guarded((): void => {
         this.startTerminalRename(index, tab.id);
-      } });
+      }) });
     }
     if (this.rightDock.panes.length === 2) {
-      items.push({ value: '移到另一侧', action: (): void => {
+      items.push({ value: '移到另一侧', action: guarded((): void => {
         this.setDock(desktopDockMoveTab(this.rightDock, index, tab.id));
-      } });
+      }) });
     } else if (this.canSplitDock()) {
-      items.push({ value: '向右分屏', action: (): void => {
+      items.push({ value: '向右分屏', action: guarded((): void => {
+        if (!this.canSplitDock()) { return; }
         const next = desktopDockMoveTab(desktopDockSplit(this.rightDock), index, tab.id);
         this.setDock(next);
-      } });
+      }) });
     }
-    items.push({ value: '浮动面板', action: (): void => {
+    items.push({ value: '浮动面板', action: guarded((): void => {
       this.floatDockTab(index, tab.id, this.defaultFloatRect());
-    } });
-    items.push({ value: '关闭标签', action: (): void => this.closeDockTab(index, tab.id) });
+    }) });
+    items.push({ value: '关闭标签', action: guarded((): void => this.closeDockTab(index, tab.id)) });
     return items;
+  }
+
+  private isDockTabContext(pane: number, tab: string): boolean {
+    const menu = this.dockTabContext;
+    return menu !== undefined && menu.session === this.sessionId && menu.pane === pane && menu.tab === tab;
+  }
+
+  private showDockTabContext(pane: number, tab: string, offset: Position): boolean {
+    if (!this.pageActive || this.panel !== 'session' || !this.rightDock.expanded ||
+      this.dockStoredTab(pane, tab) === undefined) { return false; }
+    if (!this.isDockTabContext(pane, tab)) {
+      this.dockTabContext = { session: this.sessionId, pane: pane, tab: tab,
+        serial: ++this.dockTabContextSerial, offset: offset };
+    }
+    return true;
+  }
+
+  private dockTabMouse(event: MouseEvent, pane: number, tab: string): void {
+    if (event.button !== MouseButton.Right) { return; }
+    if (event.action === MouseAction.Press) {
+      event.stopPropagation();
+    } else if (event.action === MouseAction.Release && this.showDockTabContext(pane, tab,
+      { x: event.x, y: event.y - DOCK_TAB_TITLE_HEIGHT })) {
+      event.stopPropagation();
+    }
+  }
+
+  private dockTabKey(event: KeyEvent, pane: number, tab: string): boolean {
+    if (event.type !== KeyType.Down || event.metaKey === 1) { return false; }
+    const key = desktopShortcutFromEvent(event);
+    if (key.ctrl || key.alt || !(key.code === KeyCode.KEYCODE_MENU || (key.code === KeyCode.KEYCODE_F10 && key.shift))) {
+      return false;
+    }
+    if (!this.showDockTabContext(pane, tab, { x: 0, y: 0 })) { return false; }
+    event.stopPropagation();
+    return true;
+  }
+
+  private dockTabContextOptions(pane: number, tab: string): MenuOptions {
+    const options = desktopMenuOptions(Placement.BottomLeft);
+    const menu = this.dockTabContext;
+    if (menu === undefined || !this.isDockTabContext(pane, tab)) { return options; }
+    options.offset = menu.offset;
+    options.onDisappear = (): void => {
+      if (this.dockTabContext?.serial === menu.serial) { this.dockTabContext = undefined; }
+    };
+    return options;
   }
 
   private dockStoredTab(index: number, id: string): DesktopDockTab | undefined {
@@ -4406,7 +4537,7 @@ struct DesktopWorkspace {
       openPlugin: (name: string, title: string, description: string): void => {
         this.openPlugins(name, title, description);
       },
-      openWeb: (id: string): void => { this.openWeb(false, '', id); },
+      openWeb: (id: string, child?: DesktopSubagentEntry): void => { this.openWeb(false, '', id, undefined, child); },
       copy: (id: string): void => { this.copyTranscript(id); },
       exportLog: (id: string): Promise<string> => this.exportLog(id),
       feedback: (id: string, conversation: DesktopConversation): Promise<string> => this.openSessionFeedback(id, conversation.feedback),
@@ -4605,9 +4736,13 @@ struct DesktopWorkspace {
                 .fontColor($r('sys.color.font_primary'))
             }
           }
-        }.key('desktopDockTab-' + index + '-' + tab.id).height(28).padding({ left: 7, right: 2 })
+        }.key('desktopDockTab-' + index + '-' + tab.id).height(DOCK_TAB_TITLE_HEIGHT).padding({ left: 7, right: 2 })
           .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
           .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
+          .onMouse((event: MouseEvent): void => { this.dockTabMouse(event, index, tab.id); })
+          .onKeyEvent((event: KeyEvent): boolean => this.dockTabKey(event, index, tab.id))
+          .bindMenu(this.isDockTabContext(index, tab.id), this.dockTabMenu(index, tab),
+            this.dockTabContextOptions(index, tab.id))
           .priorityGesture(GestureGroup(GestureMode.Parallel,
             PanGesture({ direction: PanDirection.All, distance: 8 })
               .onActionStart((event: GestureEvent): void => { this.beginDockDrag(event, index, tab, true); })

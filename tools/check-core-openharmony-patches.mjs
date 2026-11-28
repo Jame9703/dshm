@@ -278,17 +278,7 @@ const PROFILE_PNPM_PATCHED = 'dshmPnpm.bridgeRunProfilePnpm(args, {';
  * `{"code":"incompatible-version","incompatible":[]}`。
  */
 const PROFILE_PNPM_INCOMPAT_OK = '...incompatible.length > 0 ? { incompatible } : {}';
-/**
- * +dshm.49 之前的坏形态（**桥接分支**无条件带）。它必须一个站点都不出现。
- *
- * 【为什么必须带上 `exitCode: bridged.exitCode` 这个前缀】`truncated, logPath,
- * incompatible };` 这个尾串**上游原文自己就有一处** —— `operations.js` 的
- * `rejected()` 辅助函数（预检拒绝分支）收尾就是 `return { exitCode: 1, …,
- * truncated, logPath, incompatible };`，**不归本补丁管**。只判裸尾串会把那处
- * 上游原文误认成"补丁被回退"（+dshm.49 首次跑就踩：211 绿 / 1 红假报）。
- * 判据锚到桥接分支自己的形态上，上游那处与它天然不冲突。
- */
-const PROFILE_PNPM_INCOMPAT_LEGACY = 'exitCode: bridged.exitCode, output: output.toString("utf8"), truncated, logPath, incompatible };';
+const PROFILE_PNPM_BRIDGE_RETURN = 'return { exitCode: bridged.exitCode,';
 
 /**
  * ㉕「项目地址安装」的 GitHub 地址归一化（+dshm.48，2026-10-14）—— 两个站点、四种判据。
@@ -1558,14 +1548,16 @@ const INJECTED_PATCHES = [
   {
     key: '桌面 ArkUI 会话交接',
     fn: 'patchDesktopWorkspaceSessionNavigation()',
-    note: '旧 WebUI 根据宿主会话 ID 打开原生侧栏所选会话，校验列表成员和归档状态。',
+    note: '旧 WebUI 用宿主会话 ID 或父子地址打开原生所选会话，并返回已知的父会话链。',
     sites: [{
       rel: 'node_modules/@deepseek-ai/dsh-client-ui-workspace/lib/client.js',
-      markers: [['globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ = openById', 1]],
+      markers: [['globalThis.__DSHM_OPEN_WORKSPACE_SESSION__ = openById', 1],
+        ['globalThis.__DSHM_READ_WORKSPACE_SUBAGENT_ANCESTORS__ = readAncestors', 1]],
       forward: [
-        ['!sessions.list.getSnapshot().ids.includes(id)', '只接受宿主列表里的准确会话 ID'],
-        ['workspaces.list.getSnapshot().archivedSessionIds.includes(id)', '归档会话不参与交接'],
-        ['openSession(id);', '使用 WebUI 工作区服务打开会话'],
+        ['!sessions.list.getSnapshot().ids.includes(target)', '普通会话按宿主列表 ID 校验'],
+        ['archived.includes(target.childSessionId)', '归档子会话不参与交接'],
+        ['openSession(target);', '使用 WebUI 工作区服务打开会话或父子地址'],
+        ['sessions.subagentAddress(id)', '从当前 WebUI 会话模型读取父会话链'],
         ['delete globalThis.__DSHM_OPEN_WORKSPACE_SESSION__', '插件释放时移除交接入口'],
       ],
       reverse: [],
@@ -1708,6 +1700,21 @@ const INJECTED_PATCHES = [
         ],
       },
     ],
+  },
+  {
+    key: '账号意见反馈配置',
+    fn: 'patchAccountContactDocument(STAGE)',
+    note: 'ArkTS 从已认证宿主读取账号插件的实时反馈问卷配置，与 WebUI 首屏注入共用。',
+    sites: [{
+      rel: 'node_modules/@deepseek-ai/dsh-client-ui-settings-account/lib/index.js',
+      markers: [['DSHM_ACCOUNT_CONTACT_DOCUMENT', 1]],
+      forward: [
+        ['path: "/api/dshm.account.contact",\n\t\t\tauth: "required"', '反馈配置读取需要宿主认证'],
+        ['value: readContactConfig()', 'WebUI 与 ArkTS 共用配置投影'],
+        ['JSON.stringify({ ...readContactConfig(), clientVersion:', '响应只含问卷公开配置和版本'],
+      ],
+      reverse: [],
+    }],
   },
 ];
 
@@ -2082,12 +2089,13 @@ function audit(scope) {
      * 是同族的"形态判据" —— 标记在、调用在，但收尾口径退回旧形态时，产物仍然"看着有
      * 分叉"，却会把任意失败改判成 incompatible-version。
      */
-    if (norm.includes(PROFILE_PNPM_INCOMPAT_LEGACY)) {
+    const returned = norm.split('\n').find((line) => line.includes(PROFILE_PNPM_BRIDGE_RETURN)) ?? '';
+    if (/,\s*incompatible\s*[,}]/.test(returned)) {
       bad(`profile 包通道补丁 · ${site.rel}：桥接分支**无条件**带 incompatible`
-        + `（${JSON.stringify(PROFILE_PNPM_INCOMPAT_LEGACY)}）—— 上游把它读成`
+        + ' —— 上游把它读成'
         + ' incompatible-version ⇒ 404/网络/权限失败全被改判成"版本不兼容"；'
         + `必须是 ${JSON.stringify(PROFILE_PNPM_INCOMPAT_OK)}`);
-    } else if (norm.includes(PROFILE_PNPM_INCOMPAT_OK)) {
+    } else if (returned.includes(PROFILE_PNPM_INCOMPAT_OK)) {
       ok(`profile 包通道补丁 · ${site.rel}：incompatible 非空才带（失败不会被改判成"版本不兼容"）`);
     } else {
       bad(`profile 包通道补丁 · ${site.rel}：找不到 ${JSON.stringify(PROFILE_PNPM_INCOMPAT_OK)}`
@@ -2586,10 +2594,11 @@ function selfTest() {
       {
         name: 'M12c profile 包通道的收尾退回"无条件带 incompatible"（+dshm.49 前的坏形态）→ ⑬红',
         run: () => mutate(PROFILE_PNPM_SITES[1].rel, (t) => {
-          if (!t.includes(PROFILE_PNPM_INCOMPAT_OK)) {
+          const returned = t.split('\n').find((line) => line.includes(PROFILE_PNPM_BRIDGE_RETURN));
+          if (!returned?.includes(PROFILE_PNPM_INCOMPAT_OK)) {
             throw new Error(`变异锚点不存在：${JSON.stringify(PROFILE_PNPM_INCOMPAT_OK)}（判据与产物已脱钩）`);
           }
-          return t.replace(PROFILE_PNPM_INCOMPAT_OK, 'incompatible');
+          return t.replace(returned, returned.replace(PROFILE_PNPM_INCOMPAT_OK, 'incompatible'));
         }),
         expect: /桥接分支\*\*无条件\*\*带 incompatible/,
         only: /profile 包通道补丁/,
@@ -2888,7 +2897,7 @@ function selfTest() {
       {
         name: '自检·client-hmr 的 /plugins/events SSE effect 被误删 ⇒ 红（关轮询不该碰端侧在用的通道）',
         run: () => mutateTree(CLIENT_HMR_LIB,
-          (t) => t.replace('\t}, "client-hmr: /plugins/events channel");', '\t}, "client-hmr: ???");')),
+          (t) => t.replace(/"client-hmr: (?:\/plugins\/events channel|plugin event followers)"/, '"client-hmr: ???"')),
         expect: /条 effect 不见了/,
         only: /条 effect 不见了/,
       },
