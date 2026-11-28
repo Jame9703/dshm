@@ -54,6 +54,7 @@ import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import { DesktopTimelinePane } from '../desktop/DesktopTimelinePane';
 import { emptyDesktopTimelineBrowse } from '../desktop/DesktopTimelineModel';
 import type { DesktopTimelineBrowseState, DesktopTimelineLocation } from '../desktop/DesktopTimelineModel';
+import { DesktopTimelineViewport } from '../desktop/DesktopTimelineViewport';
 import { DEFAULT_DESKTOP_TIMELINE_PREFERENCES } from '../desktop/DesktopTimelinePreferences';
 import type { DesktopTimelinePreferences } from '../desktop/DesktopTimelinePreferences';
 import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
@@ -279,6 +280,8 @@ struct DesktopWorkspace {
   @State private timelineRoot: string = '';
   @State private timelineBrowse: DesktopTimelineBrowseState = emptyDesktopTimelineBrowse();
   private readonly timelineBrowses = new Map<string, DesktopTimelineBrowseState>();
+  private readonly timelineViewports = new Map<string, DesktopTimelineViewport>();
+  private timelineViewport = new DesktopTimelineViewport();
   @State private timelinePreferences: DesktopTimelinePreferences = DEFAULT_DESKTOP_TIMELINE_PREFERENCES;
   private timelinePreferencesReady: boolean = false;
   private timelineObservedTree?: boolean;
@@ -526,6 +529,8 @@ struct DesktopWorkspace {
     this.error = '';
     this.chat = undefined;
     this.timelineBrowses.clear();
+    this.timelineViewports.clear();
+    this.timelineViewport = new DesktopTimelineViewport();
     this.timelineBrowse = emptyDesktopTimelineBrowse();
     this.resetTimelineLocation();
     this.timelinePreferencesReady = false;
@@ -575,7 +580,7 @@ struct DesktopWorkspace {
       const previous = this.chat?.sessionId === snapshot.sessionId ? this.chat?.timelineCommandOpen ?? 0 : 0;
       this.chat = snapshot;
       if (snapshot.sessionId === this.sessionId && snapshot.timelineCommandOpen > previous) {
-        this.requestTimeline(snapshot.sessionId, '', '');
+        this.requestTimeline(snapshot.sessionId, '', '', true);
       } else {
         this.openPendingTimeline();
       }
@@ -1337,6 +1342,8 @@ struct DesktopWorkspace {
     if (changing) {
       this.resetTimelineLocation();
       this.timelineBrowse = this.timelineBrowses.get(session.id) ?? emptyDesktopTimelineBrowse();
+      this.timelineViewport = this.timelineViewports.get(session.id) ?? new DesktopTimelineViewport();
+      this.timelineViewports.set(session.id, this.timelineViewport);
     }
     this.sessionId = session.id;
     this.selectedSubagent = subagent;
@@ -3712,7 +3719,7 @@ struct DesktopWorkspace {
     const trees = this.chat?.sessionId === this.sessionId ? getArray(this.chat?.timeline?.value, 'trees') : undefined;
     if (this.timelinePreferences.autoOpenSidebar && this.workbenchWidth > 768 && this.panel === 'session' &&
         !this.dockShows(DesktopDockKind.TIMELINE) && (trees?.length ?? 0) > 0) {
-      this.requestTimeline(this.sessionId, '', '');
+      this.requestTimeline(this.sessionId, '', '', true);
     }
   }
 
@@ -3728,10 +3735,11 @@ struct DesktopWorkspace {
     }
   }
 
-  private requestTimeline(owner: string, tree: string, task: string): void {
+  private requestTimeline(owner: string, tree: string, task: string, resetReportDetails: boolean = false): void {
     if (!owner || owner !== this.sessionId) { return; }
     this.timelineLocationRevision++;
-    this.pendingTimelineLocation = { session: owner, tree: tree, task: task, revision: this.timelineLocationRevision };
+    this.pendingTimelineLocation = { session: owner, tree: tree, task: task, revision: this.timelineLocationRevision,
+      resetReportDetails: resetReportDetails };
     this.openPendingTimeline();
   }
 
@@ -4041,7 +4049,7 @@ struct DesktopWorkspace {
       openMain: (target: DesktopDockChatTarget, title: string): void => this.openRelatedSession(target.id, title, target.subagent),
       openTimeline: (target: DesktopDockChatTarget, title: string, tree: string, task: string): void => {
         if (target.id !== this.sessionId) { this.openRelatedSession(target.id, title, target.subagent); }
-        this.requestTimeline(target.id, tree, task);
+        this.requestTimeline(target.id, tree, task, !tree && !task);
       },
       openChild: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean): void =>
         this.openSubagent(child, parents, aside),
@@ -4118,9 +4126,9 @@ struct DesktopWorkspace {
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.TIMELINE) {
       DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId, location: this.timelineLocation,
-        savedBrowse: this.timelineBrowse, draftBook: this.data?.timelineDrafts,
+        savedBrowse: this.timelineBrowse, draftBook: this.data?.timelineDrafts, viewportMemory: this.timelineViewport,
         onBrowse: (owner: string, state: DesktopTimelineBrowseState): void => {
-          if (owner === this.sessionId && this.pageActive) {
+          if (owner === this.sessionId && this.pageActive && this.dockTabShown(index, tab.id)) {
             this.timelineBrowses.set(owner, state);
             this.timelineBrowse = state;
           }

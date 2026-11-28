@@ -5,6 +5,7 @@ export interface DesktopTimelineLocation {
   tree: string;
   task: string;
   revision: number;
+  resetReportDetails: boolean;
 }
 
 export interface DesktopTimelineBrowseState {

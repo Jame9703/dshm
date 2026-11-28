@@ -1,7 +1,9 @@
 import { KeyCode } from '@kit.InputKit';
+import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getArray, getRecord, getString } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import type { DesktopTimelineReport } from './DesktopTimelineModel';
+import type { DesktopTimelineRulerViewport } from './DesktopTimelineViewport';
 import { DESKTOP_TIMELINE_NS, desktopTimelineMilliseconds, desktopTimelinePeriods } from './DesktopTimelineSettingsModel';
 import { DesktopTimelineRulerIndex, DesktopTimelineScale, desktopTimelineLiveAnchor, desktopTimelineReportInWeek,
   desktopTimelineRulerFit, desktopTimelineRulerTicks, desktopTimelineScale, desktopTimelineZoomOffset,
@@ -16,6 +18,8 @@ const LEVEL_COLORS: string[] = ['#4084DB', '#43A977', '#7B70D3', '#C98730', '#D4
 @Component
 export struct DesktopTimelineRuler {
   host?: DesktopHostActions;
+  savedViewport?: DesktopTimelineRulerViewport;
+  onViewport: (value: DesktopTimelineRulerViewport) => void = (): void => {};
   @Prop @Watch('reportsChanged') reports: DesktopTimelineReport[] = [];
   @Prop @Watch('activeChanged') active: boolean = false;
   onOpen: (id: string) => void = (_id: string): void => {};
@@ -36,6 +40,13 @@ export struct DesktopTimelineRuler {
   @State private scrollTop: number = 0;
   @State private configured: number[] = [];
   private readonly vertical = new Scroller();
+  private readonly horizontal = new Scroller();
+  private pendingViewport?: DesktopTimelineRulerViewport;
+  private measuredHeight: boolean = false;
+  private measuredWidth: boolean = false;
+  private scrollLeft: number = 0;
+  private leftVersion: number = 0;
+  private applyingLeft: boolean = false;
   private index = new DesktopTimelineRulerIndex([]);
   private mounted: boolean = false;
   private firstFit: boolean = true;
@@ -48,12 +59,26 @@ export struct DesktopTimelineRuler {
 
   aboutToAppear(): void {
     this.mounted = true;
+    const saved = this.savedViewport;
+    if (saved !== undefined) {
+      this.pendingViewport = saved;
+      this.firstFit = false;
+      this.zoom = saved.zoom;
+      this.focusLevel = saved.level;
+      this.anchor = saved.anchor;
+      this.pinned = saved.pinned;
+      this.unread = saved.unread;
+      this.newest = saved.newest;
+      this.scrollLeft = saved.horizontal;
+    }
     this.reportsChanged();
     this.activeChanged();
   }
 
   aboutToDisappear(): void {
     this.mounted = false;
+    this.moveVersion++;
+    this.leftVersion++;
     this.stopClock();
   }
 
@@ -67,7 +92,9 @@ export struct DesktopTimelineRuler {
       this.refreshTime();
       this.tick();
       if (!this.readCadenceRequested) { this.readCadence(); }
-      this.seek(this.scrollTop);
+      this.restoreMeasuredViewport();
+      if (this.measuredHeight && this.pendingViewport === undefined) { this.seek(this.scrollTop); }
+      this.restoreHorizontal();
     }
   }
 
@@ -103,7 +130,7 @@ export struct DesktopTimelineRuler {
       if (!this.levels.includes(level)) { this.levels = [...this.levels, level]; }
     }
     this.levels = this.levels.slice().sort((a: number, b: number): number => a - b);
-    if (!this.levels.includes(this.focusLevel)) { this.focusLevel = -1; }
+    if (this.levels.length > 0 && !this.levels.includes(this.focusLevel)) { this.focusLevel = -1; }
   }
 
   private reportsChanged(): void {
@@ -117,11 +144,13 @@ export struct DesktopTimelineRuler {
     if (!this.pinned) { this.anchor = this.liveAnchor(); }
     if (this.firstFit) { this.tryFit(); }
     this.rebuild();
+    this.saveViewport();
   }
 
   private liveAnchor(): number { return desktopTimelineLiveAnchor(Date.now(), this.reports); }
 
   private tryFit(): void {
+    if (!this.measuredHeight || !this.active) { return; }
     const latest = this.reports.find((row: DesktopTimelineReport): boolean => desktopTimelineReportInWeek(row, this.anchor));
     if (latest === undefined) { return; }
     let lowest = latest.level;
@@ -166,18 +195,19 @@ export struct DesktopTimelineRuler {
     this.rebuild();
     const move = ++this.moveVersion;
     this.incomingTop = this.scrollTop;
-    setTimeout((): void => {
-      if (this.mounted && this.active && this.moveVersion === move) {
+    this.saveViewport();
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      if (this.mounted && this.active && this.measuredHeight && this.moveVersion === move) {
         this.vertical.scrollTo({ xOffset: 0, yOffset: this.scrollTop, animation: false });
         setTimeout((): void => {
-          if (this.mounted && this.active && this.moveVersion === move) { this.incomingTop = -1; }
+          if (this.mounted && this.moveVersion === move) { this.incomingTop = -1; }
         }, 70);
       }
-    }, 0);
+    }));
   }
 
   private didScroll(): void {
-    if (!this.active) { return; }
+    if (!this.active || !this.measuredHeight || this.pendingViewport !== undefined) { return; }
     const offset = this.vertical.currentOffset().yOffset;
     if (!Number.isFinite(offset) || Math.abs(offset - this.scrollTop) < 0.9) {
       if (this.incomingTop >= 0 && Math.abs(offset - this.incomingTop) < 0.9) { this.incomingTop = -1; }
@@ -189,17 +219,76 @@ export struct DesktopTimelineRuler {
     this.pinned = this.scrollTop >= 0.9 || this.anchor < this.liveAnchor() - TIMELINE_RULER_WEEK;
     if (!this.pinned) { this.unread = false; this.anchor = this.liveAnchor(); }
     this.rebuild();
+    this.saveViewport();
   }
 
-  private measure(width: number, height: number): void {
-    if (!this.active || width <= 0 || height <= 0) { return; }
-    if (Math.abs(this.availableWidth - width) >= 1) { this.availableWidth = width; }
-    if (Math.abs(this.viewport - height) < 2) { return; }
+  private saveViewport(): void {
+    if (!this.mounted || !this.active || !this.measuredHeight || this.firstFit || this.pendingViewport !== undefined) { return; }
+    this.onViewport({ zoom: this.zoom, level: this.focusLevel, anchor: this.anchor, pinned: this.pinned,
+      backMs: Math.max(0, this.anchor - this.timeScale().time(this.scrollTop)), horizontal: this.scrollLeft,
+      newest: this.newest, unread: this.unread });
+  }
+
+  private restoreMeasuredViewport(): void {
+    const saved = this.pendingViewport;
+    if (!this.mounted || !this.active || !this.measuredHeight || saved === undefined) { return; }
+    this.pendingViewport = undefined;
+    this.seek(this.timeScale().position(this.anchor - saved.backMs));
+    this.restoreHorizontal();
+  }
+
+  private measureHeight(height: number): void {
+    if (!this.active || !Number.isFinite(height) || height <= 0) { return; }
+    if (this.measuredHeight && Math.abs(this.viewport - height) < 2) { return; }
+    const first = !this.measuredHeight;
     const old = this.timeScale();
     const middle = old.time(this.scrollTop + this.viewport / 2);
+    this.measuredHeight = true;
     this.viewport = height;
-    if (this.firstFit || (!this.pinned && this.scrollTop < 1)) { this.seek(0); }
-    else { this.seek(this.timeScale().position(middle) - height / 2); }
+    if (this.pendingViewport !== undefined) {
+      this.restoreMeasuredViewport();
+    } else if (this.firstFit) {
+      this.tryFit();
+      if (this.firstFit) { this.seek(0); }
+    } else if (first || (!this.pinned && this.scrollTop < 1)) {
+      this.seek(this.scrollTop);
+    } else {
+      this.seek(this.timeScale().position(middle) - height / 2);
+    }
+  }
+
+  private measureWidth(width: number): void {
+    if (!Number.isFinite(width) || width <= 0 || (this.measuredWidth && Math.abs(this.availableWidth - width) < 1)) {
+      return;
+    }
+    this.measuredWidth = true;
+    this.availableWidth = width;
+    this.restoreHorizontal();
+  }
+
+  private saveHorizontal(): void {
+    if (!this.active || !this.measuredWidth || this.applyingLeft || this.pendingViewport !== undefined) { return; }
+    const offset = this.horizontal.currentOffset().xOffset;
+    if (Number.isFinite(offset) && Math.abs(offset - this.scrollLeft) >= 0.9) {
+      this.scrollLeft = Math.max(0, offset);
+      this.saveViewport();
+    }
+  }
+
+  private restoreHorizontal(): void {
+    if (!this.active || !this.mounted || !this.measuredWidth || this.pendingViewport !== undefined ||
+        this.scrollLeft <= 0) { return; }
+    const revision = ++this.leftVersion;
+    this.applyingLeft = true;
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      if (this.mounted && this.active && revision === this.leftVersion) {
+        const max = Math.max(0, this.rulerWidth() - this.availableWidth);
+        this.horizontal.scrollTo({ xOffset: Math.min(max, this.scrollLeft), yOffset: 0, animation: false });
+        setTimeout((): void => {
+          if (this.mounted && revision === this.leftVersion) { this.applyingLeft = false; }
+        }, 70);
+      }
+    }));
   }
 
   private span(level: number): number {
@@ -211,6 +300,7 @@ export struct DesktopTimelineRuler {
   private fit(level: number, target?: DesktopTimelineReport, pin: boolean = true): void {
     const near = this.timeScale().time(this.scrollTop + this.viewport * 0.35);
     const window = desktopTimelineRulerFit(this.reports, level, this.span(level), this.anchor, this.viewport, near, target);
+    this.firstFit = false;
     this.focusLevel = level;
     this.zoom = window.zoom;
     this.pinned = this.pinned || (pin && window.offset > 0);
@@ -221,6 +311,7 @@ export struct DesktopTimelineRuler {
     if (this.focusLevel === level && this.levels.length > 1) {
       this.focusLevel = -1;
       this.rebuild();
+      this.saveViewport();
     } else { this.fit(level); }
   }
 
@@ -228,6 +319,7 @@ export struct DesktopTimelineRuler {
     const next = Math.max(0, Math.min(TIMELINE_RULER_MAX_ZOOM, this.zoom + delta));
     if (Math.abs(next - this.zoom) < 0.001) { return; }
     const prior = this.timeScale();
+    this.firstFit = false;
     this.zoom = next;
     const offset = desktopTimelineZoomOffset(prior, this.timeScale(), this.scrollTop,
       Math.max(0, Math.min(this.viewport, pointer)), this.viewport);
@@ -388,7 +480,7 @@ export struct DesktopTimelineRuler {
             .onClick((): void => { this.now(); })
         }
       }.width('100%')
-      Scroll() {
+      Scroll(this.horizontal) {
         Column() {
           Row() {
             Text($r('app.string.desktop_timeline_time_axis')).width(RULER_WIDTH).textAlign(TextAlign.Center).fontSize(11)
@@ -398,7 +490,7 @@ export struct DesktopTimelineRuler {
             .key('desktopTimelineRulerViewport').width(this.rulerWidth()).layoutWeight(1)
             .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None).focusable(true)
             .onDidScroll((_offset: number, _state: ScrollState): void => { this.didScroll(); })
-            .onAreaChange((_old: Area, area: Area): void => { this.measure(this.availableWidth, Number(area.height)); })
+            .onAreaChange((_old: Area, area: Area): void => { this.measureHeight(Number(area.height)); })
             .onKeyEvent((event: KeyEvent): boolean => {
               if (event.type !== KeyType.Down) { return false; }
               if (event.keyCode === KeyCode.KEYCODE_EQUALS || event.keyCode === KeyCode.KEYCODE_MINUS) {
@@ -423,7 +515,9 @@ export struct DesktopTimelineRuler {
               }))
         }.width(this.rulerWidth()).height('100%')
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).width('100%').layoutWeight(1)
-        .onAreaChange((_old: Area, area: Area): void => { this.measure(Number(area.width), this.viewport); })
+        .key('desktopTimelineRulerHorizontalViewport')
+        .onAreaChange((_old: Area, area: Area): void => { this.measureWidth(Number(area.width)); })
+        .onDidScroll((_offset: number, _state: ScrollState): void => { this.saveHorizontal(); })
       if (this.empty) {
         Text($r('app.string.desktop_timeline_empty_window')).width('100%').fontSize(12)
           .fontColor($r('sys.color.font_secondary'))

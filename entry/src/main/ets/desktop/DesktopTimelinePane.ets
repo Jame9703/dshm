@@ -1,10 +1,13 @@
 import { dialogMaterial } from 'platform';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
+import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getArray, getField, getNumber, getRecord, getString, randomUuid } from 'connection';
 import type { RpcResult } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTimelineRuler } from './DesktopTimelineRuler';
+import { DesktopTimelineViewport } from './DesktopTimelineViewport';
+import type { DesktopTimelineDetailTarget, DesktopTimelineRulerViewport } from './DesktopTimelineViewport';
 import { desktopTimelineCheckpoint, desktopTimelineCheckpointName, previewDesktopTimelineCheckpoint } from './DesktopTimelineCheckpoint';
 import { saveDesktopTimelineCheckpoint } from './DesktopTimelineTransferIO';
 import { DesktopTimelineTransferDialog } from './DesktopTimelineTransferDialog';
@@ -43,16 +46,11 @@ interface TimelineControlAttempt {
   text: string;
 }
 
-interface TimelineDetailTarget {
-  tree: string;
-  id: string;
-  scroll: number;
-}
-
 @Component
 export struct DesktopTimelinePane {
   host?: DesktopHostActions;
   draftBook?: DesktopTimelineDiscussionDrafts;
+  viewportMemory: DesktopTimelineViewport = new DesktopTimelineViewport();
   @Prop sessionId: string = '';
   @Prop @Watch('openingChanged') opening?: DesktopTimelineSource = undefined;
   @Prop @Watch('applyLocation') location?: DesktopTimelineLocation = undefined;
@@ -76,8 +74,8 @@ export struct DesktopTimelinePane {
   @State private tab: string = 'tasks';
   @State private browse: DesktopTimelineBrowseState = emptyDesktopTimelineBrowse();
   @State private rulerVisited: boolean = false;
-  @State private taskTrail: TimelineDetailTarget[] = [];
-  @State private reportTrail: TimelineDetailTarget[] = [];
+  @State private taskTrail: DesktopTimelineDetailTarget[] = [];
+  @State private reportTrail: DesktopTimelineDetailTarget[] = [];
   @State private ready: boolean = false;
   @State private failed: boolean = false;
   @State private editBusy: boolean = false;
@@ -101,14 +99,15 @@ export struct DesktopTimelinePane {
   private controlAttempt?: TimelineControlAttempt;
   private actionScope: string = '';
   private readonly scroll = new Scroller();
-  private taskScroll: number = 0;
-  private reportScroll: number = 0;
   private reportById: Map<string, DesktopTimelineReport> = new Map();
   private mounted: boolean = false;
   private generation: number = 0;
   private sequence: number = -2;
   private scrollVersion: number = 0;
-  private locationRevision: number = 0;
+  private viewportLease: number = 0;
+  private scrollMeasured: boolean = false;
+  private pendingScroll?: number;
+  private scheduledScroll: number = -1;
 
   aboutToAppear(): void {
     this.mounted = true;
@@ -119,6 +118,7 @@ export struct DesktopTimelinePane {
       }
     });
     this.savedBrowseChanged();
+    this.restoreViewport();
     this.openingChanged();
     this.activeChanged();
   }
@@ -134,7 +134,9 @@ export struct DesktopTimelinePane {
 
   private activeChanged(): void {
     if (this.mounted && this.active) {
+      this.restoreViewport();
       this.applyLocation();
+      this.scheduleScrollRestore();
       this.scheduleControlTimer();
       this.publishTaskRoot();
     } else {
@@ -163,18 +165,20 @@ export struct DesktopTimelinePane {
     this.ready = true;
     this.failed = false;
     this.applyLocation();
+    this.scheduleScrollRestore();
     this.publishTaskRoot();
   }
 
   private applyLocation(): void {
     const location = this.location;
     if (!this.mounted || !this.active || !this.ready || location === undefined ||
-        location.session !== this.sessionId || location.revision <= this.locationRevision) { return; }
+        location.session !== this.sessionId || !this.ownsViewport() ||
+        location.revision <= this.viewportMemory.locationRevision) { return; }
     if (location.tree && !this.view.trees.some((tree: DesktopTimelineTree): boolean => tree.id === location.tree)) { return; }
     if (location.task && this.task({ tree: location.tree, id: location.task, scroll: 0 }) === undefined) { return; }
-    this.locationRevision = location.revision;
+    this.viewportMemory.locationRevision = location.revision;
     this.selectTab('tasks');
-    this.reportTrail = [];
+    if (location.resetReportDetails) { this.reportTrail = []; this.viewportMemory.reportScroll = 0; }
     this.selectTree(location.tree);
     if (location.task) { this.pushDetail(location.tree, location.task); }
   }
@@ -215,6 +219,7 @@ export struct DesktopTimelinePane {
 
   private publishTaskRoot(): void {
     if (this.active && this.mounted) {
+      this.saveNavigation();
       this.restoreDiscussion();
       const tree = this.tab === 'tasks' && this.taskTrail.length === 0 ? this.selectedTree()?.id ?? '' : '';
       this.onTaskRoot(this.sessionId, tree);
@@ -291,44 +296,96 @@ export struct DesktopTimelinePane {
     return this.reportById.get(id);
   }
 
-  private task(target?: TimelineDetailTarget): DesktopTimelineTask | undefined {
+  private task(target?: DesktopTimelineDetailTarget): DesktopTimelineTask | undefined {
     return this.view.trees.find((tree: DesktopTimelineTree): boolean => tree.id === target?.tree)?.tasks
       .find((task: DesktopTimelineTask): boolean => task.id === target?.id);
   }
 
-  private trail(): TimelineDetailTarget[] { return this.tab === 'tasks' ? this.taskTrail : this.reportTrail; }
+  private trail(): DesktopTimelineDetailTarget[] { return this.tab === 'tasks' ? this.taskTrail : this.reportTrail; }
 
-  private target(): TimelineDetailTarget | undefined { return this.trail()[this.trail().length - 1]; }
+  private target(): DesktopTimelineDetailTarget | undefined { return this.trail()[this.trail().length - 1]; }
+
+  private ownsViewport(): boolean {
+    return this.viewportLease > 0 && this.viewportMemory.lease === this.viewportLease;
+  }
+
+  private restoreViewport(): void {
+    if (!this.active || this.ownsViewport()) { return; }
+    const memory = this.viewportMemory;
+    this.viewportLease = ++memory.lease;
+    this.tab = memory.tab;
+    this.taskTrail = memory.taskTrail;
+    this.reportTrail = memory.reportTrail;
+    if (this.tab === 'reports') { this.rulerVisited = true; }
+    this.moveScroll(this.tab === 'tasks' ? memory.taskScroll : memory.reportScroll);
+  }
+
+  private saveNavigation(): void {
+    if (!this.ownsViewport()) { return; }
+    this.viewportMemory.tab = this.tab;
+    this.viewportMemory.taskTrail = this.taskTrail;
+    this.viewportMemory.reportTrail = this.reportTrail;
+  }
+
+  private detailSceneKey(): string {
+    const target = this.target();
+    return JSON.stringify([this.viewRevision, this.tab, this.browse.tree, target?.tree ?? '', target?.id ?? '']);
+  }
 
   private recordedScrollOffset(): number {
-    try { return this.scroll.currentOffset().yOffset; } catch (_) { return 0; }
+    if (this.pendingScroll !== undefined) { return this.pendingScroll; }
+    try { return this.scroll.currentOffset().yOffset; }
+    catch (_) { return this.tab === 'tasks' ? this.viewportMemory.taskScroll : this.viewportMemory.reportScroll; }
+  }
+
+  private saveScroll(offset: number): void {
+    if (!this.ownsViewport() || this.rulerShown() || !Number.isFinite(offset)) { return; }
+    if (this.tab === 'tasks') { this.viewportMemory.taskScroll = Math.max(0, offset); }
+    else { this.viewportMemory.reportScroll = Math.max(0, offset); }
   }
 
   private moveScroll(offset: number): void {
-    const revision = ++this.scrollVersion;
-    setTimeout((): void => {
-      if (this.mounted && !this.rulerShown() && revision === this.scrollVersion) {
+    this.pendingScroll = Math.max(0, offset);
+    this.scrollVersion++;
+    this.saveScroll(this.pendingScroll);
+    this.scheduleScrollRestore();
+  }
+
+  private scheduleScrollRestore(): void {
+    if (this.pendingScroll === undefined || !this.scrollMeasured || !this.ready || this.rulerShown() ||
+        !this.mounted || !this.active || !this.ownsViewport() || this.scheduledScroll === this.scrollVersion) { return; }
+    const revision = this.scrollVersion;
+    this.scheduledScroll = revision;
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      if (this.scheduledScroll === revision) { this.scheduledScroll = -1; }
+      const offset = this.pendingScroll;
+      if (offset === undefined || revision !== this.scrollVersion || !this.mounted || !this.active ||
+          !this.ownsViewport() || !this.scrollMeasured || this.rulerShown()) { return; }
+      try {
         this.scroll.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
+        this.pendingScroll = undefined;
+        this.saveScroll(this.recordedScrollOffset());
+      } catch (_) {
+        // The next layout of the scroll content can retry if the native scroller is still being attached.
       }
-    }, 0);
+    }));
   }
 
   private rulerShown(): boolean { return this.tab === 'reports' && this.reportTrail.length === 0; }
 
   private selectTab(tab: string): void {
     if (tab === this.tab) { return; }
-    if (this.tab === 'tasks') { this.taskScroll = this.recordedScrollOffset(); }
-    else { this.reportScroll = this.recordedScrollOffset(); }
+    this.saveScroll(this.recordedScrollOffset());
     if (tab === 'reports') { this.rulerVisited = true; }
     this.tab = tab;
     this.scheduleControlTimer();
-    this.moveScroll(tab === 'tasks' ? this.taskScroll : this.reportScroll);
+    this.moveScroll(tab === 'tasks' ? this.viewportMemory.taskScroll : this.viewportMemory.reportScroll);
     this.publishTaskRoot();
   }
 
   private pushDetail(tree: string, id: string): void {
-    if (this.trail().some((row: TimelineDetailTarget): boolean => row.id === id && row.tree === tree)) { return; }
-    const target: TimelineDetailTarget = { tree: tree, id: id, scroll: this.recordedScrollOffset() };
+    if (this.trail().some((row: DesktopTimelineDetailTarget): boolean => row.id === id && row.tree === tree)) { return; }
+    const target: DesktopTimelineDetailTarget = { tree: tree, id: id, scroll: this.rulerShown() ? 0 : this.recordedScrollOffset() };
     if (this.tab === 'tasks') { this.taskTrail = [...this.taskTrail, target]; }
     else { this.reportTrail = [...this.reportTrail, target]; }
     this.moveScroll(0);
@@ -1037,7 +1094,7 @@ export struct DesktopTimelinePane {
       }
       if (this.selectedTree()?.id === id) { this.selectTree(''); }
       if (this.browse.folded.has(id)) { this.setFolded(id, []); }
-      this.taskTrail = this.taskTrail.filter((row: TimelineDetailTarget): boolean => row.tree !== id);
+      this.taskTrail = this.taskTrail.filter((row: DesktopTimelineDetailTarget): boolean => row.tree !== id);
       this.acknowledgedControls = this.acknowledgedControls.filter((row: Object): boolean =>
         getString(getRecord(row, 'target'), 'tree') !== id);
       this.scheduleControlTimer();
@@ -1271,7 +1328,7 @@ export struct DesktopTimelinePane {
   }
 
   @Builder
-  private TaskDetail(task?: DesktopTimelineTask, target?: TimelineDetailTarget) {
+  private TaskDetail(task?: DesktopTimelineTask, target?: DesktopTimelineDetailTarget) {
     Column({ space: 9 }) {
       if (task !== undefined && target !== undefined) {
         Row({ space: 8 }) {
@@ -1363,6 +1420,10 @@ export struct DesktopTimelinePane {
       }
       if (this.rulerVisited) {
         DesktopTimelineRuler({ host: this.host, active: this.active && this.rulerShown(), reports: this.view.reports,
+          savedViewport: this.viewportMemory.ruler,
+          onViewport: (value: DesktopTimelineRulerViewport): void => {
+            if (this.active && this.ownsViewport()) { this.viewportMemory.ruler = value; }
+          },
           onOpen: (id: string): void => { this.pushDetail('', id); } })
           .visibility(this.rulerShown() ? Visibility.Visible : Visibility.None).layoutWeight(1)
       }
@@ -1370,7 +1431,7 @@ export struct DesktopTimelinePane {
       if (!this.rulerShown()) {
         Scroll(this.scroll) {
           Column({ space: 9 }) {
-            ForEach([this.viewRevision + ':' + this.browse.tree], (_revision: string): void => {
+            ForEach([this.detailSceneKey()], (_revision: string): void => {
               if (this.tab === 'tasks') {
                 if (this.target() === undefined) {
                   this.Tasks(this.selectedTree())
@@ -1382,7 +1443,17 @@ export struct DesktopTimelinePane {
               }
             }, (revision: string): string => revision)
           }.width('100%').alignItems(HorizontalAlign.Start)
-        }.layoutWeight(1).width('100%').align(Alignment.TopStart)
+            .onAreaChange((_old: Area, area: Area): void => {
+              this.scrollMeasured = Number(area.height) > 0;
+              this.scheduleScrollRestore();
+            })
+        }.key('desktopTimelineDetailViewport').layoutWeight(1).width('100%').align(Alignment.TopStart)
+          .onDidScroll((_offset: number, _state: ScrollState): void => {
+            if (this.active && this.scrollMeasured && this.pendingScroll === undefined) {
+              this.saveScroll(this.recordedScrollOffset());
+            }
+          })
+          .onDisAppear((): void => { this.scrollMeasured = false; })
       }
       if (this.writable && this.actionKey()) {
         ForEach([this.actionKey()], (_key: string): void => { this.EditFooter(this.writeScope()) },
