@@ -42,6 +42,8 @@ export interface PiAiModelRow {
   name: string;
   contextWindow: number;
   maxTokens: number;
+  contextWindowText?: string;
+  maxTokensText?: string;
   /** Settings fields this editor leaves to the Host, including input capabilities. */
   extraFields?: Record<string, Object>;
 }
@@ -58,6 +60,7 @@ export interface PiAiProviderView {
   api: string;
   /** 该路由记录的凭据引用（如 `WB2API_API_KEY`） */
   apiKeyEnv: string;
+  defaultInput?: string[];
   models: PiAiModelRow[];
 }
 
@@ -137,6 +140,17 @@ function numOf(source: Object | undefined, key: string): number {
   return typeof value === 'number' ? value : 0;
 }
 
+function routeInputOf(profile: Object): string[] | undefined {
+  const input = recOf(profile, 'defaultInput');
+  if (!Array.isArray(input)) { return undefined; }
+  const modes: string[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const mode: Object = input[i];
+    if (typeof mode === 'string' && (mode === 'text' || mode === 'image') && !modes.includes(mode)) { modes.push(mode); }
+  }
+  return modes.length > 0 ? modes : undefined;
+}
+
 // ── schema 读取：协议候选 ──────────────────────────────────────────────────
 
 /**
@@ -213,14 +227,17 @@ export function projectPiAiProviders(providers: Object | undefined): PiAiProvide
     if (!isRec(profile)) {
       continue;
     }
-    out.push({
+    const provider: PiAiProviderView = {
       route: route,
       displayName: strOf(profile, 'displayName'),
       baseURL: strOf(profile, 'baseURL'),
       api: strOf(profile, 'api'),
       apiKeyEnv: strOf(profile, 'apiKeyEnv'),
-      models: projectPiAiModels(recOf(profile, 'models')),
-    });
+      models: projectPiAiModels(recOf(profile, 'models'))
+    };
+    const input = routeInputOf(profile);
+    if (input !== undefined) { provider.defaultInput = input; }
+    out.push(provider);
   }
   return out;
 }
@@ -350,9 +367,20 @@ export function checkModels(models: PiAiModelRow[]): PiAiFieldCheck {
     if (seen.indexOf(id) >= 0) {
       return { ok: false, message: `模型 id「${id}」重复了。` };
     }
+    if (invalidPiAiCapacity(models[i].contextWindow)) {
+      return { ok: false, message: `第 ${i + 1} 个模型的上下文窗口必须是正数，例如 131072、256K 或 1M。` };
+    }
+    if (invalidPiAiCapacity(models[i].maxTokens)) {
+      return { ok: false, message: `第 ${i + 1} 个模型的最大输出 token 数必须是正数，例如 8192、64K 或 1M。` };
+    }
     seen.push(id);
   }
   return { ok: true, message: '' };
+}
+
+/** Zero represents an inherited capacity in the form. */
+export function invalidPiAiCapacity(value: number): boolean {
+  return value !== 0 && (!Number.isInteger(value) || value <= 0);
 }
 
 /**

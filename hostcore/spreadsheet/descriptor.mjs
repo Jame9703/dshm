@@ -37,6 +37,7 @@ export function spreadsheetMethod(z) {
       id: z.string(), name: z.string(), hidden: z.boolean(), active: z.boolean(), rows: count.min(1), columns: count.min(1),
       cells: z.array(cell), merges: z.array(merge), rowHeights: z.array(pixels), columnWidths: z.array(pixels),
       hiddenRows: z.array(count), hiddenColumns: z.array(count),
+      frozen: z.strictObject({ rows: count, columns: count }).optional(),
     });
     return result = z.strictObject({
       absolutePath: z.string(), version: z.string(), sheets: z.array(sheet).min(1),

@@ -1,0 +1,48 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_option_title",
+      "value": "模型选项 %1$s"
+    },
+    {
+      "name": "desktop_model_option_remove",
+      "value": "删除模型 %1$s"
+    },
+    {
+      "name": "desktop_model_option_context",
+      "value": "上下文窗口"
+    },
+    {
+      "name": "desktop_model_option_output",
+      "value": "最大输出 token 数"
+    },
+    {
+      "name": "desktop_model_option_context_invalid",
+      "value": "上下文窗口必须是正数，例如 131072、256K 或 1M。"
+    },
+    {
+      "name": "desktop_model_option_output_invalid",
+      "value": "最大输出 token 数必须是正数，例如 8192、64K 或 1M。"
+    },
+    {
+      "name": "desktop_model_option_input",
+      "value": "输入类型"
+    },
+    {
+      "name": "desktop_model_option_text",
+      "value": "文本"
+    },
+    {
+      "name": "desktop_model_option_image",
+      "value": "图片"
+    },
+    {
+      "name": "desktop_model_option_id",
+      "value": "模型 ID"
+    },
+    {
+      "name": "desktop_model_option_name",
+      "value": "显示名称"
+    }
+  ]
+}

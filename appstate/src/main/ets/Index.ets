@@ -133,6 +133,7 @@ export {
   changedScalarFields,
   checkApiKeyDraft,
   checkBaseURL,
+  invalidPiAiCapacity,
   checkModels,
   checkProtocol,
   checkRoute,

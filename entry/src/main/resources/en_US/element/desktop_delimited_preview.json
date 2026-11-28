@@ -8,6 +8,7 @@
     { "name": "desktop_table_encoding", "value": "This text encoding could not be read. Save the file as UTF-8 or UTF-16 with a BOM and retry." },
     { "name": "desktop_table_retry", "value": "Retry" },
     { "name": "desktop_table_copy", "value": "Copy" },
+    { "name": "desktop_table_disjoint_copy", "value": "Cannot perform this operation on multiple selection areas, please select a single area" },
     { "name": "desktop_table_formula_warning", "value": "This workbook contains formulas. Displayed results may be missing or inaccurate." },
     { "name": "desktop_table_unsupported", "value": "This preview does not support %1$s in this workbook. Open it in a system application for the full experience." },
     { "name": "desktop_table_charts", "value": "charts" },

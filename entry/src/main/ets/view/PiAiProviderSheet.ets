@@ -27,12 +27,13 @@
  * （校验结论由宿主演算后随 `fieldError` 传入）。
  */
 
-import { Fs, Radius, Sp, Sz } from 'appstate';
+import { Fs, invalidPiAiCapacity, Radius, Sp, Sz } from 'appstate';
 import { HarmonySpacing } from 'appstate';
 import { protocolLabel } from 'appstate';
 import type { PiAiModelRow, PiAiProviderView } from 'appstate';
 import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
 import { DesktopPiAiModelDiscovery } from '../desktop/DesktopPiAiModelDiscovery';
+import { PiAiModelSettingsRow } from './PiAiModelSettingsRow';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopNewRetryPolicy } from '../desktop/DesktopRetryPolicyModel';
 
@@ -145,7 +146,7 @@ export struct PiAiProviderSheet {
             Button(this.isCreate() ? '添加' : '保存')
               .key('desktopPiAiProviderSubmit')
               .layoutWeight(1)
-              .enabled(!this.busy && !this.discovering && this.retryValid)
+              .enabled(!this.busy && !this.discovering && this.retryValid && this.capacitiesValid())
               .onClick(() => {
                 this.onSubmit();
               })
@@ -183,6 +184,11 @@ export struct PiAiProviderSheet {
   /** 是否新建模式（`mode` 以 string 传入，集中一处判定） */
   private isCreate(): boolean {
     return this.mode === PiAiSheetMode.CREATE;
+  }
+
+  private capacitiesValid(): boolean {
+    return this.draft.models.every((row: PiAiModelRow): boolean =>
+      !invalidPiAiCapacity(row.contextWindow) && !invalidPiAiCapacity(row.maxTokens));
   }
 
   /** Provider ID / 显示名 */
@@ -303,52 +309,10 @@ export struct PiAiProviderSheet {
       .fontColor($r('sys.color.font_tertiary'))
       .width('100%')
     ForEach(this.draft.models, (row: PiAiModelRow, index: number) => {
-      Column({ space: Sp.XS }) {
-        Row({ space: Sp.S }) {
-          Text(`模型 ${index + 1}`)
-            .fontSize(Fs.CAPTION)
-            .fontColor($r('sys.color.font_tertiary'))
-          Blank()
-          /*
-           * 只剩一行时不给删除入口：官方要求「至少一个模型」，删空等于让表单
-           * 永远不可提交（用户会以为是写入坏了）。
-           */
-          if (this.draft.models.length > 1) {
-            Text('删除')
-              .fontSize(Fs.CAPTION)
-              .fontColor($r('sys.color.warning'))
-              .onClick(() => {
-                this.onRemoveModel(index);
-              })
-          }
-        }
-        .width('100%')
-        TextInput({ text: row.id, placeholder: '模型 id（必填）' })
-          .key('desktopPiAiProviderModel-' + index)
-          .fontSize(Fs.SECONDARY)
-          .height(Sz.TOUCH_MIN)
-          .width('100%')
-          .onChange((v: string) => {
-            this.onModelChange(index, {
-              id: v, name: row.name,
-              contextWindow: row.contextWindow, maxTokens: row.maxTokens, extraFields: row.extraFields
-            });
-          })
-        TextInput({ text: row.name, placeholder: '显示名（可选）' })
-          .fontSize(Fs.SECONDARY)
-          .height(Sz.TOUCH_MIN)
-          .width('100%')
-          .onChange((v: string) => {
-            this.onModelChange(index, {
-              id: row.id, name: v,
-              contextWindow: row.contextWindow, maxTokens: row.maxTokens, extraFields: row.extraFields
-            });
-          })
-      }
-      .width('100%')
-      .padding(Sp.S)
-      .borderRadius(Radius.S)
-      .backgroundColor($r('sys.color.background_primary'))
+      PiAiModelSettingsRow({ initialModel: row, rowIndex: index, defaultInput: this.draft.defaultInput,
+        removable: this.draft.models.length > 1, editingEnabled: !this.busy,
+        onChange: (value: PiAiModelRow): void => { this.onModelChange(index, value); },
+        onRemove: (): void => { this.onRemoveModel(index); } })
     }, (_row: PiAiModelRow, index: number): string => this.modelRowsVersion + ':' + index)
     Button('加一个模型')
       .width('100%')

@@ -2,6 +2,7 @@ import {
   DesktopWorkbookBorder, DesktopWorkbookCell, DesktopWorkbookMerge, DesktopWorkbookRun,
   DesktopWorkbookSheet, DesktopWorkbookTextStyle
 } from './DesktopWorkbookModel';
+import type { DesktopSpreadsheetCopyGrid } from './DesktopSpreadsheetSelection';
 
 const HTML_LIMIT: number = 32 * 1024 * 1024;
 const TABLE: string = '<table data-type="fortune-copy-action-table">';
@@ -163,23 +164,36 @@ export function desktopWorkbookRangeToHtml(sheet: DesktopWorkbookSheet, firstRow
   const c2 = Math.max(firstColumn, lastColumn);
   if (![r1, c1, r2, c2].every((index: number): boolean => Number.isSafeInteger(index)) ||
     r1 < 0 || c1 < 0 || r2 >= sheet.rows.logicalCount || c2 >= sheet.columns.logicalCount) { return undefined; }
+  const rows: number[] = [];
+  const columns: number[] = [];
+  for (let row = r1; row <= r2; row++) { rows.push(row); }
+  for (let column = c1; column <= c2; column++) { columns.push(column); }
+  return desktopWorkbookGridToHtml(sheet, { rows: rows, columns: columns });
+}
+
+/** Keep the first-seen order of the disjoint bands in the clipboard table. */
+export function desktopWorkbookGridToHtml(sheet: DesktopWorkbookSheet, grid: DesktopSpreadsheetCopyGrid): string | undefined {
+  if (!grid.rows.length || !grid.columns.length ||
+    grid.rows.some((row: number): boolean => !Number.isSafeInteger(row) || row < 0 || row >= sheet.rows.logicalCount) ||
+    grid.columns.some((column: number): boolean => !Number.isSafeInteger(column) || column < 0 ||
+      column >= sheet.columns.logicalCount)) { return undefined; }
   const html: string[] = [TABLE];
   let length = TABLE.length + '</table>'.length;
-  for (let column = c1; column <= c2; column++) {
+  for (const column of grid.columns) {
     const group = '<colgroup width="' + numberText(sheet.columns.copySize(column, 72)) + 'px"></colgroup>';
     html.push(group);
     length += group.length;
   }
   // Clipboard selection walks logical indices, including hidden rows and columns between the endpoints.
-  for (let row = r1; row <= r2; row++) {
+  for (const row of grid.rows) {
     html.push('<tr>');
     length += '<tr></tr>'.length;
-    for (let column = c1; column <= c2; column++) {
+    for (const column of grid.columns) {
       const merge = sheet.merge(row, column);
       if (merge !== undefined && (row !== merge.row || column !== merge.column)) { continue; }
       const cell = sheet.cells.get(sheet.key(row, column));
       const span = merge === undefined ? '' : 'rowspan="' + merge.rows + '" colspan="' + merge.columns + '"';
-      const height = column === c1 ? 'height:' + numberText(sheet.rows.copySize(row, 19)) + 'px;' : '';
+      const height = column === grid.columns[0] ? 'height:' + numberText(sheet.rows.copySize(row, 19)) + 'px;' : '';
       const style = height + cellCss(cell) + bordersCss(sheet, row, cell, merge);
       const entry = '<td ' + span + ' style="' + escapeHtml(style) + '">' + cellText(cell) + '</td>';
       length += entry.length;

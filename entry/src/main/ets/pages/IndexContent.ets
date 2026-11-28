@@ -2470,12 +2470,13 @@ export struct IndexContent {
         },
         onModelChange: (index: number, row: PiAiModelRow) => {
           if (index >= 0 && index < this.piAiDraft.models.length) {
-            this.piAiDraft.models[index] = row;
+            this.piAiDraft.models = this.piAiDraft.models.map((model: PiAiModelRow, position: number): PiAiModelRow =>
+              position === index ? row : model);
             this.clearPiAiFieldError();
           }
         },
         onAddModel: () => {
-          this.piAiDraft.models.push(emptyModelRow());
+          this.piAiDraft.models = [...this.piAiDraft.models, emptyModelRow()];
         },
         onAdoptModels: (models: PiAiModelRow[]): void => {
           this.piAiDraft.models = models;
@@ -2486,6 +2487,7 @@ export struct IndexContent {
           // 守卫：官方要求 ≥1 个模型，删空会让表单永远不可提交
           if (this.piAiDraft.models.length > 1 && index >= 0 && index < this.piAiDraft.models.length) {
             this.piAiDraft.models.splice(index, 1);
+            this.piAiModelRowsVersion++;
           }
         },
         onSubmit: () => {
@@ -3160,7 +3162,7 @@ export struct IndexContent {
         return;
       }
       this.piAiDraft = { route: found.route, displayName: found.displayName, baseURL: found.baseURL,
-        api: found.api, apiKeyEnv: found.apiKeyEnv, models: found.models.slice() };
+        api: found.api, apiKeyEnv: found.apiKeyEnv, defaultInput: found.defaultInput, models: found.models.slice() };
       this.piAiOriginal = found;
       this.piAiKeyRef = this.piAiKeyRefOf(found.route, found.apiKeyEnv);
     } else {

@@ -175,6 +175,18 @@ function borderOf(info, string) {
   return Object.keys(borders).length ? borders : undefined;
 }
 
+/** FortuneSheet stores the last frozen cell as a zero-based index, not a count. */
+function frozenPanes(frozen, rows, columns) {
+  const { type, range } = frozen ?? {};
+  const row = range?.row_focus;
+  const column = range?.column_focus;
+  const frozenRows = (type === 'rangeRow' || type === 'rangeBoth') && Number.isSafeInteger(row) && row >= 0 ?
+    Math.min(rows, row + 1) : 0;
+  const frozenColumns = (type === 'rangeColumn' || type === 'rangeBoth') && Number.isSafeInteger(column) && column >= 0 ?
+    Math.min(columns, column + 1) : 0;
+  return frozenRows || frozenColumns ? { rows: frozenRows, columns: frozenColumns } : undefined;
+}
+
 function normalizeSheet(sheet, string, charge) {
   const rows = sheet.row;
   const columns = sheet.column;
@@ -228,9 +240,11 @@ function normalizeSheet(sheet, string, charge) {
       merge.r + merge.rs > rows || merge.c + merge.cs > columns) throw Error('invalid');
     return { row: merge.r, column: merge.c, rows: merge.rs, columns: merge.cs };
   });
+  const frozen = frozenPanes(sheet.frozen, rows, columns);
   return { id: string(sheet.id), name: string(sheet.name), hidden: hiddenSheet, active: !hiddenSheet && sheet.status === 1,
     rows, columns, cells, merges, rowHeights: metrics(config.rowlen, rows), columnWidths: metrics(config.columnlen, columns),
-    hiddenRows: hidden(config.rowhidden, rows), hiddenColumns: hidden(config.colhidden, columns) };
+    hiddenRows: hidden(config.rowhidden, rows), hiddenColumns: hidden(config.colhidden, columns),
+    ...(frozen === undefined ? {} : { frozen }) };
 }
 
 /** Project the exact bundled Worker's result onto a bounded, sparse native wire shape. */

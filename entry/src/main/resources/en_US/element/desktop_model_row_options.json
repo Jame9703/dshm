@@ -1,0 +1,48 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_option_title",
+      "value": "Model options %1$s"
+    },
+    {
+      "name": "desktop_model_option_remove",
+      "value": "Delete model %1$s"
+    },
+    {
+      "name": "desktop_model_option_context",
+      "value": "Context window"
+    },
+    {
+      "name": "desktop_model_option_output",
+      "value": "Max output tokens"
+    },
+    {
+      "name": "desktop_model_option_context_invalid",
+      "value": "Context window must be a positive count, like 131072, 256K, or 1M."
+    },
+    {
+      "name": "desktop_model_option_output_invalid",
+      "value": "Max output tokens must be a positive count, like 8192, 64K, or 1M."
+    },
+    {
+      "name": "desktop_model_option_input",
+      "value": "Input types"
+    },
+    {
+      "name": "desktop_model_option_text",
+      "value": "Text"
+    },
+    {
+      "name": "desktop_model_option_image",
+      "value": "Image"
+    },
+    {
+      "name": "desktop_model_option_id",
+      "value": "Model ID"
+    },
+    {
+      "name": "desktop_model_option_name",
+      "value": "Display name"
+    }
+  ]
+}

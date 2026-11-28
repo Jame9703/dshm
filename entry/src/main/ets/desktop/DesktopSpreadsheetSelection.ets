@@ -7,6 +7,53 @@ export interface DesktopSpreadsheetRange {
   lastColumn: number;
 }
 
+export interface DesktopSpreadsheetSelectionArea {
+  anchorRow: number;
+  anchorColumn: number;
+  range: DesktopSpreadsheetRange;
+}
+
+export interface DesktopSpreadsheetCopyGrid {
+  rows: number[];
+  columns: number[];
+}
+
+export function desktopRangeContains(range: DesktopSpreadsheetRange, row: number, column: number): boolean {
+  return row >= range.firstRow && row <= range.lastRow && column >= range.firstColumn && column <= range.lastColumn;
+}
+
+function appendIndices(target: number[], first: number, last: number): void {
+  for (let index = first; index <= last; index++) { target.push(index); }
+}
+
+/** Stock copy accepts only disjoint selections sharing a row band or a column band. */
+export function desktopSpreadsheetCopyGrid(ranges: DesktopSpreadsheetRange[]): DesktopSpreadsheetCopyGrid | undefined {
+  if (ranges.length === 0) { return undefined; }
+  const first = ranges[0];
+  const sameRows = ranges.every((range: DesktopSpreadsheetRange): boolean =>
+    range.firstRow === first.firstRow && range.lastRow === first.lastRow);
+  const sameColumns = ranges.every((range: DesktopSpreadsheetRange): boolean =>
+    range.firstColumn === first.firstColumn && range.lastColumn === first.lastColumn);
+  if (!sameRows && !sameColumns) { return undefined; }
+  const ordered = ranges.slice().sort((left: DesktopSpreadsheetRange, right: DesktopSpreadsheetRange): number =>
+    sameRows ? left.firstColumn - right.firstColumn : left.firstRow - right.firstRow);
+  for (let index = 1; index < ordered.length; index++) {
+    const previous = ordered[index - 1];
+    const next = ordered[index];
+    if (sameRows ? previous.lastColumn >= next.firstColumn : previous.lastRow >= next.firstRow) { return undefined; }
+  }
+  const rows: number[] = [];
+  const columns: number[] = [];
+  if (sameRows) {
+    appendIndices(rows, first.firstRow, first.lastRow);
+    for (const range of ranges) { appendIndices(columns, range.firstColumn, range.lastColumn); }
+  } else {
+    appendIndices(columns, first.firstColumn, first.lastColumn);
+    for (const range of ranges) { appendIndices(rows, range.firstRow, range.lastRow); }
+  }
+  return { rows: rows, columns: columns };
+}
+
 function includeMerge(sheet: DesktopWorkbookSheet, range: DesktopSpreadsheetRange, row: number, column: number,
   logical: boolean): void {
   const merge = logical ? sheet.merge(row, column) : sheet.merge(sheet.rows.logical(row), sheet.columns.logical(column));

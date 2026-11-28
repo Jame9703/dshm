@@ -154,6 +154,8 @@ export class DesktopWorkbookSheet {
   readonly cells: Map<number, DesktopWorkbookCell> = new Map();
   readonly merges: Map<number, DesktopWorkbookMerge> = new Map();
   readonly columnCount: number;
+  readonly frozenRows: number;
+  readonly frozenColumns: number;
 
   constructor(id: string, name: string, rows: number, columns: number, raw: Object) {
     this.id = id;
@@ -163,6 +165,11 @@ export class DesktopWorkbookSheet {
       readHidden(getArray(raw, 'hiddenRows'), rows), 20);
     this.columns = new DesktopWorkbookAxis(columns, readMetrics(getArray(raw, 'columnWidths'), columns),
       readHidden(getArray(raw, 'hiddenColumns'), columns), 72);
+    const frozen = getRecord(raw, 'frozen');
+    const rowSplit = indexOf(getNumber(frozen, 'rows'), rows + 1);
+    const columnSplit = indexOf(getNumber(frozen, 'columns'), columns + 1);
+    this.frozenRows = this.rows.position(Math.max(0, rowSplit));
+    this.frozenColumns = this.columns.position(Math.max(0, columnSplit));
   }
 
   key(row: number, column: number): number { return row * this.columnCount + column; }
