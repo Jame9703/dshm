@@ -202,6 +202,7 @@ export const AGENT_PRESETS_SELECT_ENDPOINT: string = 'agentPresets/select';
  */
 /** 已注册的路由（当前可用的提供方） */
 export const LLM_LIST_PROVIDERS_ENDPOINT: string = 'llm/listProviders';
+export const LLM_DISCOVER_MODELS_ENDPOINT: string = 'llm/discoverModels';
 /** 声明出来的**可配置**提供方（"添加提供方"的目录；NONE 形态，无参数） */
 export const LLM_LIST_CONFIGURABLE_PROVIDERS_ENDPOINT: string = 'llm/listConfigurableProviders';
 

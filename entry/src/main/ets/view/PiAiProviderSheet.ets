@@ -32,6 +32,7 @@ import { HarmonySpacing } from 'appstate';
 import { protocolLabel } from 'appstate';
 import type { PiAiModelRow, PiAiProviderView } from 'appstate';
 import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
+import { DesktopPiAiModelDiscovery } from '../desktop/DesktopPiAiModelDiscovery';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopNewRetryPolicy } from '../desktop/DesktopRetryPolicyModel';
 
@@ -48,6 +49,7 @@ export struct PiAiProviderSheet {
   @Prop mode: string = PiAiSheetMode.CREATE;
   /** 正在编辑的表单值（真值在宿主） */
   @Prop draft: PiAiProviderView;
+  @Prop modelRowsVersion: number = 0;
   /** 可声明的 API 协议（来自 Host schema；空 ⇒ 禁用选择并如实说明） */
   @Prop protocols: string[];
   /** 端点占位（随协议变化；宿主算好传入） */
@@ -84,6 +86,7 @@ export struct PiAiProviderSheet {
   };
   onAddModel: () => void = () => {
   };
+  onAdoptModels: (models: PiAiModelRow[]) => void = (_models: PiAiModelRow[]): void => {};
   onRemoveModel: (index: number) => void = () => {
   };
   onSubmit: () => void = () => {
@@ -92,6 +95,7 @@ export struct PiAiProviderSheet {
   };
   onClose: () => void = () => {
   };
+  @State private discovering: boolean = false;
 
   build() {
     Column() {
@@ -141,7 +145,7 @@ export struct PiAiProviderSheet {
             Button(this.isCreate() ? '添加' : '保存')
               .key('desktopPiAiProviderSubmit')
               .layoutWeight(1)
-              .enabled(!this.busy && this.retryValid)
+              .enabled(!this.busy && !this.discovering && this.retryValid)
               .onClick(() => {
                 this.onSubmit();
               })
@@ -156,7 +160,7 @@ export struct PiAiProviderSheet {
           if (!this.isCreate()) {
             Button('删除这个提供方')
               .width('100%')
-              .enabled(!this.busy)
+              .enabled(!this.busy && !this.discovering)
               .backgroundColor($r('sys.color.background_secondary'))
               .fontColor($r('sys.color.warning'))
               .onClick(() => {
@@ -288,6 +292,12 @@ export struct PiAiProviderSheet {
       .fontSize(Fs.CAPTION)
       .fontColor($r('sys.color.font_secondary'))
       .width('100%')
+    if (this.retryHost !== undefined) {
+      DesktopPiAiModelDiscovery({ host: this.retryHost, provider: this.isCreate() ? '' : this.draft.route,
+        endpoint: this.draft.baseURL, api: this.draft.api, keyReference: this.isCreate() ? '' : this.draft.apiKeyEnv,
+        keyDraft: this.keyDraft, models: this.draft.models, unavailable: this.busy,
+        onAdopt: this.onAdoptModels, onFetchingChange: (fetching: boolean): void => { this.discovering = fetching; } })
+    }
     Text('模型 id 是"这个路由提供什么"的唯一依据；显示名可不填（不填就沿用适配器默认）。')
       .fontSize(Fs.CAPTION)
       .fontColor($r('sys.color.font_tertiary'))
@@ -321,7 +331,7 @@ export struct PiAiProviderSheet {
           .onChange((v: string) => {
             this.onModelChange(index, {
               id: v, name: row.name,
-              contextWindow: row.contextWindow, maxTokens: row.maxTokens
+              contextWindow: row.contextWindow, maxTokens: row.maxTokens, extraFields: row.extraFields
             });
           })
         TextInput({ text: row.name, placeholder: '显示名（可选）' })
@@ -331,7 +341,7 @@ export struct PiAiProviderSheet {
           .onChange((v: string) => {
             this.onModelChange(index, {
               id: row.id, name: v,
-              contextWindow: row.contextWindow, maxTokens: row.maxTokens
+              contextWindow: row.contextWindow, maxTokens: row.maxTokens, extraFields: row.extraFields
             });
           })
       }
@@ -339,7 +349,7 @@ export struct PiAiProviderSheet {
       .padding(Sp.S)
       .borderRadius(Radius.S)
       .backgroundColor($r('sys.color.background_primary'))
-    }, (row: PiAiModelRow, index: number) => `${index}`)
+    }, (_row: PiAiModelRow, index: number): string => this.modelRowsVersion + ':' + index)
     Button('加一个模型')
       .width('100%')
       .backgroundColor($r('sys.color.background_secondary'))
@@ -360,6 +370,7 @@ export struct PiAiProviderSheet {
       text: this.keyDraft,
       placeholder: this.keyConfigured ? '已配置；留空表示不改动' : '粘贴密钥'
     })
+      .key('desktopPiAiProviderKey')
       .fontSize(Fs.SECONDARY)
       .type(InputType.Password)
       .height(Sz.TOUCH_MIN)

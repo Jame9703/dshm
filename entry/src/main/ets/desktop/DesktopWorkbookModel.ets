@@ -25,6 +25,7 @@ export interface DesktopWorkbookCell {
   value: string;
   display: string;
   formula: string;
+  format?: string;
   background?: string;
   horizontal?: string;
   vertical?: string;
@@ -78,13 +79,17 @@ function readHidden(raw: Object[] | undefined, count: number): Set<number> {
 /** Translate visible positions without allocating an index for an ordinary fixed-size sheet. */
 export class DesktopWorkbookAxis {
   readonly count: number;
+  readonly logicalCount: number;
   private readonly ordinarySize: number;
+  private readonly authoredSizes: Map<number, number>;
   private readonly positions?: number[];
   private readonly offsets?: number[];
 
   constructor(count: number, sizes: Map<number, number>, hidden: Set<number>, ordinarySize: number) {
     this.count = count - hidden.size;
+    this.logicalCount = count;
     this.ordinarySize = ordinarySize;
+    this.authoredSizes = sizes;
     if (hidden.size > 0) {
       const positions: number[] = [];
       for (let index = 0; index < count; index++) {
@@ -102,6 +107,13 @@ export class DesktopWorkbookAxis {
   }
 
   logical(position: number): number { return this.positions?.[position] ?? position; }
+
+  copySize(logical: number, fallback: number): number { return this.authoredSizes.get(logical) ?? fallback; }
+
+  isHidden(logical: number): boolean {
+    const visible = this.position(logical);
+    return visible === this.count || this.logical(visible) !== logical;
+  }
 
   /** Return the first visible position whose workbook index is at or after the requested index. */
   position(logical: number): number {
@@ -190,6 +202,7 @@ function readCell(raw: Object): DesktopWorkbookCell {
   const edges = getRecord(raw, 'borders');
   return {
     value: value, display: getString(raw, 'display') ?? value, formula: getString(raw, 'formula') ?? '',
+    format: getString(raw, 'format'),
     background: getString(raw, 'background'), horizontal: getString(raw, 'horizontal'), vertical: getString(raw, 'vertical'),
     wrap: getBoolean(raw, 'wrap'), rotation: getNumber(raw, 'rotation'), verticalText: getBoolean(raw, 'verticalText'),
     decoration: readDecoration(raw), runs: runs, top: readBorder(edges, 'top'), right: readBorder(edges, 'right'),

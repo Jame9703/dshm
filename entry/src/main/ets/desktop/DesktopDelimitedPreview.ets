@@ -5,6 +5,8 @@ import { DesktopDelimitedTable, desktopTableColumn } from './DesktopDelimitedTab
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopWorkbookBorder, DesktopWorkbookCell, DesktopWorkbookMerge, DesktopWorkbookRun, DesktopWorkbookSheet,
   DesktopWorkbookTextStyle } from './DesktopWorkbookModel';
+import { desktopSpreadsheetLogicalRange, desktopSpreadsheetRange, DesktopSpreadsheetRange } from './DesktopSpreadsheetSelection';
+import { desktopWorkbookClipboardValue, desktopWorkbookRangeToHtml } from './DesktopWorkbookClipboard';
 
 const ROW_HEIGHT: number = 24;
 const COLUMN_WIDTH: number = 100;
@@ -25,9 +27,10 @@ interface DesktopGridPart {
   merge?: DesktopWorkbookMerge;
 }
 
-function spreadsheetHtmlText(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;').replaceAll('\r\n', '\n').replaceAll('\n', '<br>');
+interface DesktopGridPoint {
+  x: number;
+  y: number;
+  extend: boolean;
 }
 
 class DesktopTableRows implements IDataSource {
@@ -60,6 +63,7 @@ export struct DesktopDelimitedPreview {
   @State private selectedColumn: number = 0;
   @State private anchorRow: number = 0;
   @State private anchorColumn: number = 0;
+  @State private selectedRange: DesktopSpreadsheetRange = { firstRow: 0, lastRow: 0, firstColumn: 0, lastColumn: 0 };
   @State private columns: number[] = [];
   @State private scrollX: number = 0;
   @State private menuCell: string = '';
@@ -68,17 +72,23 @@ export struct DesktopDelimitedPreview {
   private readonly horizontal = new Scroller();
   private readonly vertical = new Scroller();
   private viewportWidth: number = 360;
+  private viewportHeight: number = 0;
+  private viewportArea?: Area;
+  private pointerDown?: DesktopGridPoint;
+  private dragMode: string = '';
   private focusTimer: number = -1;
   private restoreTimer: number = -1;
 
   aboutToAppear(): void {
     this.data.reset(this.rowCount());
     this.measureColumns(0);
+    this.updateRange();
     const saved = this.initialSelection;
     if (saved !== undefined) {
       this.select(saved.row, saved.column, false);
       this.anchorRow = Math.max(0, Math.min(this.rowCount() - 1, saved.anchorRow));
       this.anchorColumn = Math.max(0, Math.min(this.columnCount() - 1, saved.anchorColumn));
+      this.updateRange();
       this.restoreTimer = setTimeout((): void => {
         this.horizontal.scrollTo({ xOffset: saved.scrollX ?? 0, yOffset: 0, animation: false });
         this.vertical.scrollTo({ xOffset: 0, yOffset: saved.scrollY ?? 0, animation: false });
@@ -89,6 +99,7 @@ export struct DesktopDelimitedPreview {
   aboutToDisappear(): void {
     clearTimeout(this.focusTimer);
     clearTimeout(this.restoreTimer);
+    this.finishDrag();
     this.onSelection({ row: this.selectedRow, column: this.selectedColumn, anchorRow: this.anchorRow,
       anchorColumn: this.anchorColumn,
       scrollX: this.horizontal.currentOffset().xOffset, scrollY: this.vertical.currentOffset().yOffset });
@@ -111,10 +122,10 @@ export struct DesktopDelimitedPreview {
     return this.cellStyle(row, column)?.display ?? this.table.rows[row]?.[column] ?? '';
   }
   private formulaValue(): string {
-    const style = this.cellStyle(this.selectedRow, this.selectedColumn);
+    const style = this.cellStyle(this.anchorRow, this.anchorColumn);
     const formula = style?.formula ?? '';
     if (formula) { return formula.startsWith('=') ? formula : '=' + formula; }
-    return style?.display.endsWith('%') ? style.display : style?.value ?? this.cell(this.selectedRow, this.selectedColumn);
+    return style?.display.endsWith('%') ? style.display : style?.value ?? this.cell(this.anchorRow, this.anchorColumn);
   }
 
   private address(row: number, column: number): string {
@@ -124,8 +135,8 @@ export struct DesktopDelimitedPreview {
   private rangeAddress(): string {
     const current = this.address(this.selectedRow, this.selectedColumn);
     if (this.anchorRow === this.selectedRow && this.anchorColumn === this.selectedColumn) { return current; }
-    return this.address(Math.min(this.anchorRow, this.selectedRow), Math.min(this.anchorColumn, this.selectedColumn)) +
-      ':' + this.address(Math.max(this.anchorRow, this.selectedRow), Math.max(this.anchorColumn, this.selectedColumn));
+    const range = this.selectedRange;
+    return this.address(range.firstRow, range.firstColumn) + ':' + this.address(range.lastRow, range.lastColumn);
   }
 
   private ratio(): number { return this.zoom / 100; }
@@ -158,6 +169,16 @@ export struct DesktopDelimitedPreview {
       Math.max(0, Math.min(this.columnCount() - 1, Math.floor(unscaled / COLUMN_WIDTH)));
   }
 
+  private rowAt(offset: number): number {
+    const unscaled = offset / this.ratio();
+    return this.sheet?.rows.atOffset(unscaled) ??
+      Math.max(0, Math.min(this.rowCount() - 1, Math.floor(unscaled / ROW_HEIGHT)));
+  }
+
+  private rowsHeight(): number {
+    return (this.sheet?.rows.offset(this.rowCount()) ?? this.rowCount() * ROW_HEIGHT) * this.ratio();
+  }
+
   private measureZoom(): void {
     this.measureColumns(this.horizontal.currentOffset().xOffset);
     this.revealSelection();
@@ -187,7 +208,111 @@ export struct DesktopDelimitedPreview {
       this.anchorRow = this.selectedRow;
       this.anchorColumn = this.selectedColumn;
     }
+    this.updateRange();
     if (focus) { this.focusKeyboard(); }
+  }
+
+  private updateRange(): void {
+    this.selectedRange = desktopSpreadsheetRange(this.sheet, this.anchorRow, this.anchorColumn,
+      this.selectedRow, this.selectedColumn);
+  }
+
+  private extendTo(row: number, column: number): void {
+    if (this.selectedRow === row && this.selectedColumn === column) { return; }
+    this.selectedRow = row;
+    this.selectedColumn = column;
+    this.updateRange();
+  }
+
+  private selectHeaders(row: number, column: number, extend: boolean = false): void {
+    if (this.rowCount() === 0 || this.columnCount() === 0) { return; }
+    if (row < 0) { this.anchorRow = 0; }
+    else if (!extend) { this.anchorRow = row; }
+    if (column < 0) { this.anchorColumn = 0; }
+    else if (!extend) { this.anchorColumn = column; }
+    this.selectedRow = row < 0 ? this.rowCount() - 1 : row;
+    this.selectedColumn = column < 0 ? this.columnCount() - 1 : column;
+    this.updateRange();
+  }
+
+  private rememberPointer(event: MouseEvent): void {
+    if (event.button !== MouseButton.Left) { return; }
+    if (event.action === MouseAction.Press) {
+      const area = this.viewportArea;
+      this.pointerDown = {
+        x: area === undefined ? event.x : event.windowX - Number(area.globalPosition.x),
+        y: area === undefined ? event.y : event.windowY - Number(area.globalPosition.y),
+        extend: event.getModifierKeyState?.(['Shift']) === true
+      };
+    } else if (event.action === MouseAction.Release) {
+      this.pointerDown = undefined;
+    }
+  }
+
+  private beginDrag(event: GestureEvent): void {
+    if (this.rowCount() === 0 || this.columnCount() === 0) { return; }
+    const pointer = event.fingerInfos?.[0] ?? event.fingerList[0];
+    if (pointer === undefined) { return; }
+    const origin: DesktopGridPoint = this.pointerDown ??
+      { x: this.dragLocalX(pointer) - event.offsetX, y: this.dragLocalY(pointer) - event.offsetY,
+        extend: event.getModifierKeyState?.(['Shift']) === true };
+    const headerX = origin.x < this.rowHeaderWidth();
+    const headerY = origin.y < this.headerHeight();
+    const row = this.rowAt(origin.y - this.headerHeight() + this.vertical.currentOffset().yOffset - 0.000001);
+    const column = this.columnAt(origin.x - this.rowHeaderWidth() + this.horizontal.currentOffset().xOffset - 0.000001);
+    if (headerX && headerY) {
+      this.selectHeaders(-1, -1);
+      this.dragMode = 'all';
+    } else if (headerX || headerY) {
+      this.selectHeaders(headerY ? -1 : row, headerX ? -1 : column, origin.extend);
+      this.dragMode = headerX ? 'rows' : 'columns';
+    } else {
+      this.select(row, column, false, origin.extend);
+      this.dragMode = 'cells';
+    }
+    this.updateDrag(event);
+  }
+
+  private edgeDelta(point: number, length: number, margin: number): number {
+    if (point < 0) { return point / 2; }
+    const edge = Math.max(1, length - margin);
+    return point > edge ? (point - edge) / 2 : 0;
+  }
+
+  private dragLocalX(pointer: FingerInfo): number {
+    return this.viewportArea === undefined ? pointer.localX : pointer.globalX - Number(this.viewportArea.globalPosition.x);
+  }
+
+  private dragLocalY(pointer: FingerInfo): number {
+    return this.viewportArea === undefined ? pointer.localY : pointer.globalY - Number(this.viewportArea.globalPosition.y);
+  }
+
+  private updateDrag(event: GestureEvent): void {
+    const mode = this.dragMode;
+    if (!mode || mode === 'all') { return; }
+    const pointer = event.fingerInfos?.[0] ?? event.fingerList[0];
+    if (pointer === undefined) { return; }
+    const x = this.dragLocalX(pointer) - this.rowHeaderWidth();
+    const y = this.dragLocalY(pointer) - this.headerHeight();
+    const width = Math.max(1, this.viewportWidth - this.rowHeaderWidth());
+    const height = Math.max(1, this.viewportHeight - this.headerHeight());
+    const scrollX = this.horizontal.currentOffset().xOffset;
+    const scrollY = this.vertical.currentOffset().yOffset;
+    const nextX = mode === 'rows' ? scrollX :
+      Math.max(0, Math.min(this.columnOffset(this.columnCount()) - width, scrollX + this.edgeDelta(x, width, 60 * this.ratio())));
+    const nextY = mode === 'columns' ? scrollY :
+      Math.max(0, Math.min(this.rowsHeight() - height, scrollY + this.edgeDelta(y, height, 20 * this.ratio())));
+    if (nextX !== scrollX) { this.horizontal.scrollTo({ xOffset: nextX, yOffset: 0, animation: false }); }
+    if (nextY !== scrollY) { this.vertical.scrollTo({ xOffset: 0, yOffset: nextY, animation: false }); }
+    const row = mode === 'columns' ? this.rowCount() - 1 : this.rowAt(nextY + Math.max(0, Math.min(height, y)) - 0.000001);
+    const column = mode === 'rows' ? this.columnCount() - 1 :
+      this.columnAt(nextX + Math.max(0, Math.min(width, x)) - 0.000001);
+    this.extendTo(row, column);
+  }
+
+  private finishDrag(): void {
+    this.dragMode = '';
+    this.pointerDown = undefined;
   }
 
   private revealSelection(): void {
@@ -201,49 +326,47 @@ export struct DesktopDelimitedPreview {
   }
 
   private selected(row: number, column: number): boolean {
-    return row >= Math.min(this.anchorRow, this.selectedRow) && row <= Math.max(this.anchorRow, this.selectedRow) &&
-      column >= Math.min(this.anchorColumn, this.selectedColumn) && column <= Math.max(this.anchorColumn, this.selectedColumn);
+    const range = this.selectedRange;
+    return row >= range.firstRow && row <= range.lastRow && column >= range.firstColumn && column <= range.lastColumn;
   }
 
-  private async copySelection(): Promise<void> {
-    const sheet = this.sheet;
-    if (sheet === undefined) {
-      await this.copy(this.cell(this.selectedRow, this.selectedColumn));
-      return;
-    }
+  private plainRange(range: DesktopSpreadsheetRange, sheet?: DesktopWorkbookSheet): string {
     const lines: string[] = [];
-    const html: string[] = ['<table><tbody>'];
-    const firstRow = Math.min(this.anchorRow, this.selectedRow);
-    const lastRow = Math.max(this.anchorRow, this.selectedRow);
-    const firstColumn = Math.min(this.anchorColumn, this.selectedColumn);
-    const lastColumn = Math.max(this.anchorColumn, this.selectedColumn);
-    const single = firstRow === lastRow && firstColumn === lastColumn;
-    for (let row = firstRow; row <= lastRow; row++) {
+    const single = range.firstRow === range.lastRow && range.firstColumn === range.lastColumn;
+    for (let row = range.firstRow; row <= range.lastRow; row++) {
       const fields: string[] = [];
-      html.push('<tr>');
-      for (let column = firstColumn; column <= lastColumn; column++) {
-        const merge = this.cellMerge(row, column);
-        if (merge !== undefined && (row > Math.max(firstRow, sheet.rows.position(merge.row)) ||
-          column > Math.max(firstColumn, sheet.columns.position(merge.column)))) {
+      for (let column = range.firstColumn; column <= range.lastColumn; column++) {
+        const merge = sheet?.merge(row, column);
+        if (merge !== undefined && (row !== merge.row || column !== merge.column)) {
           fields.push('');
           continue;
         }
-        const value = this.cell(row, column);
+        const value = sheet === undefined ? this.cell(row, column) : desktopWorkbookClipboardValue(sheet.cell(row, column));
         fields.push(!single && (value.includes('\t') || value.includes('\n') || value.includes('\r') || value.includes('"')) ?
           '"' + value.replaceAll('"', '""') + '"' : value);
-        const rows = merge === undefined ? 1 : Math.min(lastRow + 1, sheet.rows.position(merge.row + merge.rows)) - row;
-        const columns = merge === undefined ? 1 :
-          Math.min(lastColumn + 1, sheet.columns.position(merge.column + merge.columns)) - column;
-        html.push('<td rowspan="' + rows + '" colspan="' + columns + '">' + spreadsheetHtmlText(value) + '</td>');
       }
       lines.push(fields.join('\t'));
-      html.push('</tr>');
     }
-    html.push('</tbody></table>');
-    const plain = lines.join('\n');
+    return lines.join('\n');
+  }
+
+  private async copySelection(): Promise<void> {
+    if (this.rowCount() === 0 || this.columnCount() === 0) { return; }
+    const sheet = this.sheet;
+    if (sheet === undefined) {
+      await this.copy(this.plainRange(this.selectedRange));
+      return;
+    }
+    const range = desktopSpreadsheetLogicalRange(sheet, this.selectedRange);
+    const plain = this.plainRange(range, sheet);
+    const html = desktopWorkbookRangeToHtml(sheet, range.firstRow, range.firstColumn, range.lastRow, range.lastColumn);
+    if (html === undefined) {
+      await this.copy(plain);
+      return;
+    }
     try {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, plain);
-      data.addRecord(pasteboard.MIMETYPE_TEXT_HTML, html.join(''));
+      data.addRecord(pasteboard.MIMETYPE_TEXT_HTML, html);
       await pasteboard.getSystemPasteboard().setData(data);
     } catch (_) { await this.copy(plain); }
   }
@@ -364,7 +487,7 @@ export struct DesktopDelimitedPreview {
         break;
       default: return false;
     }
-    this.select(row, column, false, shift && this.sheet !== undefined);
+    this.select(row, column, false, shift);
     this.revealSelection();
     event.stopPropagation();
     return true;
@@ -431,10 +554,11 @@ export struct DesktopDelimitedPreview {
         style: { top: this.sheetBorderStyle(style?.top), left: this.sheetBorderStyle(style?.left),
           right: this.sheetBorderStyle(style?.right), bottom: this.sheetBorderStyle(style?.bottom) }
       })
-      .backgroundColor(this.partSelected(row, part) ? $r('app.color.workspace_selection') :
-        style?.background ?? $r('app.color.workspace_canvas'))
+      .backgroundColor(this.partSelected(row, part) && style?.background === undefined ?
+        $r('app.color.workspace_selection') : style?.background ?? $r('app.color.workspace_canvas'))
+      .overlay(this.CellSelectionOverlay(row, part, style))
       .onClick((event: ClickEvent): void => {
-        this.select(row, part.column, true, this.sheet !== undefined && event.getModifierKeyState?.(['Shift']) === true);
+        this.select(row, part.column, true, event.getModifierKeyState?.(['Shift']) === true);
       })
       .onMouse((event: MouseEvent): void => {
         if (event.button === MouseButton.Right) {
@@ -451,11 +575,25 @@ export struct DesktopDelimitedPreview {
   }
 
   @Builder
-  private SheetHeader(text: string, width: number, height: number, selected: boolean) {
+  private CellSelectionOverlay(row: number, part: DesktopGridPart, style?: DesktopWorkbookCell) {
+    if (style?.background !== undefined && this.partSelected(row, part)) {
+      Column().width('100%').height('100%').backgroundColor(0x24468BEA)
+        .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+    }
+  }
+
+  @Builder
+  private SheetHeader(text: string, width: number, height: number, selected: boolean, row: number, column: number) {
     Text(text).fontColor($r('sys.color.font_secondary')).fontSize(12 * this.ratio()).textAlign(TextAlign.Center)
       .width(width).height(height)
       .backgroundColor(selected ? $r('app.color.workspace_selection') : $r('app.color.workspace_panel'))
       .border({ width: { right: 0.5, bottom: 0.5 }, color: $r('app.color.workspace_border') })
+      .key(row >= 0 ? 'desktopSpreadsheetRow-' + text : column >= 0 ? 'desktopSpreadsheetColumn-' + text :
+        'desktopSpreadsheetSelectAll')
+      .onClick((event: ClickEvent): void => {
+        this.selectHeaders(row, column, event.getModifierKeyState?.(['Shift']) === true);
+        this.focusKeyboard();
+      })
   }
 
   @Builder
@@ -466,7 +604,8 @@ export struct DesktopDelimitedPreview {
     if (row < 0) {
       ForEach(this.columns, (column: number): void => {
         this.SheetHeader(desktopTableColumn(this.columnNumber(column)),
-          this.columnOffset(column + 1) - this.columnOffset(column), this.headerHeight(), column === this.selectedColumn)
+          this.columnOffset(column + 1) - this.columnOffset(column), this.headerHeight(),
+          column >= this.selectedRange.firstColumn && column <= this.selectedRange.lastColumn, -1, column)
       }, (column: number): string => String(column))
     } else {
       ForEach(this.parts(row), (part: DesktopGridPart): void => {
@@ -522,7 +661,7 @@ export struct DesktopDelimitedPreview {
       Scroll(this.horizontal) {
         Column() {
           Row() {
-            Stack() { this.SheetHeader('', this.rowHeaderWidth(), this.headerHeight(), false) }
+            Stack() { this.SheetHeader('', this.rowHeaderWidth(), this.headerHeight(), false, -1, -1) }
               .width(this.rowHeaderWidth()).offset({ x: this.scrollX }).zIndex(1)
             this.VirtualColumns(-1)
           }.width(this.measuredWidth()).justifyContent(FlexAlign.Start)
@@ -532,7 +671,7 @@ export struct DesktopDelimitedPreview {
                 Row() {
                   Stack() {
                     this.SheetHeader(String(this.rowNumber(row) + 1), this.rowHeaderWidth(), this.rowHeight(row),
-                      row >= Math.min(this.anchorRow, this.selectedRow) && row <= Math.max(this.anchorRow, this.selectedRow))
+                      row >= this.selectedRange.firstRow && row <= this.selectedRange.lastRow, row, -1)
                   }.width(this.rowHeaderWidth()).offset({ x: this.scrollX }).zIndex(1)
                   this.VirtualColumns(row)
                 }.width(this.measuredWidth()).height(this.rowHeight(row)).justifyContent(FlexAlign.Start)
@@ -541,8 +680,20 @@ export struct DesktopDelimitedPreview {
           }.width('100%').layoutWeight(1).cachedCount(3).scrollBar(BarState.Off)
         }.width(this.measuredWidth()).height('100%')
       }.width('100%').layoutWeight(1).scrollable(ScrollDirection.Horizontal).align(Alignment.TopStart)
+        .onMouse((event: MouseEvent): void => { this.rememberPointer(event); })
+        .priorityGesture(PanGesture({ direction: PanDirection.All, distance: 4 })
+          .allowedTypes([SourceTool.MOUSE, SourceTool.TOUCHPAD])
+          .onActionStart((event: GestureEvent): void => { this.beginDrag(event); })
+          .onActionUpdate((event: GestureEvent): void => { this.updateDrag(event); })
+          .onActionEnd((): void => {
+            if (this.dragMode) { this.focusKeyboard(); }
+            this.finishDrag();
+          })
+          .onActionCancel((): void => { this.finishDrag(); }))
         .onDidScroll((_offset: number, _state: ScrollState): void => { this.measureColumns(this.horizontal.currentOffset().xOffset); })
         .onAreaChange((_old: Area, area: Area): void => {
+          this.viewportArea = area;
+          this.viewportHeight = Number(area.height);
           const width = Number(area.width);
           if (width > 0) { this.viewportWidth = width; this.measureColumns(this.scrollX); }
         })

@@ -1,0 +1,76 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_discover_fetch",
+      "value": "Fetch available models"
+    },
+    {
+      "name": "desktop_model_discover_loading",
+      "value": "Asking the provider…"
+    },
+    {
+      "name": "desktop_model_discover_needs_url",
+      "value": "Enter the base URL first, then fetch."
+    },
+    {
+      "name": "desktop_model_discover_empty",
+      "value": "The provider listed no models. Add them by hand."
+    },
+    {
+      "name": "desktop_model_discover_title",
+      "value": "Choose models"
+    },
+    {
+      "name": "desktop_model_discover_description",
+      "value": "These are the models this provider has available. Checked models make up the list."
+    },
+    {
+      "name": "desktop_model_discover_search",
+      "value": "Search models"
+    },
+    {
+      "name": "desktop_model_discover_no_matches",
+      "value": "No matching models."
+    },
+    {
+      "name": "desktop_model_discover_select_all",
+      "value": "Select all"
+    },
+    {
+      "name": "desktop_model_discover_deselect_all",
+      "value": "Deselect all"
+    },
+    {
+      "name": "desktop_model_discover_apply",
+      "value": "Update list"
+    },
+    {
+      "name": "desktop_model_discover_keep_one",
+      "value": "Keep at least one model checked."
+    },
+    {
+      "name": "desktop_model_discover_cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "desktop_model_discover_invalid_url",
+      "value": "Enter a valid HTTP or HTTPS URL."
+    },
+    {
+      "name": "desktop_model_discover_required_key",
+      "value": "Enter an API key to continue."
+    },
+    {
+      "name": "desktop_model_discover_blank_key",
+      "value": "Enter the API key, or leave the field empty if this provider authenticates another way."
+    },
+    {
+      "name": "desktop_model_discover_invalid_key",
+      "value": "This API key is not in a valid format. Please check it."
+    },
+    {
+      "name": "desktop_model_discover_failed",
+      "value": "Could not fetch available models. Try again or add them by hand."
+    }
+  ]
+}

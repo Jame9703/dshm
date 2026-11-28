@@ -663,6 +663,7 @@ export struct IndexContent {
   @State piAiMode: string = '';
   /** 正在编辑的表单草稿（真值在此；浮层只渲染） */
   @State piAiDraft: PiAiProviderView = emptyProviderView('');
+  @State private piAiModelRowsVersion: number = 0;
   /** 进入编辑时的**原始值**：用来算"哪些字段真的变了"，避免无脑全量写回 */
   private piAiOriginal: PiAiProviderView | undefined = undefined;
   /** 密钥草稿（只写不读：每次打开都为空；空 = 保留 Host 上那把） */
@@ -2432,6 +2433,7 @@ export struct IndexContent {
       PiAiProviderSheet({
         mode: this.piAiMode,
         draft: this.piAiDraft,
+        modelRowsVersion: this.piAiModelRowsVersion,
         protocols: this.piAiProtocols,
         baseURLPlaceholder: baseURLPlaceholder(this.piAiDraft.api),
         keyDraft: this.piAiKeyDraft,
@@ -2474,6 +2476,11 @@ export struct IndexContent {
         },
         onAddModel: () => {
           this.piAiDraft.models.push(emptyModelRow());
+        },
+        onAdoptModels: (models: PiAiModelRow[]): void => {
+          this.piAiDraft.models = models;
+          this.piAiModelRowsVersion++;
+          this.clearPiAiFieldError();
         },
         onRemoveModel: (index: number) => {
           // 守卫：官方要求 ≥1 个模型，删空会让表单永远不可提交
@@ -3152,7 +3159,8 @@ export struct IndexContent {
         this.settingWriteNote = `提供方「${route}」已不在 Host 的设置里（可能刚被删除）。已刷新，请重试。`;
         return;
       }
-      this.piAiDraft = found;
+      this.piAiDraft = { route: found.route, displayName: found.displayName, baseURL: found.baseURL,
+        api: found.api, apiKeyEnv: found.apiKeyEnv, models: found.models.slice() };
       this.piAiOriginal = found;
       this.piAiKeyRef = this.piAiKeyRefOf(found.route, found.apiKeyEnv);
     } else {

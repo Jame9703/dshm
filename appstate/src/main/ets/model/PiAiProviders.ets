@@ -42,6 +42,8 @@ export interface PiAiModelRow {
   name: string;
   contextWindow: number;
   maxTokens: number;
+  /** Settings fields this editor leaves to the Host, including input capabilities. */
+  extraFields?: Record<string, Object>;
 }
 
 /** 一个 pi-ai 路由的完整可编辑视图 */
@@ -234,12 +236,20 @@ export function projectPiAiModels(models: Object | undefined): PiAiModelRow[] {
     if (!isRec(row)) {
       continue;
     }
-    out.push({
+    const model: PiAiModelRow = {
       id: strOf(row, 'id'),
       name: strOf(row, 'name'),
       contextWindow: numOf(row, 'contextWindow'),
       maxTokens: numOf(row, 'maxTokens'),
-    });
+    };
+    const source = row as Record<string, Object>;
+    const extra: Record<string, Object> = {};
+    for (const key of Object.keys(source)) {
+      if (key !== 'id' && key !== 'name' && key !== 'contextWindow' && key !== 'maxTokens' &&
+          key !== '__proto__' && key !== 'constructor' && key !== 'prototype') { extra[key] = source[key]; }
+    }
+    if (Object.keys(extra).length > 0) { model.extraFields = extra; }
+    out.push(model);
   }
   return out;
 }
@@ -440,6 +450,10 @@ export function modelsPayload(models: PiAiModelRow[]): Object[] {
   for (let i = 0; i < models.length; i++) {
     const row: PiAiModelRow = models[i];
     const item: Record<string, Object> = {};
+    const extra = row.extraFields;
+    if (extra !== undefined) {
+      for (const key of Object.keys(extra)) { item[key] = extra[key]; }
+    }
     item['id'] = row.id.trim();
     const name: string = row.name.trim();
     if (name.length > 0) {
