@@ -20,6 +20,7 @@ export interface HttpOutcome {
   status: number;
   /** 响应体文本；无响应时为 '' */
   body: string;
+  bytes?: ArrayBuffer;
   /** 是否已获得 HTTP 响应（false = 连接/DNS/TLS/超时等载体失败） */
   responded: boolean;
   /** 载体失败原因（responded=false 时有值） */
@@ -62,10 +63,11 @@ export class HttpClient {
    * @param collectCookies 是否解析并合并 Set-Cookie
    */
   async send(url: string, authority: string, post: boolean, body: string | ArrayBuffer | undefined,
-    timeoutMs: number, collectCookies: boolean, responseLimit?: number, sensitiveBody?: boolean): Promise<HttpOutcome> {
+    timeoutMs: number, collectCookies: boolean, responseLimit?: number, sensitiveBody?: boolean,
+    byteAttachment: boolean = false): Promise<HttpOutcome> {
     const request: http.HttpRequest = http.createHttp();
     const header: Record<string, string> = {};
-    header['accept'] = 'application/json, text/plain, */*';
+    header['accept'] = byteAttachment ? 'multipart/form-data, application/json' : 'application/json, text/plain, */*';
     if (post) {
       header['content-type'] = body instanceof ArrayBuffer ? 'application/octet-stream' : 'application/json';
     }
@@ -109,7 +111,7 @@ export class HttpClient {
         header: header,
         readTimeout: timeoutMs,
         connectTimeout: timeoutMs,
-        expectDataType: http.HttpDataType.STRING,
+        expectDataType: byteAttachment ? http.HttpDataType.ARRAY_BUFFER : http.HttpDataType.STRING,
         usingCache: false
       };
       if (responseLimit !== undefined) {
@@ -125,6 +127,7 @@ export class HttpClient {
         responded: true,
         rawCookies: response.cookies ?? ''
       };
+      if (byteAttachment && response.result instanceof ArrayBuffer) { outcome.bytes = response.result; }
       const responseHeader: Object | undefined = readHeader(response);
       if (responseHeader !== undefined) {
         outcome.responseHeader = responseHeader;

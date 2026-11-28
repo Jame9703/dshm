@@ -20,7 +20,8 @@ import { AuthOutcome, AuthSession, isAuthFailureStatus } from './AuthSession';
 import { RemoteMux } from './RemoteMux';
 import { EventStream, EventStreamPhase } from './EventStream';
 import { ReconnectController } from './Backoff';
-import { parseJson, stringifyJson } from './JsonValue';
+import { getString, parseJson, stringifyJson } from './JsonValue';
+import { parseByteAttachment } from './ByteAttachment';
 import {
   API_CHANNEL,
   checkTarget,
@@ -507,7 +508,7 @@ export class Connection {
     }
 
     const timeoutMs: number = options?.timeoutMs ?? this.options.defaultTimeoutMs;
-    const first: RpcResult = await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit, options?.sensitiveBody);
+    const first: RpcResult = await this.callOnce(address, endpoint, args, timeoutMs, options);
     if (first.ok) {
       return first;
     }
@@ -516,7 +517,7 @@ export class Connection {
     if (shouldRetryAuth && failure !== undefined && isAuthFailureStatus(failure.httpStatus ?? 0)) {
       const rebind: AuthOutcome = await this.rebind();
       if (rebind.ok) {
-        return await this.callOnce(address, endpoint, args, timeoutMs, options?.responseLimit, options?.sensitiveBody);
+        return await this.callOnce(address, endpoint, args, timeoutMs, options);
       }
       return rpcFail(new RemoteFailure('auth/rebind-failed',
         rebind.reason ?? '重新授权失败', rebind.advice ?? ''));
@@ -525,7 +526,7 @@ export class Connection {
   }
 
   private async callOnce(address: HostAddress, endpoint: string, args: Object,
-    timeoutMs: number, responseLimit?: number, sensitiveBody?: boolean): Promise<RpcResult> {
+    timeoutMs: number, options?: CallOptions): Promise<RpcResult> {
     const rpcId: string = randomUuid();
     const body: string | undefined = buildBody(rpcId, endpoint, args);
     if (body === undefined) {
@@ -533,7 +534,7 @@ export class Connection {
     }
     const outcome: HttpOutcome = await this.http.send(
       `${address.baseUrl}${this.surface.apiChannel}/${endpoint}`,
-      address.authority, true, body, timeoutMs, true, responseLimit, sensitiveBody);
+      address.authority, true, body, timeoutMs, true, options?.responseLimit, options?.sensitiveBody, options?.byteAttachment);
 
     if (!outcome.responded) {
       return rpcFail(RemoteFailure.carrier(
@@ -553,6 +554,10 @@ export class Connection {
         `传输失败：HTTP ${outcome.status}（${endpoint}）`
           + (outcome.body.length > 0 ? `：${outcome.body.substring(0, 300)}` : ''),
         outcome.body.substring(0, 200)));
+    }
+    if (outcome.bytes !== undefined) {
+      const type = getString(outcome.responseHeader, 'content-type') ?? getString(outcome.responseHeader, 'Content-Type') ?? '';
+      return parseByteAttachment(outcome.bytes, type, rpcId, endpoint);
     }
     if (outcome.body.length === 0) {
       return rpcFail(RemoteFailure.parse(`空响应体（${endpoint}）`));

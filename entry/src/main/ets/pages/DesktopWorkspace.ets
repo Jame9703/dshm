@@ -4239,6 +4239,7 @@ struct DesktopWorkspace {
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
         sessionId: tab.sourceSessionId ?? this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
         workspaceRoot: this.fileSearchRoot(tab), shown: this.dockTabShown(index, tab.id),
+        interactiveHtml: this.codingTools.enabled,
         preferenceBook: tab.kind === DesktopDockKind.FILES ? this.fileSearchPreferences() : undefined,
         readDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewReader(tab.id) : undefined,
         onDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewWriter(index, tab.id) : undefined,

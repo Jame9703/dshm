@@ -119,4 +119,6 @@ export interface CallOptions {
   responseLimit?: number;
   /** Omit the request body from diagnostic logs. */
   sensitiveBody?: boolean;
+  /** Expect the Host's bounded multipart reply with one `data` bytes attachment. */
+  byteAttachment?: boolean;
 }

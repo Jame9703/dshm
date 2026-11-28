@@ -66,6 +66,18 @@ export class DesktopHostActions {
       { timeoutMs: optionsTimeoutMs, responseLimit: responseLimit, sensitiveBody: sensitiveBody });
   }
 
+  readWorkspaceBytes(sessionId: string, path: string, limit: number): Promise<RpcResult> {
+    const endpoint = 'workspaceFiles/readBytes';
+    const options: Record<string, Object> = {};
+    const body: Record<string, Object> = { 'workspaceFileScopeId': sessionId, 'path': path, 'options': options };
+    const args = argsFor(endpoint, body);
+    if (args === undefined) {
+      return Promise.resolve(rpcFail(new RemoteFailure('unsupported', '当前宿主协议不支持文件字节读取', '')));
+    }
+    return this.connection.call(endpoint, args, { byteAttachment: true, responseLimit: limit + 64 * 1024,
+      sensitiveBody: true });
+  }
+
   editTimeline(payload: Object): Promise<RpcResult> {
     return this.connection.editTimeline(TIMELINE_EDIT_ROUTE, payload);
   }

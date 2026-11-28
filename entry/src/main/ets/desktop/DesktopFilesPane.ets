@@ -16,6 +16,9 @@ import type { DesktopFileNameSpan, DesktopFileSearchNode, DesktopFileSearchResul
 import { DesktopFileSearchSettings } from './DesktopFileSearchSettings';
 import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
 import lazy { DesktopImageFilePreview } from './DesktopImageFilePreview';
+import lazy { DesktopHtmlPreview } from './DesktopHtmlPreview';
+import { DESKTOP_HTML_PACKAGE_BYTES, desktopIsHtmlFile, readDesktopHtmlFile } from './DesktopHtmlFile';
+import type { DesktopHtmlFile } from './DesktopHtmlFile';
 import type { DesktopDocumentViewState } from './DesktopDocumentZoomModel';
 import { copyDesktopReferenceImage, saveDesktopReferenceFile } from './DesktopReferenceActions';
 
@@ -61,6 +64,7 @@ export struct DesktopFilesPane {
   @Prop @Watch('searchVisibilityChanged') shown: boolean = true;
   @Prop @Watch('openRequested') requested: DesktopFileNavigation | undefined = undefined;
   @Prop previewOnly: boolean = false;
+  @Prop interactiveHtml: boolean = false;
   onHide: () => void = (): void => {};
   onOpenFile?: (path: string, name: string) => void;
   readDocumentView?: () => DesktopDocumentViewState | undefined;
@@ -82,6 +86,8 @@ export struct DesktopFilesPane {
   @State private searchNotice: string = '';
   @State private selected?: FileRow = undefined;
   @State private preview?: FilePreview = undefined;
+  @State private htmlFile?: DesktopHtmlFile = undefined;
+  @State private sourceHtml: boolean = false;
   @State private previewUri: string = '';
   @State private previewPath: string = '';
   @State private previewAssetVersion: number = 0;
@@ -150,6 +156,7 @@ export struct DesktopFilesPane {
   private openRequested(): void {
     const file = this.requested;
     if (this.active && file !== undefined && file.path.length > 0) {
+      if (desktopIsHtmlFile(file.name) && this.selected?.path === file.path && this.selected?.name === file.name) { return; }
       this.openPreview({ path: file.path, name: file.name, directory: false, depth: 0, expanded: false, loading: false });
     }
   }
@@ -411,6 +418,8 @@ export struct DesktopFilesPane {
     this.previewRevision++;
     this.selected = undefined;
     this.preview = undefined;
+    this.htmlFile = undefined;
+    this.sourceHtml = false;
     this.previewUri = '';
     this.previewPath = '';
     this.previewNeedsRefresh = false;
@@ -449,6 +458,12 @@ export struct DesktopFilesPane {
     const visualAsset = pdfName(row.name) || imageName(row.name);
     this.previewLoading = !visualAsset || !this.previewPath;
     this.previewError = '';
+    if (desktopIsHtmlFile(row.name) && !this.sourceHtml) {
+      this.preview = undefined;
+      this.htmlFile = undefined;
+      await this.loadHtml(host, row.path, revision);
+      return;
+    }
     if (visualAsset || (previewKindOf(row.name, 0) === PreviewKind.BINARY && isSystemPreviewableName(row.name))) {
       const result = await host.call('workspaceFiles/stat', this.args(row.path));
       if (revision === this.previewRevision) {
@@ -477,6 +492,24 @@ export struct DesktopFilesPane {
         this.previewError = desktopHostProblem(result);
       }
     }
+  }
+
+  private async loadHtml(host: DesktopHostActions, path: string, revision: number): Promise<void> {
+    let file: DesktopHtmlFile | undefined;
+    try { file = await readDesktopHtmlFile(host, this.sessionId, path, DESKTOP_HTML_PACKAGE_BYTES); } catch (_) {}
+    if (!this.active || revision !== this.previewRevision) { return; }
+    this.htmlFile = file;
+    this.previewAssetVersion++;
+    this.previewLoading = false;
+  }
+
+  private toggleHtmlSource(): void {
+    const selected = this.selected;
+    if (selected === undefined) { return; }
+    this.sourceHtml = !this.sourceHtml;
+    this.htmlFile = undefined;
+    this.preview = undefined;
+    this.loadPreview(selected);
   }
 
   private async openSystem(row: FileRow): Promise<void> {
@@ -741,6 +774,19 @@ export struct DesktopFilesPane {
       LoadingProgress().width(25).height(25).margin(15)
     } else if (this.previewError) {
       Text(this.previewError).fontSize(13).fontColor($r('sys.color.warning')).padding(12)
+    } else if (desktopIsHtmlFile(this.selected?.name ?? '') && !this.sourceHtml) {
+      if (this.htmlFile === undefined) {
+        Text($r('app.string.desktop_html_preview_failed')).key('desktopHtmlPreviewProblem')
+          .fontSize(13).fontColor($r('sys.color.warning')).padding(14)
+      } else if (this.shown) {
+        Column() {
+          ForEach([`${this.sessionId}:${this.workspaceRoot}:${this.previewAssetVersion}:${this.interactiveHtml}`],
+            (_key: string): void => {
+              DesktopHtmlPreview({ host: this.host, file: this.htmlFile, sessionId: this.sessionId,
+                workspaceRoot: this.workspaceRoot, interactive: this.interactiveHtml })
+            }, (key: string): string => key)
+        }.width('100%').layoutWeight(1)
+      }
     } else if (this.previewPath && pdfName(this.selected?.name ?? '')) {
       Column() {
         DesktopPdfPreview({ path: this.previewPath, active: this.shown, initialView: this.documentView(),
@@ -797,6 +843,11 @@ export struct DesktopFilesPane {
         Text(this.selected?.name ?? '工作区文件').fontSize(14).fontWeight(FontWeight.Medium)
           .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.selected !== undefined) {
+          if (desktopIsHtmlFile(this.selected.name)) {
+            Button(this.sourceHtml ? $r('app.string.desktop_html_preview_rendered') :
+              $r('app.string.desktop_html_preview_source'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+              .key('desktopHtmlPreviewSource').onClick((): void => { this.toggleHtmlSource(); })
+          }
           if (this.preview?.kind === PreviewKind.MARKDOWN) {
             Button(this.rawMarkdown ? '预览' : '源码', { buttonStyle: ButtonStyleMode.TEXTUAL })
               .onClick((): void => { this.rawMarkdown = !this.rawMarkdown; })

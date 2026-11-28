@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_html_preview_failed", "value": "无法预览此 HTML，可查看源码。" },
+    { "name": "desktop_html_preview_source", "value": "源码" },
+    { "name": "desktop_html_preview_rendered", "value": "预览" }
+  ]
+}

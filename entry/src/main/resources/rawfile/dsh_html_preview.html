@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:; img-src data:; font-src data:; media-src data:; connect-src 'none'; worker-src 'none'; object-src 'none'; frame-src about:; form-action 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document preview</title>
+  <style>
+    html, body, #preview { margin: 0; height: 100%; }
+    iframe { display: block; border: 0; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <main id="preview"></main>
+  <script>
+    (() => {
+      'use strict';
+
+      // This document belongs to the app. Only sandboxed child documents receive file content.
+      const preview = document.getElementById('preview');
+      const htmlNamespace = 'http://www.w3.org/1999/xhtml';
+      const maximumPackageBytes = 32 * 1024 * 1024;
+      const maximumAssetBytes = 4 * 1024 * 1024;
+      const maximumAssets = 64;
+      const childRestrictions = "default-src 'none'; img-src data:; font-src data:; media-src data:; " +
+        "connect-src 'none'; worker-src 'none'; object-src 'none'; frame-src 'none'; " +
+        "form-action 'none'; base-uri 'none'";
+
+      class PreviewError extends Error {}
+
+      function decode(data, limit, description) {
+        if (typeof data !== 'string' || data.length % 4 !== 0) {
+          throw new PreviewError('invalid-base64');
+        }
+        if (data.length > Math.ceil(limit / 3) * 4) {
+          throw new PreviewError(description);
+        }
+        let binary;
+        try {
+          binary = atob(data);
+        } catch {
+          throw new PreviewError('invalid-base64');
+        }
+        if (binary.length > limit) {
+          throw new PreviewError(description);
+        }
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        try {
+          return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), size: bytes.length };
+        } catch {
+          throw new PreviewError('invalid-utf8');
+        }
+      }
+
+      function classic(element) {
+        const type = (element.getAttribute('type') || '').trim().toLowerCase();
+        return element.namespaceURI === htmlNamespace &&
+          (type === '' || type === 'text/javascript' || type === 'application/javascript');
+      }
+
+      function stylesheet(element) {
+        return element.namespaceURI === htmlNamespace &&
+          (element.getAttribute('rel') || '').toLowerCase().split(/\s+/u).includes('stylesheet');
+      }
+
+      function localAsset(element) {
+        const script = element.localName === 'script';
+        if (script ? !classic(element) : !stylesheet(element)) return undefined;
+        const reference = element.getAttribute(script ? 'src' : 'href');
+        if (!reference || reference !== reference.trim() ||
+            /^(?:[a-z][a-z\d+.-]*:|[/\\#?])/iu.test(reference) ||
+            /[\u0000-\u001f\u007f]/u.test(reference)) return undefined;
+        const path = reference.split(/[?#]/u, 1)[0];
+        if (!(script ? /\.js$/iu : /\.css$/iu).test(path)) return undefined;
+        return { kind: script ? 'script' : 'stylesheet', reference };
+      }
+
+      function assetKey(kind, reference) {
+        return kind + '\0' + reference;
+      }
+
+      function declarations(html) {
+        const template = document.createElement('template');
+        template.innerHTML = html;
+        const result = new Map();
+        if (template.content.querySelector('base[href]')) return result;
+        for (const element of template.content.querySelectorAll('script[src], link[href]')) {
+          const entry = localAsset(element);
+          if (entry === undefined) continue;
+          const key = assetKey(entry.kind, entry.reference);
+          if (!result.has(key)) {
+            if (result.size >= maximumAssets) throw new PreviewError('asset-count-limit');
+            result.set(key, entry);
+          }
+        }
+        return result;
+      }
+
+      function suppliedAssets(source, inputs) {
+        if (!Array.isArray(inputs) || inputs.length > maximumAssets) {
+          throw new PreviewError('asset-count-limit');
+        }
+        const output = new Map();
+        if (inputs.length === 0) return output;
+        const declared = declarations(source.text);
+        let size = source.size;
+        for (const input of inputs) {
+          if (input === null || typeof input !== 'object' || typeof input.reference !== 'string' ||
+              (input.kind !== 'script' && input.kind !== 'stylesheet')) {
+            throw new PreviewError('invalid-asset');
+          }
+          const key = assetKey(input.kind, input.reference);
+          if (!declared.has(key) || output.has(key)) {
+            throw new PreviewError('undeclared-asset');
+          }
+          size += decode(input.data, maximumAssetBytes, 'asset-byte-limit').size;
+          if (size > maximumPackageBytes) throw new PreviewError('package-byte-limit');
+          const mime = input.kind === 'script' ? 'text/javascript' : 'text/css';
+          output.set(key, 'data:' + mime + ';charset=utf-8;base64,' + input.data);
+        }
+        return output;
+      }
+
+      function replaceExternalAssets(parsed, assets) {
+        for (const element of parsed.querySelectorAll('script[src], link')) {
+          const entry = localAsset(element);
+          const packed = entry && assets.get(assetKey(entry.kind, entry.reference));
+          if (packed === undefined) {
+            element.remove();
+            continue;
+          }
+          const script = entry.kind === 'script';
+          element.setAttribute(script ? 'src' : 'href', packed);
+        }
+      }
+
+      function discardNavigation(parsed) {
+        for (const element of parsed.querySelectorAll(
+          'base, meta[http-equiv], iframe, frame, frameset, object, embed, portal, fencedframe, noscript'
+        )) element.remove();
+        for (const element of parsed.querySelectorAll('a[href], area[href]')) {
+          if (!element.getAttribute('href').startsWith('#')) element.removeAttribute('href');
+          element.removeAttribute('ping');
+          element.removeAttribute('target');
+          element.removeAttribute('download');
+        }
+        parsed.documentElement.removeAttribute('manifest');
+      }
+
+      function prepare(html, interactive, assets) {
+        // Parse off-tree. Native also blocks network and navigation for this dedicated Web component.
+        const parsed = new DOMParser().parseFromString(html, 'text/html');
+        discardNavigation(parsed);
+        replaceExternalAssets(parsed, assets);
+        for (const script of parsed.querySelectorAll('script')) {
+          if (!interactive || (!classic(script) &&
+              !['application/json', 'application/ld+json', 'text/plain'].includes(
+                (script.getAttribute('type') || '').trim().toLowerCase()))) script.remove();
+        }
+        const policy = parsed.createElement('meta');
+        policy.httpEquiv = 'Content-Security-Policy';
+        policy.content = childRestrictions + (interactive
+          ? "; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:"
+          : "; script-src 'none'; style-src 'unsafe-inline'");
+        parsed.head.prepend(policy);
+        return '<!doctype html>' + parsed.documentElement.outerHTML;
+      }
+
+      function fail(error) {
+        return { ok: false, error: error instanceof PreviewError ? error.message : 'preview-failed' };
+      }
+
+      function inspect(htmlBase64) {
+        try {
+          const source = decode(htmlBase64, maximumPackageBytes, 'package-byte-limit');
+          return { ok: true, assets: Array.from(declarations(source.text).values()) };
+        } catch (error) {
+          return fail(error);
+        }
+      }
+
+      function clear() {
+        preview.replaceChildren();
+        return { ok: true };
+      }
+
+      function render(htmlBase64, interactive, assets = []) {
+        clear();
+        try {
+          const source = decode(htmlBase64, maximumPackageBytes, 'package-byte-limit');
+          const interact = interactive === true;
+          const packed = interact ? suppliedAssets(source, assets) : new Map();
+          const html = prepare(source.text, interact, packed);
+          const frame = document.createElement('iframe');
+          frame.setAttribute('sandbox', interact ? 'allow-scripts' : '');
+          frame.referrerPolicy = 'no-referrer';
+          frame.title = 'Document preview';
+          frame.srcdoc = html;
+          preview.append(frame);
+          return { ok: true };
+        } catch (error) {
+          return fail(error);
+        }
+      }
+
+      Object.defineProperty(window, 'dshHtmlPreview', {
+        value: Object.freeze({ inspect, render, clear })
+      });
+    })();
+  </script>
+</body>
+</html>

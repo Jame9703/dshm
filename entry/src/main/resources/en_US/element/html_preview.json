@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_html_preview_failed", "value": "Could not preview this HTML. You can view the source." },
+    { "name": "desktop_html_preview_source", "value": "Source" },
+    { "name": "desktop_html_preview_rendered", "value": "Preview" }
+  ]
+}
