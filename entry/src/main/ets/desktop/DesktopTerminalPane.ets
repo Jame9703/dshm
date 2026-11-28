@@ -10,7 +10,7 @@ import { DesktopTerminalClient } from './DesktopTerminalClient';
 import { desktopTerminalKeySequence, DesktopTerminalKey } from './DesktopTerminalKeys';
 import { DesktopTerminalSelection } from './DesktopTerminalSelection';
 import type { DesktopTerminalSelectionSpan } from './DesktopTerminalSelection';
-import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
+import type { DesktopShell, DesktopTerminalReplacement, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
   DesktopTerminalState } from './DesktopTerminalClient';
 import type { TerminalCellPaint, TerminalMouseInput, TerminalMouseTracking, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
@@ -58,6 +58,7 @@ export struct DesktopTerminalPane {
   observeRetention?: DesktopTerminalRetentionObserver;
   observeRoster?: DesktopTerminalRosterObserver;
   openInNewTab?: (row: DesktopTerminalRow) => boolean;
+  replaceInPlace?: DesktopTerminalReplacement;
   onHidePanel: () => void = (): void => {};
   onCreateShortcut: () => void = () => {};
   onRename: () => void = () => {};
@@ -178,7 +179,7 @@ export struct DesktopTerminalPane {
       this.selectionActive = frame !== undefined && this.selection.hasSelection(frame);
       this.visibleScreen = this.client?.visibleText() ?? '';
       this.draw();
-    }, this.observeRetention, this.openInNewTab, this.observeRoster);
+    }, this.observeRetention, this.openInNewTab, this.observeRoster, this.replaceInPlace);
     this.client.setFocused(this.inputFocused);
     this.fit();
     this.client.start(this.preferredTerminal);
@@ -297,6 +298,34 @@ export struct DesktopTerminalPane {
       case 'create': client.retryCreate(); break;
       case 'attach': client.reconnect(); break;
       default: break;
+    }
+  }
+
+  @Builder
+  private ReplaceTerminalButton(compact: boolean) {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.EMPHASIZED }) {
+      Row({ space: 5 }) {
+        Image($r('app.media.dsh_reference_menu_plus')).width(15).height(15).supportSvg2(true)
+          .fillColor(Color.White).accessibilityLevel('no')
+        Text($r('app.string.desktop_terminal_chrome_new')).fontSize(13).fontColor(Color.White)
+      }.justifyContent(FlexAlign.Center)
+    }.key('desktopTerminalReplace').height(compact ? 28 : 36).padding({ left: 10, right: 10 })
+      .accessibilityText($r('app.string.desktop_terminal_chrome_new'))
+      .enabled(this.state?.canCreate === true)
+      .onClick((): void => { this.client?.replace(); })
+  }
+
+  @Builder
+  private TerminalProblem() {
+    if (this.state?.error) {
+      Row({ space: 8 }) {
+        Text(this.state.error).fontSize(13).fontColor($r('sys.color.warning')).layoutWeight(1)
+        if (this.state.issue !== 'none' && (this.state.outcome === undefined || this.state.issue !== 'create')) {
+          Button($r('app.string.desktop_terminal_chrome_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopTerminalRecoveryRetry').height(28).enabled(!this.state.busy)
+            .onClick((): void => { this.retryTerminal(); })
+        }
+      }.width('100%').padding(10)
     }
   }
 
@@ -930,7 +959,7 @@ export struct DesktopTerminalPane {
   build() {
     Column() {
       Row({ space: 3 }) {
-        if (this.state?.selected) {
+        if (this.state?.selected && this.state.outcome !== 'missing') {
           Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
             DesktopTerminalTitle({ title: this.selected()?.title ?? '',
               agentControlled: this.selected()?.origin === 'agent' && this.selected()?.control === 'agent',
@@ -965,7 +994,22 @@ export struct DesktopTerminalPane {
       }
       .width('100%').height(42).padding({ left: 10, right: 7 })
       .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
-      if (this.state?.selected) {
+      if (this.state?.outcome === 'missing') {
+        Column({ space: 12 }) {
+          Image($r('app.media.dsh_terminal_missing')).width(36).height(36).accessibilityLevel('no')
+          Text($r('app.string.desktop_terminal_missing')).key('desktopTerminalMissing')
+            .fontSize(14).fontColor($r('sys.color.font_secondary')).textAlign(TextAlign.Center)
+          this.ReplaceTerminalButton(false)
+          this.TerminalProblem()
+        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).padding(12)
+      } else if (this.state?.selected) {
+        if (this.state.outcome === 'exited') {
+          Row({ space: 8 }) {
+            Text($r('app.string.desktop_terminal_exited', this.state.exitCode?.toString() ?? '—'))
+              .key('desktopTerminalExited').fontSize(13).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
+            this.ReplaceTerminalButton(true)
+          }.width('100%').padding(10)
+        }
         if (this.state.canTakeInput) {
           Row({ space: 8 }) {
             Text($r('app.string.desktop_terminal_view_readonly')).fontSize(13)
@@ -974,16 +1018,7 @@ export struct DesktopTerminalPane {
               .key('desktopTerminalTakeInput').height(28).onClick((): void => { this.client?.reconnect(); })
           }.width('100%').padding(10)
         }
-        if (this.state.error) {
-          Row({ space: 8 }) {
-            Text(this.state.error).fontSize(13).fontColor($r('sys.color.warning')).layoutWeight(1)
-            if (this.state.issue !== 'none') {
-              Button($r('app.string.desktop_terminal_chrome_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-                .key('desktopTerminalRecoveryRetry').height(28).enabled(!this.state.busy)
-                .onClick((): void => { this.retryTerminal(); })
-            }
-          }.width('100%').padding(10)
-        }
+        this.TerminalProblem()
         this.TerminalScreen()
       } else {
         Column() {

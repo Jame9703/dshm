@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "desktop_terminal_exited", "value": "Process exited (%1$s)" },
+    { "name": "desktop_terminal_missing", "value": "This terminal no longer exists. Open a new terminal." }
+  ]
+}

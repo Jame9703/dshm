@@ -1,7 +1,7 @@
 import { getString } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 
-type TerminalRetentionListener = (problem: string) => void;
+type TerminalRetentionListener = (problem: string, code?: string) => void;
 
 interface DesktopTerminalHold {
   sessionId: string;
@@ -91,7 +91,7 @@ export class DesktopTerminalRetentions {
         hold.stop = undefined;
         hold.ready = false;
         if (code.startsWith('carrier/')) { return; }
-        this.fail(hold, message || '无法保留终端');
+        this.fail(hold, message || '无法保留终端', code);
       },
       onEnd: (): void => {
         if (generation !== hold.generation) { return; }
@@ -102,9 +102,9 @@ export class DesktopTerminalRetentions {
     });
   }
 
-  private fail(hold: DesktopTerminalHold, problem: string): void {
+  private fail(hold: DesktopTerminalHold, problem: string, code?: string): void {
     hold.problem = problem;
-    hold.listeners.forEach((listener: TerminalRetentionListener): void => listener(problem));
+    hold.listeners.forEach((listener: TerminalRetentionListener): void => listener(problem, code));
   }
 
   private release(hold: DesktopTerminalHold): void {

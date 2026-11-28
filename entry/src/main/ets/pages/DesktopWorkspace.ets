@@ -96,6 +96,7 @@ import type { DesktopNativeDestination, DesktopPluginLocation, DesktopWebDestina
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
 import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
+  desktopWorkspaceSelectionHost, readDesktopWorkspaceSelection, saveDesktopWorkspaceSelection,
   WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
 import { DEFAULT_DESKTOP_TYPOGRAPHY, sameDesktopTypography } from '../desktop/DesktopTheme';
 import type { DesktopTheme, DesktopTypography } from '../desktop/DesktopTheme';
@@ -194,6 +195,8 @@ struct DesktopWorkspace {
   @LocalStorageLink('dshDesktopWorkspaceActive') private active: boolean = false;
   @LocalStorageLink('dshDesktopWorkspaceId') private workspaceId: string = '';
   @LocalStorageLink('dshDesktopSessionId') private sessionId: string = '';
+  @LocalStorageLink('dshDesktopSelectionHost') private selectionHost: string = '';
+  private savedSessionId?: string;
   @LocalStorageLink('dshDesktopWebHandoff') private webHandoff: string = '';
   @LocalStorageLink('dshDesktopNativeHandoff') private nativeHandoff: string = '';
   private nativeSelectionVersion: number = 0;
@@ -541,6 +544,16 @@ struct DesktopWorkspace {
     if (!this.pageActive) {
       return;
     }
+    const host = desktopWorkspaceSelectionHost(this.hostUrl);
+    if (host && host !== this.selectionHost) {
+      if (this.selectionHost) {
+        this.nativeSelectionVersion++;
+        this.sessionId = '';
+        this.workspaceId = '';
+      }
+      this.selectionHost = host;
+      this.savedSessionId = undefined;
+    }
     this.closeAccount();
     this.resetAccountSessionToasts();
     this.resetAccountOnboarding();
@@ -730,10 +743,11 @@ struct DesktopWorkspace {
       this.restoreWebSelection(selection);
     } else if (this.archivedIds.includes(this.sessionId) || (this.selectedSubagent === undefined &&
       !sessions.some((session: SessionListItem): boolean => session.id === this.sessionId))) {
-      this.clearSession();
+      this.clearSession(this.sessionId.length > 0);
       this.selectedWorkspaceTitle =
         this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
     }
+    if (!this.ready && destination === undefined && !this.sessionId) { this.restoreSavedSessionAfterFrame(); }
     if (!this.ready && !this.sidebarExpansionLoaded) {
       const first = this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId) ??
         this.groups[0];
@@ -750,9 +764,42 @@ struct DesktopWorkspace {
     if (destination?.plugin !== undefined) { this.openPlugins('', '', '', destination.plugin); }
   }
 
+  private rememberSession(sessionId: string): void {
+    if (!this.selectionHost || this.savedSessionId === sessionId) { return; }
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) { return; }
+    const host = this.selectionHost;
+    this.savedSessionId = sessionId;
+    saveDesktopWorkspaceSelection(context, host, sessionId).then((saved: boolean): void => {
+      if (!saved && this.selectionHost === host && this.savedSessionId === sessionId) { this.savedSessionId = undefined; }
+    });
+  }
+
+  private restoreSavedSessionAfterFrame(): void {
+    const owner = this.data;
+    const host = this.selectionHost;
+    const version = this.nativeSelectionVersion;
+    if (owner === undefined || !host) { return; }
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      if (!this.pageActive || !this.ready || this.data !== owner || this.selectionHost !== host || this.sessionId ||
+        this.nativeSelectionVersion !== version || this.panel !== 'session' || this.switching || this.creating ||
+        this.workspaceBusy || this.searchOpen || this.settingsOpen || this.accountDialog >= 0) { return; }
+      const context = this.getUIContext().getHostContext();
+      if (context === undefined) { return; }
+      const id = readDesktopWorkspaceSelection(context, host);
+      this.savedSessionId = id;
+      if (!id) { return; }
+      const row = this.sessionSummaries.find((session: SessionListItem): boolean => session.id === id);
+      if (row === undefined || row.blank || desktopSubagentFromSummary(row) !== undefined ||
+        !this.openSessionById(id, false)) {
+        this.rememberSession('');
+      }
+    }));
+  }
+
   private restoreWebSelection(destination: DesktopNativeDestination): void {
     if (!destination.parentId && destination.sessionId && this.openSessionById(destination.sessionId, false)) { return; }
-    this.clearSession();
+    this.clearSession(true);
     this.selectedWorkspaceTitle =
       this.groups.find((group: DesktopWorkspaceGroup): boolean => group.id === this.workspaceId)?.title ?? '';
     if (destination.parentId) {
@@ -1398,6 +1445,8 @@ struct DesktopWorkspace {
     }
     this.sessionId = session.id;
     this.selectedSubagent = subagent;
+    if (subagent === undefined && !session.blank) { this.rememberSession(session.id); }
+    else if (changing) { this.rememberSession(''); }
     this.workspaceId = group.id;
     this.selectedTitle = this.sessionLabel(session);
     this.selectedSessionDirectory = session.cwd;
@@ -1459,8 +1508,9 @@ struct DesktopWorkspace {
     if (this.sessionId === session) { this.draft = value; }
   }
 
-  private clearSession(): void {
-    if (this.sessionId) { this.nativeSelectionVersion++; }
+  private clearSession(forgetSaved: boolean = false): void {
+    if (this.sessionId || forgetSaved) { this.nativeSelectionVersion++; }
+    if (forgetSaved) { this.rememberSession(''); }
     this.terminalRename = undefined;
     this.closeFeedback();
     this.closeImagePreview();
@@ -2231,6 +2281,15 @@ struct DesktopWorkspace {
     return true;
   }
 
+  private replaceDockTerminal(sessionId: string, tabId: string, oldId: string, row: DesktopTerminalRow): boolean {
+    if (!this.pageActive || sessionId !== this.sessionId || !oldId || !row.id || oldId === row.id ||
+      this.closingDockTerminals.has(JSON.stringify([sessionId, oldId]))) { return false; }
+    const next = desktopDockBindTerminal(this.rightDock, tabId, row.id, row.title, oldId);
+    if (next === this.rightDock) { return false; }
+    this.setDock(next);
+    return true;
+  }
+
   private showArtifact(path: string, name: string, sessionId: string = this.sessionId): void {
     if (!path) { return; }
     const source = sessionId === this.sessionId ? undefined : sessionId;
@@ -2350,7 +2409,7 @@ struct DesktopWorkspace {
 
   private pickWorkspace(group: DesktopWorkspaceGroup): void {
     if (group.id !== this.workspaceId) {
-      this.clearSession();
+      this.clearSession(true);
     }
     this.workspaceId = group.id;
     this.selectedWorkspaceTitle = group.title;
@@ -2385,7 +2444,7 @@ struct DesktopWorkspace {
         ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
         return;
       }
-      this.clearSession();
+      this.clearSession(true);
       this.workspaceId = id;
       this.panel = 'session';
       this.expandedIds = [...this.expandedIds.filter((value: string): boolean => value !== id), id];
@@ -3606,7 +3665,7 @@ struct DesktopWorkspace {
                 }
               },
               onAccount: (id: string): void => {
-                if (this.data?.accountNotices.openAccount(id)) { this.openAccount(); }
+                if (this.data?.accountNotices.openAccount(id)) { this.openSettings('account'); }
               },
               onDismiss: (id: string): void => { this.data?.accountNotices.dismiss(id); }
             })
@@ -4330,7 +4389,7 @@ struct DesktopWorkspace {
         focusEligible: this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id : index === this.rightDock.focus,
         cellFontSize: this.typography.terminalSize, cellFontFamily: this.typography.terminalFamily,
         preferredTerminal: tab.terminalId ?? '',
-        observeRetention: (id: string, listener: (problem: string) => void): (() => void) => {
+        observeRetention: (id: string, listener: (problem: string, code?: string) => void): (() => void) => {
           return this.data?.terminalRetentions.observe(this.sessionId, id, listener) ?? (() => {});
         },
         observeRoster: (sink: DesktopTerminalRosterSink): (() => void) => {
@@ -4341,6 +4400,9 @@ struct DesktopWorkspace {
         onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
         onRename: (): void => { this.startTerminalRename(index, tab.id); },
         openInNewTab: (row: DesktopTerminalRow): boolean => this.openDockTerminal(index, tab.id, row),
+        replaceInPlace: (sessionId: string, oldId: string, row: DesktopTerminalRow): boolean => {
+          return this.replaceDockTerminal(sessionId, tab.id, oldId, row);
+        },
         onTerminalSelected: (sessionId: string, id: string, title: string): void => {
           if (sessionId !== this.sessionId) { return; }
           if (!id && tab.id !== DesktopDockKind.TERMINAL) { this.removeDockTab(index, tab.id); }

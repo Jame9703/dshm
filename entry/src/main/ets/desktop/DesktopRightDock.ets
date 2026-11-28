@@ -117,11 +117,13 @@ export function desktopDockTerminalIds(layout: DesktopDockLayout): string[] {
 }
 
 export function desktopDockBindTerminal(layout: DesktopDockLayout, tabId: string, terminalId: string,
-  title: string = ''): DesktopDockLayout {
+  title: string = '', previousTerminalId?: string): DesktopDockLayout {
   const match = (tab: DesktopDockTab): boolean => tab.kind === DesktopDockKind.TERMINAL && tab.id === tabId;
   const current = layout.panes.flatMap((pane: DesktopDockPane): DesktopDockTab[] => pane.tabs).find(match) ??
     layout.floats.find((panel: DesktopDockFloat): boolean => match(panel.tab))?.tab;
-  if (current === undefined) { return layout; }
+  if (current === undefined || (previousTerminalId !== undefined && current.terminalId !== previousTerminalId)) {
+    return layout;
+  }
   const nextTitle = terminalId ? title || current.title : '终端';
   if ((current.terminalId ?? '') === terminalId && current.title === nextTitle) { return layout; }
   const next = copyDock(layout);

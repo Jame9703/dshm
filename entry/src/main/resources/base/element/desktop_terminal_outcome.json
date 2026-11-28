@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "desktop_terminal_exited", "value": "进程已退出（%1$s）" },
+    { "name": "desktop_terminal_missing", "value": "此终端已不存在，请新建终端。" }
+  ]
+}

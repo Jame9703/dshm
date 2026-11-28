@@ -15,6 +15,7 @@ export interface DesktopTerminalRow {
   id: string;
   title: string;
   state: string;
+  exitCode?: number;
   cwd: string;
   origin?: string;
   control?: string;
@@ -33,6 +34,8 @@ export interface DesktopTerminalState {
   busy: boolean;
   error: string;
   issue: DesktopTerminalIssue;
+  outcome?: 'exited' | 'missing';
+  exitCode?: number;
   canCreate: boolean;
   shellProblem: string;
   shellsLoading: boolean;
@@ -41,6 +44,7 @@ export interface DesktopTerminalState {
 interface DesktopTerminalCreateAttempt {
   id: string;
   shellPath: string;
+  replacement: string;
   request: Record<string, Object>;
 }
 
@@ -59,8 +63,9 @@ interface ClosingTerminalFocus {
   timer: number;
 }
 
-export type DesktopTerminalRetentionObserver = (id: string, listener: (problem: string) => void) => () => void;
+export type DesktopTerminalRetentionObserver = (id: string, listener: (problem: string, code?: string) => void) => () => void;
 export type DesktopTerminalRosterObserver = (sink: DesktopTerminalRosterSink) => () => void;
+export type DesktopTerminalReplacement = (sessionId: string, oldId: string, row: DesktopTerminalRow) => boolean;
 
 const MAX_INPUT_QUEUE: number = 32768;
 const ACK_TIMEOUT_MS: number = 10000;
@@ -91,11 +96,14 @@ export class DesktopTerminalClient {
   private readonly observeRetention?: DesktopTerminalRetentionObserver;
   private readonly openInNewTab?: (row: DesktopTerminalRow) => boolean;
   private readonly observeRoster?: DesktopTerminalRosterObserver;
+  private readonly replaceInPlace?: DesktopTerminalReplacement;
   private live: boolean = true;
   private shown: boolean = true;
   private terminals: DesktopTerminalRow[] = [];
   private shells: DesktopShell[] = [];
   private selected: string = '';
+  private exited?: DesktopTerminalRow;
+  private missing: string = '';
   private writable: boolean = false;
   private focused: boolean = false;
   private loading: boolean = true;
@@ -108,6 +116,7 @@ export class DesktopTerminalClient {
   private unseenCreation?: DesktopTerminalRow;
   private checkingRosterId: string = '';
   private lastShellPath: string = '';
+  private lastReplacement: string = '';
   private shellProblem: string = '';
   private shellsLoading: boolean = false;
   private cols: number = DEFAULT_COLS;
@@ -138,7 +147,7 @@ export class DesktopTerminalClient {
   constructor(host: DesktopHostActions, sessionId: string,
     onState: (view: DesktopTerminalState) => void, onDraw: (frame: TerminalPaintFrame | undefined) => void,
     observeRetention?: DesktopTerminalRetentionObserver, openInNewTab?: (row: DesktopTerminalRow) => boolean,
-    observeRoster?: DesktopTerminalRosterObserver) {
+    observeRoster?: DesktopTerminalRosterObserver, replaceInPlace?: DesktopTerminalReplacement) {
     this.host = host;
     this.sessionId = sessionId;
     this.onState = onState;
@@ -146,6 +155,7 @@ export class DesktopTerminalClient {
     this.observeRetention = observeRetention;
     this.openInNewTab = openInNewTab;
     this.observeRoster = observeRoster;
+    this.replaceInPlace = replaceInPlace;
   }
 
   async start(preferredId: string): Promise<void> {
@@ -232,32 +242,39 @@ export class DesktopTerminalClient {
     this.shown = shown;
     if (shown) {
       this.openWatch();
-      if (this.selected) { this.select(this.selected); }
+      if (this.selected && (this.exited === undefined || this.emulator === undefined)) { this.select(this.selected); }
     } else {
       this.stopWatch?.();
       this.stopWatch = undefined;
       this.stopObservingRetention();
-      this.detach(false, true);
+      this.detach(this.selectedRow()?.state === 'exited', true);
     }
   }
 
-  async create(shellPath: string = ''): Promise<void> {
-    if (!this.live || this.busy || !this.discovered) {
+  replace(): Promise<void> {
+    const id = this.selected;
+    return id && (this.missing === id || this.selectedRow()?.state === 'exited') ?
+      this.create('', id) : Promise.resolve();
+  }
+
+  async create(shellPath: string = '', replacement: string = ''): Promise<void> {
+    if (!this.live || this.busy || !this.discovered || (replacement && replacement !== this.selected)) {
       return;
     }
     this.busy = true;
     this.lastShellPath = shellPath;
+    this.lastReplacement = replacement;
     this.error = '';
     this.issue = 'none';
     this.publish();
     let attempt = this.createAttempt;
-    if (attempt === undefined || attempt.shellPath !== shellPath) {
+    if (attempt === undefined || attempt.shellPath !== shellPath || attempt.replacement !== replacement) {
       const id = 'native-' + randomUuid();
       const request: Record<string, Object> = {
         'id': id, 'cols': Math.min(this.maxCols, this.desiredCols), 'rows': Math.min(this.maxRows, this.desiredRows)
       };
       if (shellPath) { request['shellPath'] = shellPath; }
-      attempt = { id: id, shellPath: shellPath, request: request };
+      attempt = { id: id, shellPath: shellPath, replacement: replacement, request: request };
       this.createAttempt = attempt;
     }
     const result = await this.host.call('terminal/create', { 'agentId': this.sessionId, 'request': attempt.request });
@@ -281,7 +298,7 @@ export class DesktopTerminalClient {
     this.adopt(row);
   }
 
-  retryCreate(): void { this.create(this.lastShellPath); }
+  retryCreate(): void { this.create(this.lastShellPath, this.lastReplacement); }
 
   async retryShells(): Promise<void> {
     if (!this.live || this.shellsLoading || !this.discovered) { return; }
@@ -312,11 +329,25 @@ export class DesktopTerminalClient {
   }
 
   private adopt(row: DesktopTerminalRow): void {
+    const replacement = this.createAttempt?.replacement ?? '';
     this.createAttempt = undefined;
     this.issue = 'none';
     this.error = '';
     if (!this.terminals.some((item: DesktopTerminalRow): boolean => item.id === row.id)) {
       this.terminals = [...this.terminals, row];
+    }
+    if (replacement) {
+      if (this.selected !== replacement || this.replaceInPlace?.(this.sessionId, replacement, row) === false) {
+        this.publish();
+        return;
+      }
+      const ended = this.selectedRow()?.state === 'exited' && this.missing !== replacement;
+      this.select(row.id);
+      if (ended) {
+        // Closing the replaced occurrence releases its finished Host screen, never the new terminal.
+        this.host.call('terminal/close', { 'agentId': this.sessionId, 'id': replacement }).catch((): void => {});
+      }
+      return;
     }
     if (this.openInNewTab?.(row) === true) { this.publish(); return; }
     if (row.id === this.selected && this.stream !== undefined) { this.publish(); }
@@ -348,17 +379,24 @@ export class DesktopTerminalClient {
     if (!this.live || !id || (!force && id === this.selected && this.stream !== undefined)) {
       return;
     }
+    const same = id === this.selected;
+    if (same && (this.missing === id || (this.exited !== undefined && this.emulator !== undefined))) { return; }
     this.stopObservingRetention();
-    this.detach(force && id === this.selected, id !== this.selected);
+    this.detach(same && (force || this.selectedRow()?.state === 'exited'), !same);
     this.selected = id;
+    if (!same) {
+      this.missing = '';
+      this.exited = undefined;
+      this.recordExit(this.selectedRow());
+    }
     this.error = '';
     this.issue = 'none';
     this.publish();
     if (!this.shown) { return; }
     if (this.observeRetention === undefined) { this.attachSelected(id); return; }
-    this.stopRetentionObservation = this.observeRetention(id, (problem: string): void => {
-      if (!this.live || this.selected !== id) { return; }
-      if (problem) { this.ended(this.generation, problem); }
+    this.stopRetentionObservation = this.observeRetention(id, (problem: string, code?: string): void => {
+      if (!this.live || this.selected !== id || this.missing === id) { return; }
+      if (problem) { this.ended(this.generation, problem, code); }
       else if (this.stream === undefined) { this.attachSelected(id); }
     });
   }
@@ -378,7 +416,7 @@ export class DesktopTerminalClient {
           this.receiveClosingFocus(generation, value);
         }
       },
-      onError: (_code: string, message: string): void => { this.ended(generation, message); },
+      onError: (code: string, message: string): void => { this.ended(generation, message, code); },
       onEnd: (): void => { this.ended(generation, '终端连接已结束'); }
     });
     this.stream = result;
@@ -487,9 +525,27 @@ export class DesktopTerminalClient {
       id: getString(value, 'id') ?? '',
       title: getString(value, 'title') || getString(shell, 'name') || '终端',
       state: getString(value, 'state') ?? '',
+      exitCode: getNumber(value, 'exitCode'),
       cwd: getString(value, 'cwd') ?? '', origin: getString(value, 'origin'),
       control: getString(value, 'control'), sandboxMode: getString(value, 'sandboxMode')
     };
+  }
+
+  private selectedRow(): DesktopTerminalRow | undefined {
+    if (this.exited !== undefined) { return this.exited; }
+    return this.terminals.find((row: DesktopTerminalRow): boolean => row.id === this.selected);
+  }
+
+  private recordExit(row?: DesktopTerminalRow): void {
+    if (row?.state !== 'exited' || row.id !== this.selected) { return; }
+    if (this.exited === undefined || this.exited.exitCode === undefined || row.exitCode !== undefined) {
+      this.exited = row;
+    }
+    this.writable = false;
+    if (this.issue === 'attach') {
+      this.error = '';
+      this.issue = 'none';
+    }
   }
 
   private setTerminals(items: Object[]): void {
@@ -506,6 +562,7 @@ export class DesktopTerminalClient {
       this.unseenCreation = undefined;
       this.terminals = rows;
     }
+    this.recordExit(rows.find((row: DesktopTerminalRow): boolean => row.id === this.selected));
     if (!this.busy && this.issue === 'create') {
       const retained = this.retainedAttempt();
       if (retained !== undefined) { this.adopt(retained); return; }
@@ -541,6 +598,8 @@ export class DesktopTerminalClient {
   private forgetSelection(): void {
     this.stopObservingRetention();
     this.selected = '';
+    this.exited = undefined;
+    this.missing = '';
     this.detach(false, true);
   }
 
@@ -549,6 +608,7 @@ export class DesktopTerminalClient {
     if (value === undefined) { return; }
     const update = this.project(value);
     if (!update.id || update.id !== this.selected) { return; }
+    this.recordExit(update);
     this.terminals = this.terminals.some((row: DesktopTerminalRow): boolean => row.id === update.id) ?
       this.terminals.map((row: DesktopTerminalRow): DesktopTerminalRow => row.id === update.id ? update : row) :
       [...this.terminals, update];
@@ -558,7 +618,7 @@ export class DesktopTerminalClient {
     const kind = getString(value, 'type');
     if (kind === 'snapshot') {
       this.updateTerminalInfo(getRecord(value, 'info'));
-      this.writable = getBoolean(value, 'writable') === true;
+      this.writable = getBoolean(value, 'writable') === true && this.selectedRow()?.state !== 'exited';
       this.maxFrameBytes = getNumber(getRecord(value, 'inputWindow'), 'maxFrameBytes') ?? this.maxFrameBytes;
       this.lastOutput = getNumber(value, 'sequence') ?? 0;
       this.emulator?.dispose();
@@ -581,8 +641,8 @@ export class DesktopTerminalClient {
       this.lastOutput = sequence;
       this.paintText(getString(value, 'data') ?? '');
     } else if (kind === 'state') {
-      this.writable = getBoolean(value, 'writable') === true;
       this.updateTerminalInfo(getRecord(value, 'info'));
+      this.writable = getBoolean(value, 'writable') === true && this.selectedRow()?.state !== 'exited';
       this.requestResize();
       this.publish();
       this.draw();
@@ -691,12 +751,18 @@ export class DesktopTerminalClient {
     }, 16);
   }
 
-  private ended(generation: number, message: string): void {
+  private ended(generation: number, message: string, code?: string): void {
     if (this.closeFocusStream(generation)) { return; }
     if (this.live && this.generation === generation) {
-      this.detach(true);
-      this.error = message;
-      this.issue = 'attach';
+      if (code === 'terminal/unavailable') { this.missing = this.selected; }
+      const missing = this.missing.length > 0 && this.missing === this.selected;
+      const exited = this.selectedRow()?.state === 'exited';
+      this.detach(!missing);
+      if (exited && !missing) { this.draw(); }
+      if (this.issue !== 'create') {
+        this.error = missing || exited ? '' : message;
+        this.issue = missing || exited ? 'none' : 'attach';
+      }
       this.publish();
     }
   }
@@ -765,12 +831,15 @@ export class DesktopTerminalClient {
 
   private publish(): void {
     if (this.live) {
+      const selected = this.selectedRow();
+      const outcome = this.missing.length > 0 && this.missing === this.selected ? 'missing' :
+        selected?.state === 'exited' ? 'exited' : undefined;
       this.onState({
         terminals: this.terminals, shells: this.shells, selected: this.selected,
-        writable: this.writable, canTakeInput: !this.writable && this.lastOutput >= 0 && this.terminals.some(
-          (row: DesktopTerminalRow): boolean => row.id === this.selected && row.state === 'running'),
+        writable: this.writable, canTakeInput: !this.writable && this.lastOutput >= 0 && selected?.state === 'running',
         loading: this.loading, busy: this.busy, error: this.error,
         issue: this.issue, canCreate: this.discovered && !this.loading && !this.busy,
+        outcome: outcome, exitCode: selected?.exitCode,
         shellProblem: this.shellProblem, shellsLoading: this.shellsLoading
       });
     }

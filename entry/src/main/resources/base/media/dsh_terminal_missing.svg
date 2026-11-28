@@ -1,0 +1,5 @@
+<!-- DeepSeek WebUI terminal empty-state icon, Copyright (c) 2026 DeepSeek, MIT. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" fill="none">
+  <rect x="3" y="5" width="22" height="19" rx="3" fill="#17191d"/>
+  <path d="m8 10 4 4-4 4M15 18h5" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
