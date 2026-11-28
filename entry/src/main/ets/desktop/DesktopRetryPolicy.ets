@@ -44,8 +44,10 @@ export struct DesktopRetryPolicy {
   @Prop path: string[] = [];
   @Prop draftOnly: boolean = false;
   @Prop parentBusy: boolean = false;
+  @Prop @Watch('suppliedDocumentChanged') suppliedDocument?: DesktopRetryDocument = undefined;
   onSaved: () => void = (): void => {};
   onDraft?: (value: DesktopNewRetryPolicy) => void;
+  onOperations?: (value: DesktopRetryChange) => void;
   onFallback?: () => void;
   @State private document?: DesktopRetryDocument = undefined;
   @State private draft: DesktopRetryDraft = desktopRetryDraft();
@@ -58,7 +60,12 @@ export struct DesktopRetryPolicy {
   @State private backoffOpen: boolean = false;
   private revision: number = 0;
 
-  aboutToAppear(): void { this.load(); }
+  aboutToAppear(): void {
+    if (this.suppliedDocument !== undefined) { this.applyDocument(this.suppliedDocument); }
+    else { this.load(); }
+  }
+
+  private suppliedDocumentChanged(): void { this.applyDocument(this.suppliedDocument); }
 
   aboutToDisappear(): void { this.revision++; }
 
@@ -73,7 +80,10 @@ export struct DesktopRetryPolicy {
     if (revision !== this.revision) { return; }
     this.loading = false;
     if (!response.ok) { this.failure = desktopHostProblem(response); return; }
-    const document = readDesktopRetryDocument(response.value, this.namespace, this.path);
+    this.applyDocument(readDesktopRetryDocument(response.value, this.namespace, this.path));
+  }
+
+  private applyDocument(document?: DesktopRetryDocument): void {
     this.unsupported = document === undefined;
     this.conflict = false;
     this.document = document;
@@ -81,6 +91,10 @@ export struct DesktopRetryPolicy {
     this.customCode = '';
     this.backoffOpen = ['backoff.initialDelayMs', 'backoff.maxDelayMs', 'backoff.jitterRatio']
       .some((key: string): boolean => !!this.draft.texts[key]);
+    if (this.onOperations !== undefined) {
+      const change = this.currentChange();
+      this.onOperations({ operations: [], problem: change.problem, problemField: change.problemField });
+    }
   }
 
   private canEdit(): boolean {
@@ -102,9 +116,11 @@ export struct DesktopRetryPolicy {
   }
 
   private updateDraft(draft: DesktopRetryDraft): void {
+    if (this.onOperations !== undefined && JSON.stringify(draft) === JSON.stringify(this.draft)) { return; }
     this.draft = draft;
     const document = this.document;
     if (this.draftOnly && document !== undefined) { this.onDraft?.(desktopNewRetryPolicy(document, draft)); }
+    this.onOperations?.(this.currentChange());
   }
 
   private modeItems(): MenuElement[] {

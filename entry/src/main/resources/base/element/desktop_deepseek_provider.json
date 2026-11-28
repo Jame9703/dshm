@@ -1,0 +1,120 @@
+{
+  "string": [
+    {
+      "name": "desktop_deepseek_provider",
+      "value": "DeepSeek API"
+    },
+    {
+      "name": "desktop_deepseek_route",
+      "value": "deepseek-official"
+    },
+    {
+      "name": "desktop_deepseek_account",
+      "value": "DeepSeek 账号"
+    },
+    {
+      "name": "desktop_deepseek_signed_in",
+      "value": "已登录"
+    },
+    {
+      "name": "desktop_deepseek_key_configured",
+      "value": "密钥已配置"
+    },
+    {
+      "name": "desktop_deepseek_edit",
+      "value": "编辑"
+    },
+    {
+      "name": "desktop_deepseek_advanced",
+      "value": "自定义设置"
+    },
+    {
+      "name": "desktop_deepseek_endpoint",
+      "value": "API 地址"
+    },
+    {
+      "name": "desktop_deepseek_endpoint_placeholder",
+      "value": "https://api.deepseek.com/anthropic（默认使用 DEEPSEEK_BASE_URL）"
+    },
+    {
+      "name": "desktop_deepseek_endpoint_hint",
+      "value": "请填写兼容 Anthropic Messages 协议的 API 地址。"
+    },
+    {
+      "name": "desktop_deepseek_endpoint_invalid",
+      "value": "请输入有效的 HTTP 或 HTTPS 地址。"
+    },
+    {
+      "name": "desktop_deepseek_key_label",
+      "value": "API 密钥"
+    },
+    {
+      "name": "desktop_deepseek_auth_help",
+      "value": "认证方式说明"
+    },
+    {
+      "name": "desktop_deepseek_key_help",
+      "value": "此提供方通过 %1$s 读取 API 密钥。"
+    },
+    {
+      "name": "desktop_deepseek_key_placeholder",
+      "value": "留空使用现有密钥或 %1$s"
+    },
+    {
+      "name": "desktop_deepseek_key_saved",
+      "value": "使用已保存的 API 密钥。"
+    },
+    {
+      "name": "desktop_deepseek_key_replace",
+      "value": "保存后将替换现有 API 密钥。"
+    },
+    {
+      "name": "desktop_deepseek_key_clear",
+      "value": "清除已保存的密钥"
+    },
+    {
+      "name": "desktop_deepseek_key_keep",
+      "value": "保留已保存的密钥"
+    },
+    {
+      "name": "desktop_deepseek_key_queued",
+      "value": "保存后将清除文件里的密钥，并改用环境认证。"
+    },
+    {
+      "name": "desktop_deepseek_key_removed",
+      "value": "已清除保存的 API 密钥。"
+    },
+    {
+      "name": "desktop_deepseek_key_blank",
+      "value": "API 密钥不能只有空白。"
+    },
+    {
+      "name": "desktop_deepseek_key_format",
+      "value": "请只粘贴密钥值，去掉引号、变量名和内部空格。"
+    },
+    {
+      "name": "desktop_deepseek_key_after_settings",
+      "value": "设置已保存，密钥写入失败。%1$s"
+    },
+    {
+      "name": "desktop_deepseek_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "desktop_deepseek_save",
+      "value": "保存"
+    },
+    {
+      "name": "desktop_deepseek_reload",
+      "value": "重新加载"
+    },
+    {
+      "name": "desktop_deepseek_unavailable",
+      "value": "宿主未提供 DeepSeek API 设置。"
+    },
+    {
+      "name": "desktop_deepseek_save_failed",
+      "value": "未能保存 DeepSeek API 设置。"
+    }
+  ]
+}

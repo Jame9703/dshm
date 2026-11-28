@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "desktop_deepseek_catalog_title",
+      "value": "Models"
+    },
+    {
+      "name": "desktop_deepseek_catalog_add",
+      "value": "Add model"
+    },
+    {
+      "name": "desktop_deepseek_catalog_capacity_inherited",
+      "value": "Uses the provider default"
+    },
+    {
+      "name": "desktop_deepseek_catalog_id_required",
+      "value": "Model %1$s. Model ID is required."
+    },
+    {
+      "name": "desktop_deepseek_catalog_id_duplicate",
+      "value": "Model %1$s. Model ID must be unique."
+    },
+    {
+      "name": "desktop_deepseek_catalog_context_invalid",
+      "value": "Model %1$s. Context window must be a positive count, like 131072, 256K, or 1M."
+    },
+    {
+      "name": "desktop_deepseek_catalog_output_invalid",
+      "value": "Model %1$s. Max output tokens must be a positive count, like 8192, 64K, or 1M."
+    }
+  ]
+}

@@ -1695,13 +1695,14 @@ export class SessionHub {
     return `默认模型已设为 ${provider} / ${model}${effort.length > 0 ? ` · 推理强度 ${effort}` : ''}。新会话会用它。`;
   }
 
+  readSettingsDescription(): Promise<RpcResult> {
+    const args: Record<string, Object> = {};
+    return this.conn.call(SETTINGS_DESCRIBE_ENDPOINT, args);
+  }
+
   /** 重新拉一次 `settings/describe`（只刷新设置页与凭据，不做其它副作用） */
-  async refreshSettings(): Promise<void> {    const empty: Record<string, Object> = {};
-    const args: Object | undefined = argsFor(SETTINGS_DESCRIBE_ENDPOINT, empty as Object);
-    if (args === undefined) {
-      return;
-    }
-    const described: RpcResult = await this.conn.call(SETTINGS_DESCRIBE_ENDPOINT, args);
+  async refreshSettings(): Promise<void> {
+    const described = await this.readSettingsDescription();
     if (!described.ok) {
       return;
     }
@@ -1733,7 +1734,7 @@ export class SessionHub {
     const args: Record<string, Object> = {};
     args['ref'] = ref;
     args['value'] = value;
-    const result: RpcResult = await this.conn.call(CREDENTIALS_SET_ENDPOINT, args as Object);
+    const result: RpcResult = await this.conn.call(CREDENTIALS_SET_ENDPOINT, args, { sensitiveBody: true });
     if (result.ok) {
       // 写完立刻回读状态：界面要显示的是**Host 的实际状态**，
       // 而不是「我们认为写成功了」。实测 `source` 会变成写入目标（如 `file`）。
@@ -1855,8 +1856,22 @@ export class SessionHub {
    */
   async unsetSettingPath(ns: string, path: string[], expectedRevision?: number,
     writes: SettingsPathWrite[] = []): Promise<SettingsWriteResult> {
-    if (ns.length === 0 || path.length === 0 || writes.some((write: SettingsPathWrite): boolean => write.path.length === 0)) {
-      return { outcome: SettingsWriteOutcome.FAILED, actualRevision: -1, message: '删除路径为空，已拒绝。' };
+    const operations: Record<string, Object>[] = [{ 'op': 'unset', 'path': path }];
+    for (const write of writes) {
+      operations.push({ 'op': 'set', 'path': write.path, 'value': write.value });
+    }
+    return this.mutateSettingPaths(ns, operations, expectedRevision, `已恢复 ${ns} ${path.join('.')} 的默认值。`);
+  }
+
+  async mutateSettingPaths(ns: string, operations: Record<string, Object>[], expectedRevision?: number,
+    successMessage: string = '已保存设置。'): Promise<SettingsWriteResult> {
+    if (!ns || !operations.length || operations.some((operation: Record<string, Object>): boolean => {
+      const path = getArray(operation, 'path');
+      const action = getString(operation, 'op');
+      return path === undefined || path.length === 0 || path.some(part => typeof part !== 'string' || !part) ||
+        (action !== 'set' && action !== 'unset') || (action === 'set' && operation['value'] === undefined);
+    })) {
+      return { outcome: SettingsWriteOutcome.FAILED, actualRevision: -1, message: '设置路径或操作无效，已拒绝。' };
     }
     const state: SettingsNamespaceState | undefined = this.namespaceState(ns);
     if (state === undefined) {
@@ -1877,29 +1892,21 @@ export class SessionHub {
         message: '尚未连接 Host，未做改动。请先完成连接后重试。'
       };
     }
-    const op: Record<string, Object> = {};
-    op['op'] = 'unset';
-    op['path'] = path;
-    const operations: Object[] = [op];
-    for (const write of writes) {
-      const set: Record<string, Object> = { 'op': 'set', 'path': write.path, 'value': write.value };
-      operations.push(set);
-    }
     const args: Record<string, Object> = {};
     args['ns'] = ns;
     args['ops'] = operations;
     args['expectedRevision'] = expectedRevision ?? state.revision;
-    const result: RpcResult = await this.conn.call(SETTINGS_MUTATE_ENDPOINT, args as Object);
+    const result: RpcResult = await this.conn.call(SETTINGS_MUTATE_ENDPOINT, args);
     if (result.ok) {
       await this.refreshSettings();
-      this.record(`settings/unset ok ${ns} ${path.join('.')}`);
+      this.record(`settings/mutate ok ${ns} ops=${operations.length}`);
       this.notify();
-      return { outcome: SettingsWriteOutcome.OK, actualRevision: getNumber(result.value, 'revision') ?? state.revision,
-        message: `已恢复 ${ns} ${path.join('.')} 的默认值。` };
+      return { outcome: SettingsWriteOutcome.OK, actualRevision: getNumber(result.value, 'revision') ??
+        this.namespaceState(ns)?.revision ?? state.revision, message: successMessage };
     }
     const failure: RemoteFailure | undefined = result.error;
     const code: string = failure === undefined ? 'unknown' : failure.code;
-    this.record(`settings/unset fail ${ns} ${path.join('.')} ${code}`);
+    this.record(`settings/mutate fail ${ns} ${code}`);
     if (code === SETTINGS_CONFLICT) {
       const actual: number = this.conflictActualRevision(failure);
       await this.refreshSettings();
@@ -1912,7 +1919,7 @@ export class SessionHub {
       await this.refreshSettings();
       return {
         outcome: SettingsWriteOutcome.REJECTED, actualRevision: state.revision,
-        message: 'Host 拒绝了这个操作（该键可能不允许删除，或是必填项）。已重新读取最新值。'
+        message: 'Host 拒绝了这批设置。已重新读取最新值。'
       };
     }
     return {
@@ -1987,6 +1994,11 @@ export class SessionHub {
       const f = creds.error;
       this.record(`credentials 回读失败 ${f === undefined ? '?' : f.code}`);
     }
+  }
+
+  readCredentialDescription(ref: string): Promise<RpcResult> {
+    const args: Record<string, Object> = { 'refs': [ref] };
+    return this.conn.call(CREDENTIALS_DESCRIBE_ENDPOINT, args);
   }
 
   /** 在命名空间台账里找写状态 */

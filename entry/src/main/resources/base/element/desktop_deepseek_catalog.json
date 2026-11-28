@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "desktop_deepseek_catalog_title",
+      "value": "模型目录"
+    },
+    {
+      "name": "desktop_deepseek_catalog_add",
+      "value": "添加模型"
+    },
+    {
+      "name": "desktop_deepseek_catalog_capacity_inherited",
+      "value": "使用提供商默认值"
+    },
+    {
+      "name": "desktop_deepseek_catalog_id_required",
+      "value": "第 %1$s 个模型：模型 ID 不能为空。"
+    },
+    {
+      "name": "desktop_deepseek_catalog_id_duplicate",
+      "value": "第 %1$s 个模型：模型 ID 不能重复。"
+    },
+    {
+      "name": "desktop_deepseek_catalog_context_invalid",
+      "value": "第 %1$s 个模型：上下文窗口必须是正数，例如 131072、256K 或 1M。"
+    },
+    {
+      "name": "desktop_deepseek_catalog_output_invalid",
+      "value": "第 %1$s 个模型：最大输出 token 数必须是正数，例如 8192、64K 或 1M。"
+    }
+  ]
+}

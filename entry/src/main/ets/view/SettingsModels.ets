@@ -22,6 +22,8 @@ import { protocolLabel } from 'appstate';
 import { SettingRow } from './SettingRow';
 import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
+import { DEEPSEEK_ACCOUNT_ROUTE, DEEPSEEK_API_ROUTE, DEEPSEEK_SETTINGS_NS } from '../desktop/DesktopDeepSeekProviderModel';
+import { DesktopDeepSeekProvider } from './DesktopDeepSeekProvider';
 
 
 /**
@@ -545,7 +547,21 @@ export struct SettingsModels {
      */
     this.piAiCards()
 
-    ForEach(this.providerGroups(), (g: ModelProviderGroup) => {
+    if (this.allGroups.some((group: SettingGroup): boolean => group.title === DEEPSEEK_SETTINGS_NS)) {
+      DesktopDeepSeekProvider({ credentials: this.credentials })
+    }
+    if (this.models.some((row: ModelOption): boolean => row.provider === DEEPSEEK_ACCOUNT_ROUTE)) {
+      Row({ space: Sp.S }) {
+        Text($r('app.string.desktop_deepseek_account')).layoutWeight(1).fontSize(Fs.BODY)
+        Text($r('app.string.desktop_deepseek_signed_in')).fontSize(Fs.CAPTION)
+          .fontColor($r('sys.color.font_secondary'))
+      }.key('desktopDeepSeekAccountProvider').width('100%').padding(Sp.M).borderRadius(Radius.M)
+        .backgroundColor($r('sys.color.background_secondary'))
+    }
+
+    ForEach(this.providerGroups().filter((g: ModelProviderGroup): boolean => g.provider !== DEEPSEEK_ACCOUNT_ROUTE &&
+      (g.provider !== DEEPSEEK_API_ROUTE || !this.allGroups.some((group: SettingGroup): boolean =>
+        group.title === DEEPSEEK_SETTINGS_NS))), (g: ModelProviderGroup) => {
       Column({ space: Sp.XS }) {
         Row({ space: Sp.S }) {
           Row()
@@ -712,7 +728,8 @@ export struct SettingsModels {
     const out: string[] = [];
     for (let i = 0; i < catalog.length; i++) {
       const id: string = catalog[i];
-      if (id.length === 0) {
+      if (id.length === 0 || id === DEEPSEEK_ACCOUNT_ROUTE || (id === DEEPSEEK_API_ROUTE &&
+          this.allGroups.some((group: SettingGroup): boolean => group.title === DEEPSEEK_SETTINGS_NS))) {
         continue;
       }
       let already: boolean = false;

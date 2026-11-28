@@ -1,0 +1,120 @@
+{
+  "string": [
+    {
+      "name": "desktop_deepseek_provider",
+      "value": "DeepSeek API"
+    },
+    {
+      "name": "desktop_deepseek_route",
+      "value": "deepseek-official"
+    },
+    {
+      "name": "desktop_deepseek_account",
+      "value": "DeepSeek account"
+    },
+    {
+      "name": "desktop_deepseek_signed_in",
+      "value": "Signed in"
+    },
+    {
+      "name": "desktop_deepseek_key_configured",
+      "value": "API key configured"
+    },
+    {
+      "name": "desktop_deepseek_edit",
+      "value": "Edit"
+    },
+    {
+      "name": "desktop_deepseek_advanced",
+      "value": "Custom settings"
+    },
+    {
+      "name": "desktop_deepseek_endpoint",
+      "value": "API endpoint"
+    },
+    {
+      "name": "desktop_deepseek_endpoint_placeholder",
+      "value": "https://api.deepseek.com/anthropic (Defaults to DEEPSEEK_BASE_URL)"
+    },
+    {
+      "name": "desktop_deepseek_endpoint_hint",
+      "value": "Use an API endpoint compatible with Anthropic Messages."
+    },
+    {
+      "name": "desktop_deepseek_endpoint_invalid",
+      "value": "Enter a valid HTTP or HTTPS endpoint."
+    },
+    {
+      "name": "desktop_deepseek_key_label",
+      "value": "API key"
+    },
+    {
+      "name": "desktop_deepseek_auth_help",
+      "value": "Authentication help"
+    },
+    {
+      "name": "desktop_deepseek_key_help",
+      "value": "This provider reads its API key from %1$s."
+    },
+    {
+      "name": "desktop_deepseek_key_placeholder",
+      "value": "Leave empty to use the existing key or %1$s"
+    },
+    {
+      "name": "desktop_deepseek_key_saved",
+      "value": "Uses the saved API key."
+    },
+    {
+      "name": "desktop_deepseek_key_replace",
+      "value": "Save to replace the existing API key."
+    },
+    {
+      "name": "desktop_deepseek_key_clear",
+      "value": "Clear saved API key"
+    },
+    {
+      "name": "desktop_deepseek_key_keep",
+      "value": "Keep saved API key"
+    },
+    {
+      "name": "desktop_deepseek_key_queued",
+      "value": "Save to clear the saved key and use environment authentication."
+    },
+    {
+      "name": "desktop_deepseek_key_removed",
+      "value": "The saved API key was cleared."
+    },
+    {
+      "name": "desktop_deepseek_key_blank",
+      "value": "The API key cannot contain only whitespace."
+    },
+    {
+      "name": "desktop_deepseek_key_format",
+      "value": "Paste the key value without quotes, a variable name, or internal spaces."
+    },
+    {
+      "name": "desktop_deepseek_key_after_settings",
+      "value": "Settings were saved. The key could not be stored. %1$s"
+    },
+    {
+      "name": "desktop_deepseek_cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "desktop_deepseek_save",
+      "value": "Save"
+    },
+    {
+      "name": "desktop_deepseek_reload",
+      "value": "Reload"
+    },
+    {
+      "name": "desktop_deepseek_unavailable",
+      "value": "The host did not provide DeepSeek API settings."
+    },
+    {
+      "name": "desktop_deepseek_save_failed",
+      "value": "Could not save DeepSeek API settings."
+    }
+  ]
+}
