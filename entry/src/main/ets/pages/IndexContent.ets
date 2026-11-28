@@ -370,6 +370,7 @@ export struct IndexContent {
   private stopDesktopAccount?: () => void;
   pageLifecycle?: IndexPageLifecycle;
   desktopSection: string = '';
+  @Prop desktopSettingsCompact: boolean = false;
   onCloseSettings: () => void = (): void => {};
   onSettingsSection: (section: string) => void = (_section: string): void => {};
   onOpenPlugins: () => void = (): void => {};
@@ -2561,13 +2562,15 @@ export struct IndexContent {
       Column() {
         if (this.desktopSettingsEntry) {
           Row() {
-            Text($r('app.string.desktop_workspace_settings')).fontSize(18).fontWeight(FontWeight.Medium)
-              .fontColor($r('sys.color.font_primary'))
+            Text($r('app.string.desktop_workspace_settings')).fontSize(16).lineHeight(24).fontWeight(FontWeight.Medium)
+              .fontColor($r('sys.color.font_primary')).margin({ top: 22 }).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
             Blank()
             Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-              Image($r('app.media.dsh_dock_close')).width(14).height(14).supportSvg2(true)
-                .draggable(false).fillColor($r('sys.color.font_secondary')).accessibilityLevel('no')
-            }.width(34).height(34).padding(0).borderRadius(8).focusOnTouch(false).key('desktopSettingsClose')
+              Image($r('app.media.dsh_settings_close')).width(14).height(14).supportSvg2(true)
+                .draggable(false).accessibilityLevel('no')
+            }.width(28).height(28).margin({ top: 20 }).padding(0).borderRadius(8)
+            .focusOnTouch(false).key('desktopSettingsClose')
             .accessibilityText($r('app.string.desktop_settings_close'))
             .onClick((): void => this.closeDesktopSettings())
             if (this.desktopSettingsVisible && !this.desktopShortcutOpen) {
@@ -2581,7 +2584,8 @@ export struct IndexContent {
               }.width(0).height(0).visibility(Visibility.Hidden).accessibilityLevel('no')
             }
           }
-          .width('100%').height(52).padding({ left: 24, right: 16 })
+          .width('100%').height(54).alignItems(VerticalAlign.Top)
+          .padding({ left: this.desktopSettingsCompact ? 16 : 24, right: this.desktopSettingsCompact ? 16 : 14 })
           DesktopShortcutDialog({ show: this.desktopShortcutOpen, onClose: (): void => { this.desktopShortcutOpen = false; },
             onChanged: (): void => this.reloadDesktopShortcutKeys() })
         }
@@ -4544,6 +4548,7 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
       === TrackPresentation.PANEL,
     settingsSection: this.nav.settingsSection,
     desktopShortcuts: this.desktopSettingsEntry,
+    desktopSettingsCompact: this.desktopSettingsCompact,
     desktopAccountHost: this.desktopAccountHost, desktopAccountIdentity: this.desktopAccountIdentity,
     desktopCodingTools: this.desktopCodingTools, onDesktopCodingToolsChange: this.onDesktopCodingToolsChange,
     onOpenDesktopShortcuts: (): void => { this.desktopShortcutOpen = true; },

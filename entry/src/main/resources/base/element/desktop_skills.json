@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_skills_label", "value": "技能" },
+    { "name": "desktop_skills_user_only", "value": "仅用户" },
+    { "name": "desktop_skills_failed", "value": "无法读取当前会话的技能" }
+  ]
+}

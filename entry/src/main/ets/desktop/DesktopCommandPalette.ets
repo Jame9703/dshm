@@ -8,6 +8,7 @@ export interface DesktopPaletteRow {
   section: string;
   icon?: Resource;
   drill?: boolean;
+  userOnly?: boolean;
 }
 
 @Component
@@ -19,6 +20,7 @@ export struct DesktopCommandPalette {
   @Prop filter: string = '';
   @Prop loading: boolean = false;
   @Prop error: string = '';
+  @Prop skillError: boolean = false;
   @Prop riskName: string = '';
   @Prop agreed: boolean = false;
   scroller: Scroller = new Scroller();
@@ -103,9 +105,10 @@ export struct DesktopCommandPalette {
         if (this.loading) {
           LoadingProgress().width(20).height(20).margin(4)
         }
-        if (this.error) {
+        if (this.error || this.skillError) {
           Row({ space: 5 }) {
-            Text(this.error).fontSize(12).fontColor($r('sys.color.warning')).layoutWeight(1)
+            Text(this.error || $r('app.string.desktop_skills_failed'))
+              .fontSize(12).fontColor($r('sys.color.warning')).layoutWeight(1)
             Button('重试', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick(this.onRetry)
           }.width('100%')
         } else if (!this.loading && this.rows.length === 0) {
@@ -131,17 +134,26 @@ export struct DesktopCommandPalette {
               ListItem() {
                 Column({ space: 2 }) {
                   if (row.section && (index === 0 || this.rows[index - 1].section !== row.section)) {
-                    Text(row.section).fontSize(11).width('100%').fontColor($r('sys.color.font_secondary')).padding(5)
+                    Text(row.section === 'skill' ? $r('app.string.desktop_skills_label') : row.section)
+                      .fontSize(11).width('100%').fontColor($r('sys.color.font_secondary')).padding(5)
                   }
                   Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
                     Row({ space: 7 }) {
-                      SymbolGlyph(this.viewMode === 'commands' ? $r('sys.symbol.chevron_right') : $r('sys.symbol.circle'))
-                        .fontSize(11).fontColor([$r('sys.color.font_secondary')])
+                      if (row.section !== 'skill') {
+                        SymbolGlyph(this.viewMode === 'commands' ? $r('sys.symbol.chevron_right') : $r('sys.symbol.circle'))
+                          .fontSize(11).fontColor([$r('sys.color.font_secondary')])
+                      }
                       Column({ space: 2 }) {
                         Text(row.title).fontSize(13).fontColor($r('sys.color.font_primary')).maxLines(1)
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        if (row.detail) {
-                          Text(row.detail).fontSize(11).fontColor($r('sys.color.font_secondary')).maxLines(1)
+                        if (row.detail || row.userOnly === true) {
+                          Text() {
+                            if (row.userOnly === true) {
+                              Span($r('app.string.desktop_skills_user_only'))
+                            }
+                            if (row.userOnly === true && row.detail) { Span(' · ') }
+                            if (row.detail) { Span(row.detail) }
+                          }.fontSize(11).fontColor($r('sys.color.font_secondary')).maxLines(1)
                             .textOverflow({ overflow: TextOverflow.Ellipsis })
                         }
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -149,12 +161,13 @@ export struct DesktopCommandPalette {
                         Text(row.token).fontSize(11).fontColor($r('sys.color.font_secondary')).maxLines(1)
                       }
                     }.width('100%')
-                  }.width('100%').height(row.detail ? 41 : 34).padding({ left: 7, right: 7 }).borderRadius(7)
+                  }.key('desktopSlashOption-' + row.id).width('100%').height(row.detail || row.userOnly ? 41 : 34)
+                  .padding({ left: 7, right: 7 }).borderRadius(7)
                   .backgroundColor(this.highlight === index ? $r('app.color.workspace_selection') : Color.Transparent)
                   .onClick((): void => { this.onPick(row.id); })
                 }.width('100%')
               }
-            }, (row: DesktopPaletteRow): string => row.id + ':' + row.section + ':' + row.detail)
+            }, (row: DesktopPaletteRow): string => row.id + ':' + row.section + ':' + row.detail + ':' + row.userOnly)
           }.width('100%').constraintSize({ maxHeight: 244 }).scrollBar(BarState.Auto)
         }
       }

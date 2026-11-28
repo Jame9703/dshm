@@ -248,6 +248,43 @@ export function desktopDockBrowserAddress(layout: DesktopDockLayout, id: string,
   return next;
 }
 
+export function desktopDockNavigatePreview(layout: DesktopDockLayout, path: string, name: string,
+  sourceSessionId?: string, replaceId?: string): DesktopDockLayout {
+  if (!path) { return layout; }
+  const tabs = layout.panes.flatMap((pane: DesktopDockPane): DesktopDockTab[] => pane.tabs)
+    .concat(layout.floats.map((panel: DesktopDockFloat): DesktopDockTab => panel.tab));
+  const existing = tabs.find((tab: DesktopDockTab): boolean => tab.kind === DesktopDockKind.PREVIEW &&
+    tab.sourceSessionId === sourceSessionId && tab.file?.path === path);
+  if (existing !== undefined) {
+    return existing.id === replaceId ? layout : desktopDockOpen(layout, existing, false);
+  }
+  const replace = tabs.find((tab: DesktopDockTab): boolean =>
+    tab.id === replaceId && tab.kind === DesktopDockKind.PREVIEW && tab.sourceSessionId === sourceSessionId);
+  const resourceId = desktopDockResourceId('file', path, sourceSessionId);
+  let id = replace?.id ?? resourceId;
+  if (replace === undefined && tabs.some((tab: DesktopDockTab): boolean => tab.id === id)) {
+    const used = new Set<string>(tabs.map((tab: DesktopDockTab): string => tab.id));
+    let suffix = 1;
+    do {
+      id = 'file-slot:' + JSON.stringify([resourceId, suffix++]);
+    } while (used.has(id));
+  }
+  const preview: DesktopDockTab = { id: id, kind: DesktopDockKind.PREVIEW, title: name || path,
+    file: { path: path, name: name }, sourceSessionId: sourceSessionId };
+  if (replace === undefined) { return desktopDockOpen(layout, preview, false); }
+  const next = copyDock(layout);
+  for (const pane of next.panes) {
+    const index = pane.tabs.findIndex((tab: DesktopDockTab): boolean => tab.id === id);
+    if (index >= 0) {
+      pane.tabs[index] = preview;
+      return next;
+    }
+  }
+  const index = next.floats.findIndex((panel: DesktopDockFloat): boolean => panel.tab.id === id);
+  if (index >= 0) { next.floats[index] = { tab: preview, rect: next.floats[index].rect }; }
+  return next;
+}
+
 function removeTab(pane: DesktopDockPane, index: number): DesktopDockTab {
   const tab = pane.tabs.splice(index, 1)[0];
   if (pane.active === tab.id) { pane.active = pane.tabs[Math.min(index, pane.tabs.length - 1)]?.id ?? ''; }

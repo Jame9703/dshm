@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_file_navigator_show", "value": "Show file tree" },
+    { "name": "desktop_file_navigator_hide", "value": "Hide file tree" },
+    { "name": "desktop_file_navigator_resize", "value": "Resize file tree" }
+  ]
+}

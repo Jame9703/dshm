@@ -86,6 +86,7 @@ export class DesktopDraftEditor {
   private readonly colors = new Map<boolean, common2D.Color>();
 
   private icon(ui: UIContext, kind: string): ReferenceIconPath[] {
+    if (kind === 'skill') { return []; }
     const cached = this.icons.get(kind);
     if (cached !== undefined) { return cached; }
     const paths: ReferenceIconPath[] = [];

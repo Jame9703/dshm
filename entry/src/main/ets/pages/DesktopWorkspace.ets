@@ -80,7 +80,8 @@ import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDockFloatPosition, desktopDockFloatRect,
   desktopDockFocusFloat, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSeatFloat, desktopDockSelect,
   desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
-  desktopDockBindTerminal, desktopDockBrowserAddress, desktopDockChatTab, desktopDockResourceId, desktopDockTerminalIds,
+  desktopDockBindTerminal, desktopDockBrowserAddress, desktopDockChatTab, desktopDockNavigatePreview, desktopDockResourceId,
+  desktopDockTerminalIds,
   desktopDockTerminalTab, desktopDockProjectTerminals,
   DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
@@ -2396,11 +2397,20 @@ struct DesktopWorkspace {
   }
 
   private showArtifact(path: string, name: string, sessionId: string = this.sessionId): void {
-    if (!path) { return; }
     const source = sessionId === this.sessionId ? undefined : sessionId;
-    const tab: DesktopDockTab = { id: desktopDockResourceId('file', path, source), kind: DesktopDockKind.PREVIEW, title: name || path,
-      file: { path: path, name: name }, sourceSessionId: source };
-    this.setDock(desktopDockOpen(this.rightDock, tab, false));
+    const next = desktopDockNavigatePreview(this.rightDock, path, name, source);
+    if (next !== this.rightDock) { this.setDock(next); }
+  }
+
+  private replaceArtifact(index: number, tab: DesktopDockTab, path: string, name: string): void {
+    if (!this.pageActive || !this.dockTabShown(index, tab.id) ||
+      this.dockStoredTab(index, tab.id)?.kind !== DesktopDockKind.PREVIEW) { return; }
+    const next = desktopDockNavigatePreview(this.rightDock, path, name, tab.sourceSessionId, tab.id);
+    if (next === this.rightDock) { return; }
+    const replaced = index < 0 ? next.floats.find((panel: DesktopDockFloat): boolean => panel.tab.id === tab.id)?.tab :
+      next.panes[index]?.tabs.find((candidate: DesktopDockTab): boolean => candidate.id === tab.id);
+    if (replaced?.file?.path === path) { this.documentViews.delete(this.documentViewKey(tab.id)); }
+    this.setDock(next);
   }
 
   private showChanges(target: DesktopChangeTarget, sessionId: string = this.sessionId): void {
@@ -2595,9 +2605,9 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private SettingsDialog() {
+  private SettingsDialog(compact: boolean) {
     WithTheme({ colorMode: this.workspaceColorMode() }) {
-      IndexContent({ desktopSection: this.settingsSection,
+      IndexContent({ desktopSection: this.settingsSection, desktopSettingsCompact: compact,
         desktopAccountNotices: this.data?.accountNotices, desktopAccountHost: this.data?.actions,
         desktopCodingTools: this.codingTools,
         onDesktopCodingToolsChange: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
@@ -2615,12 +2625,14 @@ struct DesktopWorkspace {
     const prompt = this.getUIContext().getPromptAction();
     try {
       const material = dialogMaterial();
+      const compact = this.workbenchWidth < 768;
       const id = await prompt.openCustomDialog({
-        builder: (): void => { this.SettingsDialog(); }, alignment: DialogAlignment.Center,
-        width: Math.max(220, Math.min(824, this.workbenchWidth - 48)),
-        height: Math.max(180, Math.min(800, this.workbenchHeight - 48)),
-        autoCancel: true, isModal: true, cornerRadius: 24, systemMaterial: material,
-        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        builder: (): void => { this.SettingsDialog(compact); }, alignment: DialogAlignment.Center,
+        width: compact ? this.workbenchWidth : Math.min(800, this.workbenchWidth - 48),
+        height: compact ? this.workbenchHeight : Math.max(180, Math.min(800, this.workbenchHeight - 48)),
+        autoCancel: true, isModal: true, cornerRadius: compact ? 0 : 28, systemMaterial: material,
+        maskColor: $r('app.color.desktop_settings_mask'),
+        backgroundColor: material === undefined ? $r('app.color.desktop_settings_surface') : undefined,
         onDidDisappear: (): void => { this.settingsDismissed(); }
       });
       if (this.pageActive && this.settingsOpen) { this.settingsDialog = id; }
@@ -4025,6 +4037,7 @@ struct DesktopWorkspace {
             this.openPlugins(name, title, description);
           },
           onLoadCommands: (): void => { this.data?.conversation.loadCommands(this.sessionId); },
+          onLoadSkills: (): void => { this.data?.conversation.loadSkills(this.sessionId); },
           onCommand: (name: string): Promise<string> => {
             const conversation = this.data?.conversation;
             return conversation === undefined ? Promise.resolve('当前会话暂不可操作') : this.chatAction(
@@ -4664,16 +4677,20 @@ struct DesktopWorkspace {
     } else if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
       DesktopFilesPane({ host: this.data?.actions,
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
-        sessionId: tab.sourceSessionId ?? this.sessionId, requested: tab.file, previewOnly: tab.kind === DesktopDockKind.PREVIEW,
+        sessionId: tab.sourceSessionId ?? this.sessionId, requested: this.dockStoredTab(index, tab.id)?.file,
+        previewOnly: tab.kind === DesktopDockKind.PREVIEW, focusScope: tab.id, viewportWidth: this.workbenchWidth,
         workspaceRoot: this.fileSearchRoot(tab), shown: this.dockTabShown(index, tab.id),
         interactiveHtml: this.codingTools.enabled,
-        preferenceBook: tab.kind === DesktopDockKind.FILES ? this.fileSearchPreferences() : undefined,
+        preferenceBook: this.fileSearchPreferences(),
         readDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewReader(tab.id) : undefined,
         onDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewWriter(index, tab.id) : undefined,
         onHide: (): void => this.closeDockTab(index, tab.id),
         onOpenFile: (path: string, name: string): void => {
-          this.focusDockPane(index);
-          this.showArtifact(path, name, tab.sourceSessionId ?? this.sessionId);
+          if (tab.kind === DesktopDockKind.PREVIEW) { this.replaceArtifact(index, tab, path, name); }
+          else {
+            this.focusDockPane(index);
+            this.showArtifact(path, name, tab.sourceSessionId ?? this.sessionId);
+          }
         },
         onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); },
         onReferenceWorkspaceFile: (path: string, name: string): void => {

@@ -1,14 +1,46 @@
 import { getArray, getField, getRecord, getString } from 'connection';
 import { desktopMessageAttachments } from './DesktopAttachments';
 import type { DesktopMediaAttachment } from './DesktopAttachments';
+import type { DesktopSubmissionEcho } from './DesktopSubmissionEcho';
+import { desktopUserMessageClipboardText } from './DesktopUserMessageActionsModel';
 
 export interface DesktopQueuedPrompt {
   id: string;
   requestId: string;
   text: string;
+  preview: string;
   editable: boolean;
   attachments: DesktopMediaAttachment[];
   sending?: boolean;
+}
+
+export function desktopQueuedPromptPreview(text: string): string {
+  // Match the non-interactive WebUI user-text seat: mask on the original text before collapsing runs.
+  return desktopUserMessageClipboardText(text).replace(new RegExp('\\s+', 'gu'), ' ').trim();
+}
+
+export function desktopVisiblePromptQueue(rows: DesktopQueuedPrompt[], echoes: DesktopSubmissionEcho[],
+  sending?: DesktopQueuedPrompt): DesktopQueuedPrompt[] {
+  if (rows.length === 0) { return sending === undefined ? rows : [sending]; }
+  if (echoes.length === 0 && sending === undefined) { return rows; }
+  const inTranscript = new Set<string>();
+  for (const echo of echoes) {
+    if (echo.placement === 'transcript') { inTranscript.add(echo.requestId); }
+  }
+  const confirmed = inTranscript.size === 0 ? rows : rows.filter((row: DesktopQueuedPrompt): boolean =>
+    !inTranscript.has(row.requestId));
+  return sending === undefined || confirmed.some((row: DesktopQueuedPrompt): boolean => row.requestId === sending.requestId) ?
+    confirmed : [...confirmed, sending];
+}
+
+export function desktopQueueFileSize(bytes: number): string {
+  if (bytes < 1024) { return `${bytes}B`; }
+  const kb = bytes / 1024;
+  const mb = kb / 1024;
+  const gb = mb / 1024;
+  if (kb < 1024) { return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)}KB`; }
+  if (mb < 1024) { return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)}MB`; }
+  return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)}GB`;
 }
 
 function queuedPrompt(raw: Object): DesktopQueuedPrompt | undefined {
@@ -16,7 +48,7 @@ function queuedPrompt(raw: Object): DesktopQueuedPrompt | undefined {
   const parts = getArray(raw, 'content');
   if (!id || parts === undefined) { return undefined; }
   const text: string[] = [];
-  let editable = parts.length > 0;
+  let editable = true;
   for (const part of parts) {
     const type = getString(part, 'type');
     if (type === 'text') {
@@ -25,8 +57,11 @@ function queuedPrompt(raw: Object): DesktopQueuedPrompt | undefined {
       editable = false;
     }
   }
-  return { id: id, requestId: getString(getRecord(raw, 'source'), 'rpcId') ?? '',
-    text: text.join('\n'), editable: editable, attachments: desktopMessageAttachments(raw) };
+  const source = getRecord(raw, 'source');
+  const requestId = getString(source, 'kind') === 'user' ? getString(source, 'rpcId') ?? '' : '';
+  const value = text.join('');
+  return { id: id, requestId: requestId, text: value, preview: desktopQueuedPromptPreview(value),
+    editable: editable, attachments: desktopMessageAttachments(raw) };
 }
 
 export class DesktopPromptQueue {

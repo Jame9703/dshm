@@ -1,0 +1,20 @@
+{
+  "string": [
+    { "name": "desktop_queue_count", "value": "%d queued messages" },
+    { "name": "desktop_queue_expanded", "value": "Expanded" },
+    { "name": "desktop_queue_collapsed", "value": "Collapsed" },
+    { "name": "desktop_queue_sending", "value": "Sending…" },
+    { "name": "desktop_queue_image", "value": "Queued message image" },
+    { "name": "desktop_queue_file", "value": "Queued file %s" },
+    { "name": "desktop_queue_edit", "value": "Edit queued message" },
+    { "name": "desktop_queue_edit_unsupported", "value": "Contains non-text content; editing is not supported yet" },
+    { "name": "desktop_queue_save", "value": "Save queued message" },
+    { "name": "desktop_queue_cancel", "value": "Cancel editing" },
+    { "name": "desktop_queue_remove", "value": "Remove queued message" },
+    { "name": "desktop_queue_steer", "value": "Steer queued message" },
+    { "name": "desktop_queue_steer_unavailable", "value": "Steering is available only while the agent is running" },
+    { "name": "desktop_queue_edit_failed", "value": "Edit failed: this message may have already started sending." },
+    { "name": "desktop_queue_remove_failed", "value": "Removal failed: this message may have already started sending." },
+    { "name": "desktop_queue_steer_failed", "value": "Steering failed. Try again." }
+  ]
+}

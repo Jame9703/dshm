@@ -135,11 +135,12 @@ export struct SettingsPane {
    */
   @Prop section: string = 'settings.general';
   @Prop desktopShortcuts: boolean = false;
+  @Prop settingsCompact: boolean = false;
   desktopAccountHost?: DesktopHostActions;
   @Prop desktopAccountIdentity?: DesktopAccountSettingsIdentity = undefined;
   @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
-  @State private panelWidth: number = 824;
+  private desktopNavScroller: Scroller = new Scroller();
   onOpenShortcuts: () => void = () => {};
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
   @Prop sections: PanelDescriptor[] = [];
@@ -149,19 +150,20 @@ export struct SettingsPane {
 
   build() {
     Column() {
-      if (this.desktopShortcuts && this.panelWidth >= 720) {
+      if (this.desktopShortcuts && !this.settingsCompact) {
         Row() {
-          this.sectionRail()
+          this.desktopNavigation()
           Column() { this.options() }.layoutWeight(1).height('100%')
         }.layoutWeight(1).width('100%')
+      } else if (this.desktopShortcuts) {
+        this.desktopNavigation()
+        this.options()
       } else {
         this.tabBar()
-        if (!this.desktopShortcuts) { Divider().color($r('sys.color.comp_divider')) }
+        Divider().color($r('sys.color.comp_divider'))
         this.options()
       }
-    }.width('100%').height('100%').onAreaChange((_previous: Area, current: Area): void => {
-      if (this.desktopShortcuts) { this.panelWidth = Number(current.width); }
-    })
+    }.width('100%').height('100%')
   }
 
   @Builder
@@ -332,7 +334,9 @@ export struct SettingsPane {
           }
         }
         .width('100%')
-        .padding(Sp.M)
+        .padding(this.desktopShortcuts ? {
+          left: this.settingsCompact ? 16 : 24, right: this.settingsCompact ? 16 : 24, bottom: 24
+        } : Sp.M)
       }
       .layoutWeight(1)
       .width('100%')
@@ -372,7 +376,7 @@ export struct SettingsPane {
   }
 
   private sectionGlyph(id: string): Resource {
-    if (id === 'account') { return $r('app.media.dsh_settings_account'); }
+    if (id === 'account') { return $r('app.media.dsh_settings_nav_account'); }
     if (id === 'settings.models') { return $r('app.media.dsh_settings_data'); }
     if (id === 'settings.presets') { return $r('app.media.dsh_settings_presets'); }
     if (id === 'settings.plugins') { return $r('app.media.dsh_settings_plugins'); }
@@ -380,25 +384,40 @@ export struct SettingsPane {
   }
 
   @Builder
-  private sectionRail() {
-    Scroll() {
-      Column({ space: 3 }) {
-        ForEach(this.sections, (section: PanelDescriptor): void => {
-          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            Row({ space: 9 }) {
-              Image(this.sectionGlyph(section.id)).width(16).height(16).supportSvg2(true).draggable(false)
-                .accessibilityLevel('no')
-              Text(this.sectionLabel(section.id)).fontSize(14).fontColor($r('sys.color.font_primary'))
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-            }.width('100%')
-          }.width('100%').height(38).padding({ left: 10, right: 10 }).borderRadius(8)
-          .key('desktopSettingsSection-' + section.id).accessibilitySelected(this.section === section.id)
-          .defaultFocus(this.section === section.id)
-          .backgroundColor(this.section === section.id ? $r('app.color.workspace_selection') : Color.Transparent)
-          .onClick((): void => { this.onSelectSection(section.id); })
-        }, (section: PanelDescriptor): string => section.id)
-      }.width('100%').padding({ left: 12, right: 10, top: 4, bottom: 12 })
-    }.width(212).height('100%').align(Alignment.TopStart).scrollBar(BarState.Auto)
+  private desktopNavigation() {
+    List({ space: 4, scroller: this.desktopNavScroller }) {
+      ForEach(this.sections, (descriptor: PanelDescriptor, index: number): void => {
+        ListItem() { this.desktopNavCell(descriptor.id, index) }
+      }, (descriptor: PanelDescriptor): string => descriptor.id)
+    }.key(this.settingsCompact ? 'desktopSettingsNavStrip' : 'desktopSettingsNavRail')
+      .listDirection(this.settingsCompact ? Axis.Horizontal : Axis.Vertical)
+      .width(this.settingsCompact ? '100%' : 188).height(this.settingsCompact ? 66 : '100%')
+      .padding(this.settingsCompact ? { top: 12, bottom: 14 } : { left: 12, right: 12, top: 10 })
+      .contentStartOffset(this.settingsCompact ? 16 : 0).contentEndOffset(this.settingsCompact ? 16 : 0)
+      .edgeEffect(EdgeEffect.None).scrollBar(this.settingsCompact ? BarState.Off : BarState.Auto)
+      .onAreaChange((previous: Area, current: Area): void => {
+        if (previous.width !== current.width || previous.height !== current.height) {
+          const selected = this.sections.findIndex((descriptor: PanelDescriptor): boolean => descriptor.id === this.section);
+          if (selected >= 0) { this.desktopNavScroller.scrollToIndex(selected, false, ScrollAlign.AUTO); }
+        }
+      })
+  }
+
+  @Builder
+  private desktopNavCell(id: string, index: number) {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Row({ space: 8 }) {
+        Image(this.sectionGlyph(id)).width(16).height(16).supportSvg2(true).draggable(false).accessibilityLevel('no')
+        Text(this.sectionLabel(id)).fontSize(14).lineHeight(22).fontColor($r('sys.color.font_primary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+      }.width(this.settingsCompact ? LayoutPolicy.wrapContent : '100%')
+    }.width(this.settingsCompact ? LayoutPolicy.wrapContent : '100%').height(40)
+      .constraintSize({ minWidth: this.settingsCompact ? 108 : 0 })
+      .padding({ left: this.settingsCompact ? 14 : 12, right: this.settingsCompact ? 14 : 16 }).borderRadius(12)
+      .key('desktopSettingsSection-' + id).accessibilitySelected(this.section === id).defaultFocus(this.section === id)
+      .backgroundColor(this.section === id ? $r('app.color.desktop_settings_nav_selected') : Color.Transparent)
+      .onFocus((): void => { this.desktopNavScroller.scrollToIndex(index, false, ScrollAlign.AUTO); })
+      .onClick((): void => { this.onSelectSection(id); })
   }
 
   @Builder
@@ -428,7 +447,6 @@ export struct SettingsPane {
       .fontColor(this.section === key ? Color.White : $r('sys.color.font_secondary'))
       .padding({ left: Sp.M, right: Sp.M, top: Sp.S, bottom: Sp.S })
       .borderRadius(Radius.L)
-      .key(this.desktopShortcuts ? 'desktopSettingsSection-' + key : '')
       .backgroundColor(this.section === key ? $r('sys.color.brand') : $r('sys.color.background_secondary'))
       .onClick(() => {
         this.onSelectSection(key);

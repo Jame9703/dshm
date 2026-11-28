@@ -17,6 +17,7 @@ import {
 } from 'dshcompat';
 
 import { desktopRecallLabels } from './DesktopReferences';
+import type { DesktopSkill } from './DesktopSkills';
 import { desktopSubagentCatalog, desktopSubagentMode } from './DesktopSubagents';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -56,7 +57,7 @@ import type { DesktopModelCatalog, DesktopModelCatalogResult } from './DesktopMo
 import { DesktopReplyTail, DesktopReplyTimeline } from './DesktopReplyTimeline';
 import { DesktopWorkflowTimeline } from './DesktopWorkflowTimeline';
 import type { DesktopWorkflowRun } from './DesktopWorkflowTimeline';
-import { DesktopPromptQueue, DesktopQueuedPrompt } from './DesktopPromptQueue';
+import { DesktopPromptQueue, DesktopQueuedPrompt, desktopQueuedPromptPreview, desktopVisiblePromptQueue } from './DesktopPromptQueue';
 import { DesktopSubmissionEchoes } from './DesktopSubmissionEcho';
 import type { DesktopSubmissionEcho } from './DesktopSubmissionEcho';
 import { desktopImageMime, desktopMediaAttachment, desktopMessageAttachments } from './DesktopAttachments';
@@ -150,6 +151,9 @@ export interface DesktopConversationSnapshot {
   commands?: DesktopCommand[];
   commandLoading: boolean;
   commandError: string;
+  skills?: DesktopSkill[];
+  skillsLoading: boolean;
+  skillError: boolean;
   feedbackRows: FeedbackRow[];
   actionCards: Map<number, DesktopActionCard>;
   team?: DesktopTeam;
@@ -235,6 +239,9 @@ export class DesktopConversation {
   private commandTask?: Promise<DesktopCommand[] | undefined>;
   private commandError: string = '';
   private commandVersion: number = 0;
+  private skills?: DesktopSkill[];
+  private skillsTask?: Promise<DesktopSkill[] | undefined>;
+  private skillError: boolean = false;
   private planMode?: boolean;
   private planAsOf: number = -1;
   private readonly goals: DesktopGoalState = new DesktopGoalState();
@@ -376,6 +383,9 @@ export class DesktopConversation {
     this.commands = undefined;
     this.commandTask = undefined;
     this.commandError = '';
+    this.skills = undefined;
+    this.skillsTask = undefined;
+    this.skillError = false;
     this.planMode = undefined;
     this.planAsOf = -1;
     this.goals.reset();
@@ -624,6 +634,12 @@ export class DesktopConversation {
       this.echoes.begin({ sessionId: sessionId, requestId: requestId,
         placement: busy ? 'steering' : 'transcript', message: message, attachments: files });
     }
+    const generation = this.generation;
+    if ((args !== undefined || child !== undefined) && busy && mode === PromptMode.QUEUE) {
+      this.sending.set(sessionId, { id: requestId, requestId: requestId, text: text, preview: desktopQueuedPromptPreview(text),
+        editable: false, attachments: files, sending: true });
+      this.publish();
+    }
     if (child !== undefined) {
       let accepted = false;
       try {
@@ -633,18 +649,13 @@ export class DesktopConversation {
         if (!result.ok || !getString(result.value, 'messageId')) { return this.failure(result, '宿主未确认发送'); }
         accepted = true;
         this.pendingRequests.delete(sessionId);
-        if (sessionId === this.sessionId && !this.closed) { this.loadSelection(this.generation); }
+        if (this.current(generation) && !this.sending.has(sessionId)) { this.loadSelection(generation); }
         return '';
       } finally {
         this.settleSubmission(sessionId, requestId, accepted);
+        await this.finishQueuedSubmission(sessionId, requestId, generation, accepted);
       }
     }
-    if (args !== undefined && busy && mode === PromptMode.QUEUE) {
-      this.sending.set(sessionId, { id: request.id, requestId: request.id, text: text,
-        editable: false, attachments: files, sending: true });
-      this.publish();
-    }
-    const generation = this.generation;
     let response: RpcResult | undefined;
     let accepted = false;
     try {
@@ -652,20 +663,29 @@ export class DesktopConversation {
       accepted = response?.ok === true && projectSessionPrompt(response.value).accepted;
     } finally {
       this.settleSubmission(sessionId, requestId, accepted);
-    }
-    if (this.sending.has(sessionId)) {
-      if (accepted && sessionId === this.sessionId && this.current(generation) &&
-        !this.queue.rows.some((row: DesktopQueuedPrompt): boolean => row.requestId === requestId)) {
-        await this.loadSelection(generation);
-      }
-      this.sending.delete(sessionId);
-      this.publish();
+      await this.finishQueuedSubmission(sessionId, requestId, generation, accepted);
     }
     if (accepted) {
       this.pendingRequests.delete(sessionId);
       return '';
     }
     return this.failure(response, '宿主未确认发送');
+  }
+
+  private async finishQueuedSubmission(sessionId: string, requestId: string, generation: number,
+    accepted: boolean): Promise<void> {
+    if (this.sending.get(sessionId)?.requestId !== requestId) { return; }
+    try {
+      if (accepted && this.current(generation) &&
+        !this.queue.rows.some((row: DesktopQueuedPrompt): boolean => row.requestId === requestId)) {
+        await this.loadSelection(generation);
+      }
+    } finally {
+      if (this.sending.get(sessionId)?.requestId === requestId) {
+        this.sending.delete(sessionId);
+        if (this.sessionId === sessionId) { this.publish(); }
+      }
+    }
   }
 
   private settleSubmission(sessionId: string, requestId: string, accepted: boolean): void {
@@ -802,6 +822,31 @@ export class DesktopConversation {
     this.commands = undefined;
     this.commandTask = undefined;
     this.loadCommands(this.sessionId);
+  }
+
+  async loadSkills(sessionId: string): Promise<void> {
+    if (this.closed || this.sessionId !== sessionId || this.subagent !== undefined || !this.historyLoaded ||
+      this.skills !== undefined || this.skillsTask !== undefined) { return; }
+    const generation = this.generation;
+    const task = this.host.sessionSkills(sessionId);
+    this.skillsTask = task;
+    this.skillError = false;
+    this.publish();
+    const skills = await task;
+    if (!this.current(generation) || this.skillsTask !== task) { return; }
+    this.skillsTask = undefined;
+    this.skills = skills;
+    this.skillError = skills === undefined;
+    this.publish();
+  }
+
+  invalidateSkills(sessionId?: string): void {
+    if (sessionId !== undefined && sessionId !== this.sessionId) { return; }
+    if (this.skills === undefined && this.skillsTask === undefined && !this.skillError) { return; }
+    this.skills = undefined;
+    this.skillsTask = undefined;
+    this.skillError = false;
+    this.loadSkills(this.sessionId);
   }
 
   private async fetchCommands(sessionId: string, version: number): Promise<DesktopCommand[] | undefined> {
@@ -1770,8 +1815,8 @@ export class DesktopConversation {
     }
     const selection = this.model ?? this.modelCatalog?.defaultModel;
     const sending = this.sending.get(this.sessionId);
-    const queue = sending !== undefined && !this.queue.rows.some((row: DesktopQueuedPrompt): boolean =>
-      row.requestId === sending.requestId) ? [...this.queue.rows, sending] : this.queue.rows;
+    const submissionEchoes = this.echoes.forSession(this.sessionId);
+    const queue = desktopVisiblePromptQueue(this.queue.rows, submissionEchoes, sending);
     const transcriptTurns = this.transcriptTimeline.turns();
     const latestTurn = transcriptTurns[transcriptTurns.length - 1];
     const openTurn = latestTurn !== undefined && latestTurn.startSequence >= 0 && latestTurn.endSequence < 0;
@@ -1781,7 +1826,7 @@ export class DesktopConversation {
       turnOutline: this.turnOutline, loadTurnHistory: this.loadTurnHistory,
       chatUsage: this.chatUsage.stats(), compactUsage: this.compactUsage,
       transcriptPolicy: this.transcriptPolicy, transcriptTurns: transcriptTurns,
-      submissionEchoes: this.echoes.forSession(this.sessionId),
+      submissionEchoes: submissionEchoes,
       readTrajectory: this.readTrajectory, trajectoryRevision: this.trajectory.version(),
       readApprovalCommand: this.readApprovalCommand,
       readQuestionHistory: this.readQuestionHistory,
@@ -1806,6 +1851,7 @@ export class DesktopConversation {
       planMode: this.planMode,
       goal: this.goals.goal,
       commands: this.commands, commandLoading: this.commandTask !== undefined, commandError: this.commandError,
+      skills: this.skills, skillsLoading: this.skillsTask !== undefined, skillError: this.skillError,
       feedbackRows: this.feedback.rows, actionCards: this.actionCards.cards, queue: queue, busyEnterSteers: this.busyEnterSteers,
       team: this.team.view, teamModelReady: this.team.modelReady, teamModelUsed: this.team.lastModelUsed,
       subagent: this.subagent, subagents: this.subagents

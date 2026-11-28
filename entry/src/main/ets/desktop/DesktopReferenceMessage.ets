@@ -4,6 +4,7 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopReferenceAction } from './DesktopReferenceActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopSecretRange, desktopSecretRanges } from './DesktopSecretMask';
+import { DesktopSkill, desktopMayHaveSkillReference, desktopSkillReferences } from './DesktopSkills';
 
 export interface DesktopReferenceRun {
   kind: string;
@@ -18,22 +19,36 @@ function textRun(raw: string, start: number): DesktopReferenceRun {
   return { kind: 'text', raw: raw, label: '', path: '', start: start };
 }
 
-export function desktopReferenceRuns(text: string, sessionLabels: string[]): DesktopReferenceRun[] {
+export function desktopReferenceRuns(text: string, sessionLabels: string[], skills: DesktopSkill[] = []): DesktopReferenceRun[] {
   const runs: DesktopReferenceRun[] = [];
   const wire = /@\[((?:\\.|[^\\\]\r\n])+)\]\(dsh-session:[A-Za-z0-9_-]+\)/uy;
   const pathToken = /@"[^"\r\n]+"|@[^\s"]+/uy;
   const secrets: DesktopSecretRange[] = desktopSecretRanges(text);
+  const skillReferences = desktopSkillReferences(text, skills);
   let secretIndex = 0;
+  let skillIndex = 0;
   let emitted = 0;
   let next = text.indexOf('@');
-  while (next >= 0 || secretIndex < secrets.length) {
+  while (next >= 0 || secretIndex < secrets.length || skillIndex < skillReferences.length) {
     const secret = secrets[secretIndex];
-    if (secret !== undefined && (next < 0 || secret.start <= next)) {
+    const skill = skillReferences[skillIndex];
+    if (skill !== undefined && skill.start < emitted) { skillIndex++; continue; }
+    if (secret !== undefined && (next < 0 || secret.start <= next) &&
+      (skill === undefined || secret.start < skill.end)) {
       if (secret.start > emitted) { runs.push(textRun(text.slice(emitted, secret.start), emitted)); }
       runs.push({ kind: 'secret', raw: text.slice(secret.start, secret.end), label: '', path: '',
         start: secret.start, masked: secret.masked });
       secretIndex++;
       emitted = secret.end;
+      next = text.indexOf('@', emitted);
+      continue;
+    }
+    if (skill !== undefined && (next < 0 || skill.start < next)) {
+      if (skill.start > emitted) { runs.push(textRun(text.slice(emitted, skill.start), emitted)); }
+      const raw = text.slice(skill.start, skill.end);
+      runs.push({ kind: 'skill', raw: raw, label: raw, path: skill.path ?? '', start: skill.start });
+      emitted = skill.end;
+      skillIndex++;
       next = text.indexOf('@', emitted);
       continue;
     }
@@ -83,12 +98,15 @@ export function desktopReferenceRuns(text: string, sessionLabels: string[]): Des
 export struct DesktopReferenceMessage {
   @Prop @Watch('resetMessage') text: string = '';
   @Prop @Watch('refresh') referenceLabels: string[] = [];
+  @Prop @Watch('refresh') skills: DesktopSkill[] | undefined = undefined;
+  @Prop skillLookupEnabled: boolean = false;
   @Prop @Watch('resetMessage') sessionId: string = '';
   @Prop nodeKey: string = '';
   @Prop bodySize: number = 14;
   @Prop bodyFamily: string = '';
   @Prop codeFamily: string = 'monospace';
   host?: DesktopHostActions;
+  onSkillsNeeded: () => void = (): void => {};
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   @Prop canAddReference: boolean = false;
   onAction: (action: DesktopReferenceAction, path: string, name: string) => void =
@@ -132,7 +150,7 @@ export struct DesktopReferenceMessage {
   private refresh(): void {
     if (!this.active) { return; }
     this.revision++;
-    this.runs = desktopReferenceRuns(this.text, this.referenceLabels);
+    this.runs = desktopReferenceRuns(this.text, this.referenceLabels, this.skills);
     this.confirmed = [];
     this.requested = false;
     this.resolvePaths();
@@ -146,7 +164,7 @@ export struct DesktopReferenceMessage {
     this.requested = true;
     const paths = new Set<string>();
     for (const item of this.runs) {
-      if (item.path) { paths.add(item.path); }
+      if (item.path && item.kind !== 'skill') { paths.add(item.path); }
     }
     for (const path of paths) {
       if (await host.referencePathExists(session, path)) {
@@ -166,11 +184,15 @@ export struct DesktopReferenceMessage {
   }
 
   private open(run: DesktopReferenceRun): void {
-    if (this.active && this.confirmed.includes(run.path)) { this.onFile(run.path, run.label); }
+    if (!this.active) { return; }
+    if (run.kind === 'skill' && run.path) {
+      const name = run.path.slice(Math.max(run.path.lastIndexOf('/'), run.path.lastIndexOf('\\')) + 1);
+      this.onFile(run.path, name || run.label);
+    } else if (this.confirmed.includes(run.path)) { this.onFile(run.path, run.label); }
   }
 
   private showsChip(run: DesktopReferenceRun): boolean {
-    return run.kind === 'session' || (run.path !== '' && this.confirmed.includes(run.path));
+    return run.kind === 'session' || run.kind === 'skill' || (run.path !== '' && this.confirmed.includes(run.path));
   }
 
   private isRevealed(run: DesktopReferenceRun): boolean { return this.revealed.includes(run.start); }
@@ -189,7 +211,7 @@ export struct DesktopReferenceMessage {
   private runKey(run: DesktopReferenceRun): string {
     // Never put a hidden secret in the identity of an ArkUI node.
     return run.kind === 'secret' ? String(run.start) + ':secret:' + this.messageRevision :
-      String(run.start) + ':' + run.raw;
+      String(run.start) + ':' + run.kind + ':' + run.raw + ':' + run.path;
   }
 
   private fileAt(x: number, y: number): DesktopReferenceRun | undefined {
@@ -206,7 +228,7 @@ export struct DesktopReferenceMessage {
       }
       const chip = this.showsChip(run);
       // The inline image occupies one text position, followed by the label's leading space.
-      const end = start + (chip ? run.label.length + 2 : run.raw.length);
+      const end = start + (chip && run.kind !== 'skill' ? run.label.length + 2 : run.raw.length);
       if (run.kind === 'file' && chip) {
         const boxes = layout.getRectsForRange({ start: start, end: end }, text.RectWidthStyle.TIGHT, text.RectHeightStyle.MAX);
         if (boxes.some((box: TextBox): boolean => pxX >= box.rect.left && pxX <= box.rect.right &&
@@ -278,7 +300,10 @@ export struct DesktopReferenceMessage {
 
   @Builder
   private Chip(run: DesktopReferenceRun) {
-    if (run.kind === 'file') {
+    if (run.kind === 'skill') {
+      Span(run.label).fontColor($r('app.color.desktop_reference_text')).fontWeight(FontWeight.Medium)
+        .key(this.nodeKey + '-skill-' + run.start).onClick((): void => { this.open(run); })
+    } else if (run.kind === 'file') {
       ImageSpan(this.icon(run.kind)).size({ width: 15, height: 15 }).verticalAlign(ImageSpanAlignment.CENTER)
         .onClick((): void => { this.open(run); })
       Span('\u00a0' + run.label).fontColor($r('app.color.desktop_reference_text')).fontWeight(FontWeight.Medium)
@@ -332,7 +357,10 @@ export struct DesktopReferenceMessage {
           })
           .onVisibleAreaChange([0.01], (visible: boolean): void => {
             this.visible = visible;
-            if (visible) { this.resolvePaths(); }
+            if (visible) {
+              this.resolvePaths();
+              if (this.skillLookupEnabled && desktopMayHaveSkillReference(this.text)) { this.onSkillsNeeded(); }
+            }
           })
         Row().width(1).height(1).position(this.menuAnchor).hitTestBehavior(HitTestMode.None)
           .bindContextMenu(this.menuShown, this.FileMenu(), {

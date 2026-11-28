@@ -290,6 +290,7 @@ export struct DesktopDockChatPane {
             if (this.target !== undefined) { this.actions?.openWeb(this.target.id, this.target.subagent); }
           },
           onLoadCommands: (): void => { this.binding?.conversation.loadCommands(this.target?.id ?? ''); },
+          onLoadSkills: (): void => { this.binding?.conversation.loadSkills(this.target?.id ?? ''); },
           onCommand: (command: string): Promise<string> => this.run((binding, id): Promise<string> =>
             binding.conversation.runCommandChoice(id, command, (session: string): Promise<string> =>
               this.actions?.exportLog(session) ?? Promise.resolve('当前会话暂不可导出'))),

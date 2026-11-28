@@ -65,6 +65,13 @@ function saveTab(tab: DesktopDockTab): SavedDockTab {
     terminalTabId: tab.kind === DesktopDockKind.TERMINAL && tab.id !== DesktopDockKind.TERMINAL ? tab.id : undefined };
 }
 
+function savedTabId(tab: DesktopDockTab | undefined): string {
+  if (tab?.kind === DesktopDockKind.PREVIEW && tab.file !== undefined) {
+    return desktopDockResourceId('file', tab.file.path, tab.sourceSessionId);
+  }
+  return tab?.id ?? '';
+}
+
 export function encodeDesktopDock(layout: DesktopDockLayout): string {
   const panes: SavedDockPane[] = [];
   let focus = 0;
@@ -73,12 +80,13 @@ export function encodeDesktopDock(layout: DesktopDockLayout): string {
     if (saved.length === 0 && pane.tabs.length > 0) { return; }
     if (index === layout.focus) { focus = panes.length; }
     panes.push({ tabs: saved.map(saveTab),
-      active: saved.some((tab: DesktopDockTab): boolean => tab.id === pane.active) ? pane.active : saved[0]?.id ?? '' });
+      active: savedTabId(saved.find((tab: DesktopDockTab): boolean => tab.id === pane.active) ?? saved[0]) });
   });
   const layoutSurvives = panes.length > 0;
   const floats = layout.floats.filter((panel: DesktopDockFloat): boolean => restorable(panel.tab))
     .map((panel: DesktopDockFloat): SavedDockFloat => ({ tab: saveTab(panel.tab), rect: panel.rect }));
-  const stored: SavedDock = { version: 1, panes: panes, focus: focus, floats: floats, focusedFloat: layout.focusedFloat,
+  const focused = layout.floats.find((panel: DesktopDockFloat): boolean => panel.tab.id === layout.focusedFloat);
+  const stored: SavedDock = { version: 1, panes: panes, focus: focus, floats: floats, focusedFloat: savedTabId(focused?.tab),
     expanded: layoutSurvives && layout.expanded,
     fullscreen: layoutSurvives && layout.fullscreen, width: layout.width, fraction: panes.length === 2 ? layout.fraction : 0.5 };
   return JSON.stringify(stored);

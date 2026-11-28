@@ -51,6 +51,7 @@ import { desktopCordisAction, desktopCordisCardIcon, desktopCordisCardTitle } fr
 import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
+import { DesktopSkill, desktopMayHaveSkillReference, desktopSkillCandidates } from './DesktopSkills';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
 import { desktopMenuOptions, desktopPluginEntryItems } from './DesktopMenuOptions';
 import { DesktopModelPicker } from './DesktopModelPicker';
@@ -147,6 +148,7 @@ export struct DesktopConversationPane {
   onBrowsePlugins?: () => void;
   onCreatePlugin?: () => void;
   onLoadCommands: () => void = () => {};
+  onLoadSkills: () => void = (): void => {};
   onCommand: (name: string) => Promise<string> = (_name: string): Promise<string> => Promise.resolve('');
   onSelectModel: (selection: ModelSelection) => Promise<string> =
     (_selection: ModelSelection): Promise<string> => Promise.resolve('');
@@ -762,6 +764,13 @@ export struct DesktopConversationPane {
     if (!this.snapshot.commands && !this.snapshot.commandLoading && !this.snapshot.commandError) {
       this.onLoadCommands();
     }
+    this.requestSkillCatalog();
+  }
+
+  private requestSkillCatalog(): void {
+    const snapshot = this.snapshot;
+    if (snapshot?.historyLoaded && snapshot.subagent === undefined && snapshot.skills === undefined &&
+      !snapshot.skillsLoading && !snapshot.skillError) { this.onLoadSkills(); }
   }
 
   private paletteCommands(): DesktopCommand[] {
@@ -783,10 +792,14 @@ export struct DesktopConversationPane {
       }));
     }
     if (this.palette === 'commands') {
-      return this.paletteCommands().map((row: DesktopCommand): DesktopPaletteRow => {
+      const commands = this.paletteCommands().map((row: DesktopCommand): DesktopPaletteRow => {
         return { id: row.name, title: row.label, detail: row.description, token: `/${row.alias}`,
           section: ['file', 'goal', 'plan', 'feedback'].includes(row.kind) ? '添加' : '指令' };
       });
+      const skills = desktopSkillCandidates(this.snapshot?.skills ?? [], this.query)
+        .map((skill: DesktopSkill): DesktopPaletteRow => ({ id: 'skill:' + skill.name, title: skill.name,
+          detail: skill.description, section: 'skill', token: '', userOnly: !skill.modelInvocable }));
+      return [...commands, ...skills];
     }
     const needle = this.paletteFilter.trim().toLowerCase();
     if (this.palette === 'model') {
@@ -965,6 +978,16 @@ export struct DesktopConversationPane {
     const view = this.palette;
     let problem = '';
     if (view === 'commands') {
+      if (id.startsWith('skill:')) {
+        const skill = this.snapshot?.skills?.find((item: DesktopSkill): boolean => 'skill:' + item.name === id);
+        if (skill === undefined) { return; }
+        const literal = '/' + skill.name;
+        const reference: DesktopDraftReference = { start: token.start, end: token.start + literal.length,
+          kind: 'skill', label: literal };
+        this.closePalette();
+        this.replaceComposerRange(original, token.start, token.end, literal + ' ', true, false, reference);
+        return;
+      }
       const row = this.paletteCommands().find((item: DesktopCommand): boolean => item.name === id);
       if (row === undefined) { return; }
       if (row.kind === 'file') {
@@ -1204,10 +1227,11 @@ export struct DesktopConversationPane {
       highlight: this.highlight, scroller: this.paletteScroller, agreed: this.agreed,
       riskName: this.snapshot?.permissions.find((row: DesktopPermissionOption): boolean =>
         row.value === this.riskPreset)?.title ?? '', loading: this.palette === 'reference' ? this.referenceLoading :
-        this.palette === 'commands' ? this.snapshot?.commandLoading === true :
+        this.palette === 'commands' ? this.snapshot?.commandLoading === true || this.snapshot?.skillsLoading === true :
           (this.palette === 'model' && this.snapshot?.modelsLoading === true),
       error: this.palette === 'reference' ? this.referenceError : this.palette === 'commands' ?
         this.snapshot?.commandError ?? '' : '',
+      skillError: this.palette === 'commands' && this.snapshot?.skillError === true,
       crumbs: this.referenceTrail,
       onPick: (id: string): void => { this.pickPalette(id); },
       onDrill: (id: string): void => { this.pickReference(id, true); },
@@ -1216,7 +1240,10 @@ export struct DesktopConversationPane {
       onFilter: (value: string): void => { this.paletteFilter = value; this.highlight = 0; },
       onRetry: (): void => {
         if (this.palette === 'reference' && this.referenceToken !== undefined) { this.queryReferences(this.referenceToken); }
-        else { this.onLoadCommands(); }
+        else {
+          if (this.snapshot?.commandError) { this.onLoadCommands(); }
+          if (this.snapshot?.skillError) { this.onLoadSkills(); }
+        }
       },
       onModelsSettings: (): void => { this.closePalette(); this.onModelsSettings(); },
       onBack: (): void => { this.riskPreset = ''; this.agreed = false; },
@@ -1675,8 +1702,11 @@ export struct DesktopConversationPane {
             }, (row: DesktopMediaAttachment, index: number): string => row.id + ':' + index)
           }.width('100%').constraintSize({ maxWidth: '82%' })
         }
-        if (item.body.includes('@') || referenceLabels.length > 0 || desktopSecretRanges(item.body).length > 0) {
+        if (item.body.includes('@') || referenceLabels.length > 0 || desktopSecretRanges(item.body).length > 0 ||
+          (this.snapshot?.subagent === undefined && desktopMayHaveSkillReference(item.body))) {
           DesktopReferenceMessage({ text: item.body, referenceLabels: referenceLabels,
+            skills: this.snapshot?.skills, skillLookupEnabled: this.snapshot?.subagent === undefined,
+            onSkillsNeeded: (): void => { this.requestSkillCatalog(); },
             bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily,
             codeFamily: this.typography.codeFamily,
             sessionId: this.sessionId, host: this.host,
@@ -2163,11 +2193,6 @@ export struct DesktopConversationPane {
       }
       Column({ space: 6 }) {
         if (this.subagentCanSend()) {
-          if ((this.snapshot?.queue.length ?? 0) > 0) {
-            DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
-              running: this.snapshot?.running === true, busy: this.busy, host: this.host,
-              onAction: this.onQueueAction, onOpenImage: this.onOpenImage })
-          }
           if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
             DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })
           }
@@ -2179,6 +2204,14 @@ export struct DesktopConversationPane {
                 onToggle: this.onTimelineDockToggle, onRemove: this.onTimelineDockRemove })
             }, (owner: string): string => owner)
           }
+        }
+        if ((this.snapshot?.queue.length ?? 0) > 0) {
+          DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
+            running: this.snapshot?.running === true, busy: this.busy, mutable: this.subagentCanSend(), host: this.host,
+            attached: this.subagentCanSend() && this.visibleInteraction().length === 0 && this.questionReview() === undefined,
+            onAction: this.onQueueAction })
+        }
+        if (this.subagentCanSend()) {
           this.Composer()
         } else {
           Column({ space: 4 }) {

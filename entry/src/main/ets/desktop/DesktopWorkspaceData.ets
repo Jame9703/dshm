@@ -6,7 +6,7 @@ import { projectSessionCreate, projectSessionList, projectSessionPrompt, PromptM
 import type { SessionListItem } from 'appstate';
 import { Connection, ConnectionState, getArray, getBoolean, getRecord, getString, randomUuid, toStringArray } from 'connection';
 import type { EventSink, HostFacts, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_SESSION_STATUS,
+import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_PLUGIN_MANAGER_CHANGED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SESSION_PROMPT_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
@@ -281,6 +281,7 @@ export class DesktopWorkspaceData {
         this.reading.connect();
         this.conversation.reconnect();
         this.conversation.invalidateCommands();
+        this.invalidateSkills();
         this.conversation.feedback.resync();
         this.conversation.readGoalActivation();
         this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
@@ -313,6 +314,11 @@ export class DesktopWorkspaceData {
         if (event === EVENT_COMMANDS_CHANGE) {
           this.conversation.invalidateCommands();
           this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.conversation.invalidateCommands());
+        }
+        if (event === EVENT_PLUGIN_MANAGER_CHANGED) { this.invalidateSkills(); }
+        if (event === 'agent-preset/selected') {
+          const session = getArray(frame, 'args')?.[0];
+          if (typeof session === 'string') { this.invalidateSkills(session); }
         }
         if (event === EVENT_GOAL_ACTIVATION_CHANGED) {
           this.conversation.observeGoalActivation(frame);
@@ -350,6 +356,13 @@ export class DesktopWorkspaceData {
       this.openWorkspaceStream();
       this.reading.connect();
     }
+  }
+
+  private invalidateSkills(sessionId?: string): void {
+    this.actions.clearSkillCatalog(sessionId);
+    this.conversation.invalidateSkills(sessionId);
+    this.dockConversations?.forEach((binding: DesktopDockConversation): void =>
+      binding.conversation.invalidateSkills(sessionId));
   }
 
   private remoteEventsEnded(): void {

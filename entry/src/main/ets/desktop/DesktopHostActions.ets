@@ -1,13 +1,15 @@
 import { Connection, getArray, getRecord, getString, RemoteFailure, rpcFail } from 'connection';
 import type { DuplexStream, RpcResult, StreamSink } from 'connection';
-import { argsFor, MODEL_CATALOG_ENDPOINT, TIMELINE_EDIT_ROUTE } from 'dshcompat';
+import { argsFor, MODEL_CATALOG_ENDPOINT, SKILLS_LIST_ENDPOINT, TIMELINE_EDIT_ROUTE } from 'dshcompat';
 import { desktopChangeSummary, DesktopChangeSummary } from './DesktopArtifacts';
 import { desktopModelCatalog } from './DesktopModelCatalog';
 import type { DesktopModelCatalogResult } from './DesktopModelCatalog';
+import { DesktopSkill, readDesktopSkills } from './DesktopSkills';
 
 export class DesktopHostActions {
   private readonly connection: Connection;
   private readonly referencePaths: Map<string, Promise<boolean>> = new Map();
+  private readonly skillCatalogs: Map<string, Promise<DesktopSkill[] | undefined>> = new Map();
   private readonly changes: Map<string, Promise<DesktopChangeSummary | undefined>> = new Map();
   private modelCatalogWatchers?: Set<() => void>;
   private modelCatalogRequest?: Promise<DesktopModelCatalogResult>;
@@ -15,6 +17,28 @@ export class DesktopHostActions {
 
   constructor(connection: Connection) {
     this.connection = connection;
+  }
+
+  sessionSkills(sessionId: string): Promise<DesktopSkill[] | undefined> {
+    const cached = this.skillCatalogs.get(sessionId);
+    if (cached !== undefined) { return cached; }
+    if (this.skillCatalogs.size >= 64) {
+      const oldest = this.skillCatalogs.keys().next();
+      if (!oldest.done) { this.skillCatalogs.delete(oldest.value); }
+    }
+    const task = this.call(SKILLS_LIST_ENDPOINT, { 'sessionId': sessionId })
+      .then((result: RpcResult): DesktopSkill[] | undefined => {
+        const skills = result.ok ? readDesktopSkills(result.value) : undefined;
+        if (skills === undefined && this.skillCatalogs.get(sessionId) === task) { this.skillCatalogs.delete(sessionId); }
+        return skills;
+      });
+    this.skillCatalogs.set(sessionId, task);
+    return task;
+  }
+
+  clearSkillCatalog(sessionId?: string): void {
+    if (sessionId === undefined) { this.skillCatalogs.clear(); }
+    else { this.skillCatalogs.delete(sessionId); }
   }
 
   watchModelCatalog(listener: () => void): () => void {

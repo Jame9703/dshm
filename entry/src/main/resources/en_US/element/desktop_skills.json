@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_skills_label", "value": "Skills" },
+    { "name": "desktop_skills_user_only", "value": "user-only" },
+    { "name": "desktop_skills_failed", "value": "Could not load skills for this session" }
+  ]
+}

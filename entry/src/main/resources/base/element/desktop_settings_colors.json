@@ -1,0 +1,7 @@
+{
+  "color": [
+    { "name": "desktop_settings_surface", "value": "#FFFFFF" },
+    { "name": "desktop_settings_mask", "value": "#3D000000" },
+    { "name": "desktop_settings_nav_selected", "value": "#EBEEF2" }
+  ]
+}

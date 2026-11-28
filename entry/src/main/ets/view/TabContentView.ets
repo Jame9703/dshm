@@ -49,6 +49,7 @@ export interface TabContentFacade {
   /** 设置域当前分区（`NavigationState.settingsSection`） */
   settingsSection: string;
   desktopShortcuts: boolean;
+  desktopSettingsCompact: boolean;
   desktopAccountHost?: DesktopHostActions;
   desktopAccountIdentity?: DesktopAccountSettingsIdentity;
   desktopCodingTools: DesktopCodingToolsSnapshot;
@@ -226,6 +227,7 @@ export struct TabContentView {
         // P4-1：分区与清单由注册表给（唯一真值在 NavigationState.settingsSection）
         section: this.f.settingsSection,
         desktopShortcuts: this.f.desktopShortcuts,
+        settingsCompact: this.f.desktopSettingsCompact,
         desktopAccountHost: this.f.desktopAccountHost, desktopAccountIdentity: this.f.desktopAccountIdentity,
         codingTools: this.f.desktopCodingTools, onCodingToolsChange: this.f.onDesktopCodingToolsChange,
         onOpenShortcuts: this.f.onOpenDesktopShortcuts,

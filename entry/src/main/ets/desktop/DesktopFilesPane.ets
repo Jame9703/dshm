@@ -13,6 +13,8 @@ import type { DesktopFileSearchPreferencePatch, DesktopFileSearchPreferences, De
 import type { DesktopFileSearchPreferenceBook } from './DesktopFileSearchPreference';
 import { desktopFileSearchResults, desktopWorkspaceRelativePath } from './DesktopFileSearchResults';
 import type { DesktopFileNameSpan, DesktopFileSearchNode, DesktopFileSearchResults } from './DesktopFileSearchResults';
+import { DESKTOP_FILE_NAVIGATOR_DEFAULT_WIDTH, DesktopFileNavigatorMode, desktopFileNavigatorBounds,
+  desktopFileNavigatorMode, desktopFileNavigatorRelativePath } from './DesktopFileNavigatorModel';
 import { DesktopFileSearchSettings } from './DesktopFileSearchSettings';
 import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
 import lazy { DesktopImageFilePreview } from './DesktopImageFilePreview';
@@ -65,6 +67,8 @@ export struct DesktopFilesPane {
   @Prop @Watch('openRequested') requested: DesktopFileNavigation | undefined = undefined;
   @Prop previewOnly: boolean = false;
   @Prop interactiveHtml: boolean = false;
+  @Prop viewportWidth: number = 768;
+  @Prop focusScope: string = '';
   onHide: () => void = (): void => {};
   onOpenFile?: (path: string, name: string) => void;
   readDocumentView?: () => DesktopDocumentViewState | undefined;
@@ -98,6 +102,13 @@ export struct DesktopFilesPane {
   @State private previewWrap: boolean = true;
   @State private previewOffset: number = 1;
   @State private previewLines: number = 0;
+  @State private navigatorOpen: boolean = false;
+  @State private navigatorRowWidth: number = 0;
+  @State private navigatorWidth: number = DESKTOP_FILE_NAVIGATOR_DEFAULT_WIDTH;
+  @State private navigatorCurrent: string = '';
+  private readonly navigatorScroller: Scroller = new Scroller();
+  private navigatorDragWidth: number = 0;
+  private revealNavigatorPath: string = '';
   private readonly directories: Map<string, Directory> = new Map<string, Directory>();
   private active: boolean = false;
   private searchTimer: number = -1;
@@ -145,7 +156,11 @@ export struct DesktopFilesPane {
     this.collapsedResults.clear();
     this.rows = [];
     this.matches = [];
+    this.rootLoading = false;
     this.notice = '';
+    this.navigatorOpen = false;
+    this.navigatorCurrent = '';
+    this.revealNavigatorPath = '';
     this.closePreview();
     if (this.active && this.sessionId.length > 0) {
       if (!this.previewOnly) { this.expand(ROOT); }
@@ -156,8 +171,9 @@ export struct DesktopFilesPane {
   private openRequested(): void {
     const file = this.requested;
     if (this.active && file !== undefined && file.path.length > 0) {
-      if (desktopIsHtmlFile(file.name) && this.selected?.path === file.path && this.selected?.name === file.name) { return; }
+      if (this.selected?.path === file.path && this.selected?.name === file.name) { return; }
       this.openPreview({ path: file.path, name: file.name, directory: false, depth: 0, expanded: false, loading: false });
+      if (this.navigatorOpen) { this.locatePreviewInNavigator(); }
     }
   }
 
@@ -168,6 +184,11 @@ export struct DesktopFilesPane {
   private expand(path: string): void {
     const directory: Directory = { children: [], loading: false, again: false, truncated: false };
     this.directories.set(path, directory);
+    this.watchDirectory(path, directory);
+    this.list(path, directory);
+  }
+
+  private watchDirectory(path: string, directory: Directory): void {
     directory.stop = this.host?.watch('workspaceFiles/changes', this.args(path), {
       onItem: (value: Object): void => {
         if (getString(value, 'kind') === 'change') {
@@ -177,7 +198,6 @@ export struct DesktopFilesPane {
       onError: (): void => {},
       onEnd: (): void => {}
     });
-    this.list(path, directory);
   }
 
   private collapse(path: string): void {
@@ -228,6 +248,7 @@ export struct DesktopFilesPane {
       directory.again = false;
       this.list(path, directory);
     }
+    this.revealPreviewFile();
   }
 
   private append(path: string, depth: number, into: FileRow[]): void {
@@ -268,7 +289,7 @@ export struct DesktopFilesPane {
   }
 
   private bindSearchPreferences(): void {
-    if (!this.active || this.previewOnly || this.boundSearchRoot === this.workspaceRoot) { return; }
+    if (!this.active || this.boundSearchRoot === this.workspaceRoot) { return; }
     this.closeSearchSettings(false);
     this.stopSearchPreferences?.();
     this.boundSearchRoot = this.workspaceRoot;
@@ -320,12 +341,15 @@ export struct DesktopFilesPane {
       }
     }
     if (refocus && this.active && this.shown) {
-      this.getUIContext().getFocusController().requestFocus('desktopFileSearchSettingsToggle');
+      this.getUIContext().getFocusController().requestFocus(this.fileFocusId('desktopFileSearchSettingsToggle'));
     }
   }
 
   private searchVisibilityChanged(): void {
-    if (!this.shown) {
+    if (this.previewOnly && this.navigatorOpen) {
+      if (this.shown) { this.resumePreviewNavigator(); }
+      else { this.suspendPreviewNavigator(); }
+    } else if (!this.shown) {
       this.closeSearchSettings(false);
       clearTimeout(this.searchTimer);
       this.searchRevision++;
@@ -341,7 +365,7 @@ export struct DesktopFilesPane {
 
   private queueSearch(value: string, force: boolean = false): void {
     this.query = value;
-    if (!this.active || !this.shown) { return; }
+    if (!this.active || !this.shown || (this.previewOnly && !this.navigatorOpen)) { return; }
     const query = value.trim();
     const paths = enabledDesktopFileSearchPaths(this.searchPreferences.rules);
     const request: Record<string, Object> = { 'query': query, 'excludedPaths': paths,
@@ -359,6 +383,8 @@ export struct DesktopFilesPane {
     this.searching = query.length > 0;
     if (query.length > 0) {
       this.searchTimer = setTimeout((): void => { this.search(query, request, revision); }, 230);
+    } else if (this.navigatorOpen) {
+      this.revealPreviewFile();
     }
   }
 
@@ -406,10 +432,129 @@ export struct DesktopFilesPane {
       else { this.collapsedResults.add(row.path); }
       this.rebuildMatches();
     } else if (this.directories.has(row.path)) {
+      this.revealNavigatorPath = '';
       this.collapse(row.path);
     } else {
       this.expand(row.path);
     }
+  }
+
+  private fileFocusId(key: string): string { return key + this.focusScope; }
+
+  private togglePreviewNavigator(): void {
+    this.navigatorOpen = !this.navigatorOpen;
+    if (this.navigatorOpen) {
+      this.resumePreviewNavigator();
+    } else {
+      this.suspendPreviewNavigator();
+      this.getUIContext().getFocusController().requestFocus(this.fileFocusId('desktopFilePreviewNavigatorToggle'));
+    }
+  }
+
+  private resumePreviewNavigator(): void {
+    if (!this.active || !this.shown || !this.workspaceRoot) { return; }
+    if (!this.directories.has(ROOT)) {
+      this.expand(ROOT);
+    } else {
+      for (const path of this.directories.keys()) {
+        const directory = this.directories.get(path);
+        if (directory === undefined || directory.stop !== undefined) { continue; }
+        this.watchDirectory(path, directory);
+        this.list(path, directory);
+      }
+    }
+    if (this.query.trim() && !this.searchRequestKey) { this.queueSearch(this.query); }
+    this.locatePreviewInNavigator();
+  }
+
+  private suspendPreviewNavigator(): void {
+    this.closeSearchSettings(false);
+    clearTimeout(this.searchTimer);
+    this.searchRevision++;
+    this.searching = false;
+    this.searchRequestKey = '';
+    for (const directory of this.directories.values()) {
+      directory.stop?.();
+      directory.stop = undefined;
+      directory.again = false;
+    }
+  }
+
+  private locatePreviewInNavigator(): void {
+    this.navigatorCurrent = desktopFileNavigatorRelativePath(this.selected?.path ?? '', this.workspaceRoot);
+    this.revealNavigatorPath = this.navigatorCurrent;
+    this.revealPreviewFile();
+  }
+
+  private revealPreviewFile(): void {
+    const path = this.revealNavigatorPath;
+    if (!path || !this.active || !this.shown || !this.navigatorOpen || this.query.trim()) { return; }
+    const parts = path.split('/');
+    let parent = ROOT;
+    for (let index = 0; index < parts.length - 1; index++) {
+      const level = this.directories.get(parent);
+      if (level === undefined || level.loading) { return; }
+      const directory = parts.slice(0, index + 1).join('/');
+      if ((!this.searchPreferences.showHidden && parts[index].startsWith('.')) ||
+        !level.children.some((node: FileNode): boolean => node.path === directory && node.kind === NodeKind.DIRECTORY)) {
+        this.revealNavigatorPath = '';
+        return;
+      }
+      if (!this.directories.has(directory)) {
+        this.expand(directory);
+        return;
+      }
+      parent = directory;
+    }
+    if (this.directories.get(parent)?.loading) { return; }
+    const index = this.rows.findIndex((row: FileRow): boolean => row.path === path);
+    this.revealNavigatorPath = '';
+    if (index >= 0) {
+      setTimeout((): void => {
+        if (this.shown && this.navigatorOpen && this.navigatorCurrent === path && !this.query.trim()) {
+          const current = this.rows.findIndex((row: FileRow): boolean => row.path === path);
+          if (current >= 0) { this.navigatorScroller.scrollToIndex(current, false, ScrollAlign.AUTO); }
+        }
+      }, 0);
+    }
+  }
+
+  private navigatorMode(): DesktopFileNavigatorMode {
+    return desktopFileNavigatorMode(this.navigatorRowWidth, this.viewportWidth);
+  }
+
+  private navigatorPanelWidth(): number {
+    return desktopFileNavigatorBounds(this.navigatorRowWidth, this.navigatorWidth).width;
+  }
+
+  private resizePreviewNavigator(width: number): void {
+    this.navigatorWidth = desktopFileNavigatorBounds(this.navigatorRowWidth, width).width;
+  }
+
+  private navigatorResizeKey(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down) { return false; }
+    const bounds = desktopFileNavigatorBounds(this.navigatorRowWidth, this.navigatorWidth);
+    switch (event.keyCode) {
+      case KeyCode.KEYCODE_DPAD_LEFT: this.resizePreviewNavigator(bounds.width + 20); break;
+      case KeyCode.KEYCODE_DPAD_RIGHT: this.resizePreviewNavigator(bounds.width - 20); break;
+      case KeyCode.KEYCODE_MOVE_HOME: this.resizePreviewNavigator(bounds.minimum); break;
+      case KeyCode.KEYCODE_MOVE_END: this.resizePreviewNavigator(bounds.maximum); break;
+      default: return false;
+    }
+    return true;
+  }
+
+  private previewNavigatorKey(event: KeyEvent): boolean {
+    if (!this.navigatorOpen || this.searchSettingsOpen || event.type !== KeyType.Down ||
+      event.keyCode !== KeyCode.KEYCODE_ESCAPE || event.getModifierKeyState?.(['Ctrl']) === true ||
+      event.getModifierKeyState?.(['Alt']) === true || event.getModifierKeyState?.(['Shift']) === true) { return false; }
+    if (this.query.trim()) {
+      this.queueSearch('');
+      this.getUIContext().getFocusController().requestFocus(this.fileFocusId('desktopFileSearchInput'));
+    } else {
+      this.togglePreviewNavigator();
+    }
+    return true;
   }
 
   private closePreview(): void {
@@ -585,7 +730,8 @@ export struct DesktopFilesPane {
     Row({ space: 3 }) {
       Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Image($r('app.media.dsh_workspace_search_outline')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
-      }.key('desktopFileSearchSettingsToggle').width(30).height(32).padding(0).borderRadius(7)
+      }.key('desktopFileSearchSettingsToggle').id(this.fileFocusId('desktopFileSearchSettingsToggle'))
+        .width(30).height(32).padding(0).borderRadius(7)
         .accessibilityText($r('app.string.desktop_file_search_settings_trigger')).accessibilitySelected(this.searchSettingsOpen)
         .onFocus((): void => { this.searchTriggerFocused = true; })
         .onBlur((): void => { this.searchTriggerFocused = false; })
@@ -595,7 +741,8 @@ export struct DesktopFilesPane {
           systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial,
           onStateChange: (event): void => { if (!event.isVisible) { this.closeSearchSettings(false); } } })
       TextInput({ text: this.query, placeholder: $r('app.string.desktop_file_results_placeholder') })
-        .key('desktopFileSearchInput').height(32).layoutWeight(1).backgroundColor(Color.Transparent)
+        .key('desktopFileSearchInput').id(this.fileFocusId('desktopFileSearchInput'))
+        .height(32).layoutWeight(1).backgroundColor(Color.Transparent)
         .padding({ left: 1, right: 1 }).onChange((value: string): void => { this.queueSearch(value); })
         .onKeyEvent((event: KeyEvent): boolean => {
           if (event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ESCAPE && this.query) {
@@ -617,7 +764,7 @@ export struct DesktopFilesPane {
           .accessibilityText($r('app.string.desktop_file_results_clear')).focusOnTouch(false)
           .onClick((): void => {
             this.queueSearch('');
-            this.getUIContext().getFocusController().requestFocus('desktopFileSearchInput');
+            this.getUIContext().getFocusController().requestFocus(this.fileFocusId('desktopFileSearchInput'));
           })
       }
     }.width('100%').padding({ left: 2, right: 2 }).borderRadius(8)
@@ -732,7 +879,9 @@ export struct DesktopFilesPane {
     }
     .key((row.spans === undefined ? 'desktopWorkspaceFile-' : 'desktopFileSearchResult-') + row.path)
     .width('100%').constraintSize({ minHeight: 34 }).padding({ left: 10 + Math.min(row.depth, 12) * 12, right: 8 })
-    .borderRadius(8).backgroundColor(Color.Transparent)
+    .borderRadius(8).backgroundColor(this.navigatorCurrent === row.path ?
+      $r('app.color.workspace_selection') : Color.Transparent)
+    .accessibilitySelected(this.navigatorCurrent === row.path)
     .onClick((): void => {
       if (row.directory || this.onOpenFile === undefined) { this.select(row); }
       else { this.onOpenFile(row.path, row.name); }
@@ -833,6 +982,90 @@ export struct DesktopFilesPane {
     }
   }
 
+  @Builder
+  private FileNavigatorContents() {
+    Column() {
+      Column() { this.SearchBar() }.width('100%').padding(8)
+      if (this.searching || (!this.query.trim() && this.rootLoading && this.rows.length === 0)) {
+        LoadingProgress().width(22).height(22).margin(6)
+      }
+      if (this.query.trim()) {
+        this.SearchStatus()
+      } else if (this.notice) {
+        Text(this.notice).fontSize(12).fontColor($r('sys.color.warning')).padding(8)
+      }
+      if (!this.query.trim() && this.directories.get(ROOT)?.truncated) {
+        Text('工作区文件列表已截断').fontSize(12).padding(8)
+      }
+      if (!this.query.trim() && !this.rootLoading && this.rows.length === 0 && !this.notice) {
+        Text('工作区没有文件').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(12)
+      }
+      List({ scroller: this.navigatorScroller }) {
+        ForEach(this.query.trim() ? this.matches : this.rows, (row: FileRow): void => {
+          ListItem() { this.FileLine(row) }
+        }, (row: FileRow): string => this.rowKey(row))
+        if (this.query.trim() && this.found?.truncated) {
+          ListItem() {
+            Text($r('app.string.desktop_file_results_truncated', String(this.found.count))).fontSize(12)
+              .fontColor($r('sys.color.font_secondary')).padding(8)
+          }
+        }
+        if (this.query.trim() && this.found?.incomplete) {
+          ListItem() {
+            Text($r('app.string.desktop_file_results_incomplete')).fontSize(12)
+              .fontColor($r('sys.color.font_secondary')).padding(8)
+          }
+        }
+      }.width('100%').layoutWeight(1)
+    }.width('100%').height('100%')
+  }
+
+  @Builder
+  private PreviewNavigatorResize() {
+    Column().width(8).height('100%').backgroundColor(Color.Transparent).focusable(true)
+      .key('desktopFilePreviewNavigatorResize').accessibilityText($r('app.string.desktop_file_navigator_resize'))
+      .onKeyEvent((event: KeyEvent): boolean => this.navigatorResizeKey(event))
+      .gesture(PanGesture({ direction: PanDirection.Horizontal, distance: 1 })
+        .onActionStart((): void => { this.navigatorDragWidth = this.navigatorPanelWidth(); })
+        .onActionUpdate((event: GestureEvent): void => {
+          this.resizePreviewNavigator(this.navigatorDragWidth - event.offsetX);
+        }))
+  }
+
+  @Builder
+  private PreviewWithNavigator() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Row() {
+        Column() { this.PreviewBody() }
+          .width(this.navigatorOpen && this.navigatorMode() === DesktopFileNavigatorMode.PUSH ?
+            this.navigatorRowWidth - this.navigatorPanelWidth() - 16 : '100%').height('100%')
+          .visibility(this.navigatorOpen && this.navigatorMode() === DesktopFileNavigatorMode.FILL ?
+            Visibility.Hidden : Visibility.Visible)
+      }.width('100%').height('100%')
+      if (this.navigatorOpen) {
+        Row() {
+          if (this.navigatorMode() !== DesktopFileNavigatorMode.FILL) {
+            this.PreviewNavigatorResize()
+          }
+          Column() { this.FileNavigatorContents() }
+            .key('desktopFilePreviewNavigator').height('100%')
+            .width(this.navigatorMode() === DesktopFileNavigatorMode.FILL ? '100%' : this.navigatorPanelWidth())
+            .backgroundColor(this.navigatorMode() === DesktopFileNavigatorMode.FILL ?
+              $r('app.color.workspace_canvas') : $r('app.color.workspace_panel'))
+            .borderRadius(this.navigatorMode() === DesktopFileNavigatorMode.FILL ? 0 : 12)
+            .border({ width: this.navigatorMode() === DesktopFileNavigatorMode.FILL ? 0 : 1,
+              color: $r('app.color.workspace_border') })
+            .shadow(this.navigatorMode() === DesktopFileNavigatorMode.FILL ?
+              { radius: 0 } : { radius: 15, color: '#33000000', offsetY: 4 })
+        }.height('100%')
+          .padding(this.navigatorMode() === DesktopFileNavigatorMode.FILL ? 0 : { top: 8, right: 8, bottom: 8 })
+      }
+    }.width('100%').layoutWeight(1).onSizeChange((_previous: SizeOptions, current: SizeOptions): void => {
+      const next = Number(current.width);
+      if (next > 0 && next !== this.navigatorRowWidth) { this.navigatorRowWidth = next; }
+    }).onKeyEvent((event: KeyEvent): boolean => this.previewNavigatorKey(event))
+  }
+
   build() {
     Column() {
       Row({ space: 6 }) {
@@ -868,6 +1101,16 @@ export struct DesktopFilesPane {
             })
           Button('⋯', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(36).padding(0)
             .bindMenu(this.fileOptions(this.selected), desktopMenuOptions(Placement.BottomRight))
+          if (this.previewOnly && this.workspaceRoot) {
+            Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+              Image(this.navigatorOpen ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
+                .width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+            }.key('desktopFilePreviewNavigatorToggle').id(this.fileFocusId('desktopFilePreviewNavigatorToggle'))
+              .width(30).height(30).padding(0).borderRadius(7).accessibilitySelected(this.navigatorOpen)
+              .accessibilityText(this.navigatorOpen ? $r('app.string.desktop_file_navigator_hide') :
+                $r('app.string.desktop_file_navigator_show'))
+              .onClick((): void => { this.togglePreviewNavigator(); })
+          }
         } else {
           Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => { this.refresh(); })
         }
@@ -877,43 +1120,10 @@ export struct DesktopFilesPane {
       .height(42).padding({ left: 9, right: 4 }).width('100%')
       .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
       if (this.selected !== undefined) {
-        this.PreviewBody()
+        if (this.previewOnly) { this.PreviewWithNavigator() }
+        else { this.PreviewBody() }
       } else {
-        Column() { this.SearchBar() }.width('100%').padding(8)
-        if (this.searching || (!this.query.trim() && this.rootLoading && this.rows.length === 0)) {
-          LoadingProgress().width(22).height(22).margin(6)
-        }
-        if (this.query.trim()) {
-          this.SearchStatus()
-        } else if (this.notice) {
-          Text(this.notice)
-            .fontSize(12).fontColor($r('sys.color.warning')).padding(8)
-        }
-        if (!this.query.trim() && this.directories.get(ROOT)?.truncated) {
-          Text('工作区文件列表已截断').fontSize(12).padding(8)
-        }
-        if (!this.query.trim() && !this.rootLoading && this.rows.length === 0 && !this.notice) {
-          Text('工作区没有文件')
-            .fontSize(13).fontColor($r('sys.color.font_secondary')).padding(12)
-        }
-        List() {
-          ForEach(this.query.trim() ? this.matches : this.rows, (row: FileRow): void => {
-            ListItem() { this.FileLine(row) }
-          }, (row: FileRow): string => this.rowKey(row))
-          if (this.query.trim() && this.found?.truncated) {
-            ListItem() {
-              Text($r('app.string.desktop_file_results_truncated', String(this.found.count))).fontSize(12)
-                .fontColor($r('sys.color.font_secondary')).padding(8)
-            }
-          }
-          if (this.query.trim() && this.found?.incomplete) {
-            ListItem() {
-              Text($r('app.string.desktop_file_results_incomplete')).fontSize(12)
-                .fontColor($r('sys.color.font_secondary')).padding(8)
-            }
-          }
-        }
-        .width('100%').layoutWeight(1)
+        Column() { this.FileNavigatorContents() }.width('100%').layoutWeight(1)
       }
     }
     .height('100%').width('100%').backgroundColor($r('app.color.workspace_canvas'))

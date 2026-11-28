@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_file_navigator_show", "value": "显示文件树" },
+    { "name": "desktop_file_navigator_hide", "value": "隐藏文件树" },
+    { "name": "desktop_file_navigator_resize", "value": "调整文件树宽度" }
+  ]
+}

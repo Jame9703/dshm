@@ -81,6 +81,7 @@ export struct DesktopAttachmentThumbnail {
   @Prop attachment: DesktopMediaAttachment | undefined = undefined;
   @Prop maxEdge: number = 112;
   @Prop nodeKey: string = '';
+  @Prop compactPreview: boolean = false;
   host?: DesktopHostActions;
   onOpen: (attachment: DesktopMediaAttachment) => void = (_attachment: DesktopMediaAttachment): void => {};
   @State private picture: image.PixelMap | undefined = undefined;
@@ -110,20 +111,36 @@ export struct DesktopAttachmentThumbnail {
     return Math.max(24, Math.round((width ? w : h) * Math.min(1, this.maxEdge / Math.max(w, h))));
   }
 
+  @Builder
+  private Picture() {
+    if (this.attachment?.draftImageSource || this.picture !== undefined) {
+      Image(this.attachment?.draftImageSource ?? this.picture).key(this.nodeKey + '-image').width('100%').height('100%')
+        .objectFit(this.compactPreview ? ImageFit.Cover : ImageFit.Contain).draggable(false).accessibilityLevel('no')
+    }
+  }
+
   build() {
-    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-      if (this.attachment?.draftImageSource || this.picture !== undefined) {
-        Image(this.attachment?.draftImageSource ?? this.picture).key(this.nodeKey + '-image').width('100%').height('100%')
-          .objectFit(ImageFit.Contain).draggable(false).accessibilityLevel('no')
-      } else {
-        SymbolGlyph($r('sys.symbol.picture')).fontSize(this.maxEdge <= 48 ? 14 : 22)
-          .fontColor([$r('sys.color.font_tertiary')]).accessibilityLevel('no')
-      }
-    }.key(this.nodeKey).width(this.extent(true)).height(this.extent(false)).padding(0).borderRadius(8)
-      .backgroundColor($r('app.color.workspace_panel')).clip(true).focusOnTouch(false)
-      .accessibilityText((this.attachment?.name ?? '图片') + '，点击查看原图')
-      .onVisibleAreaChange([0.01], (visible: boolean): void => { if (visible) { this.load(); } })
-      .onClick((): void => { if (this.attachment !== undefined) { this.onOpen(this.attachment); } })
+    if (this.compactPreview) {
+      Stack() {
+        this.Picture()
+      }.key(this.nodeKey).width(24).height(24).borderRadius(4)
+        .border({ width: 0.5, color: $r('app.color.workspace_border') })
+        .backgroundColor($r('app.color.workspace_panel')).clip(true)
+        .accessibilityText($r('app.string.desktop_queue_image'))
+        .onVisibleAreaChange([0.01], (visible: boolean): void => { if (visible) { this.load(); } })
+    } else {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        this.Picture()
+        if (!this.attachment?.draftImageSource && this.picture === undefined) {
+          SymbolGlyph($r('sys.symbol.picture')).fontSize(this.maxEdge <= 48 ? 14 : 22)
+            .fontColor([$r('sys.color.font_tertiary')]).accessibilityLevel('no')
+        }
+      }.key(this.nodeKey).width(this.extent(true)).height(this.extent(false)).padding(0).borderRadius(8)
+        .backgroundColor($r('app.color.workspace_panel')).clip(true).focusOnTouch(false)
+        .accessibilityText((this.attachment?.name ?? '图片') + '，点击查看原图')
+        .onVisibleAreaChange([0.01], (visible: boolean): void => { if (visible) { this.load(); } })
+        .onClick((): void => { if (this.attachment !== undefined) { this.onOpen(this.attachment); } })
+    }
   }
 }
 
