@@ -42,6 +42,9 @@ import { desktopWorkspaceSearchQuery } from '../desktop/DesktopWorkspaceSearchMo
 import { desktopSubagentCatalog, desktopSubagentFromSummary } from '../desktop/DesktopSubagents';
 import type { DesktopSubagentEntry } from '../desktop/DesktopSubagents';
 import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
+import { DesktopDeepSeekKeyDialog } from '../desktop/DesktopDeepSeekKeyDialog';
+import { readDesktopDeepSeekKeyTarget } from '../desktop/DesktopDeepSeekKeySetup';
+import type { DesktopDeepSeekKeyTarget } from '../desktop/DesktopDeepSeekKeySetup';
 import { DesktopAccountOnboardingLayer } from '../desktop/DesktopAccountOnboardingLayer';
 import { emptyDesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
 import type { DesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
@@ -390,6 +393,7 @@ struct DesktopWorkspace {
   @State private workbenchHeight: number = 640;
   private accountOpening: boolean = false;
   private accountClosePending: boolean = false;
+  private accountKeyHandoff?: DesktopWorkspaceData;
   @State private accountDialog: number = -1;
   @State private accountDismissRequest: number = 0;
   @State private accountLauncherSignedIn: boolean = false;
@@ -2902,8 +2906,10 @@ struct DesktopWorkspace {
       onState: (state: Object): void => { if (this.data === owner) { owner.completeAccountLogin(state); } },
       onClose: (): void => { this.closeAccount(); },
       onAddKey: (): void => {
-        this.closeAccount();
-        this.openSettings('settings.models');
+        if (this.pageActive && this.data === owner && this.accountKeyHandoff === undefined) {
+          this.accountKeyHandoff = owner;
+          this.closeAccount(true);
+        }
       }
     })
   }
@@ -2930,7 +2936,7 @@ struct DesktopWorkspace {
         onWillDismiss: (action: DismissDialogAction): void => {
           if (action.reason === DismissReason.PRESS_BACK) { this.accountDismissRequest++; }
         },
-        onDidDisappear: (): void => { this.accountDialog = -1; }
+        onDidDisappear: (): void => { this.accountLoginDisappeared(); }
       });
       if (this.pageActive && !this.accountClosePending && this.data === owner) {
         this.accountDialog = id;
@@ -2940,6 +2946,47 @@ struct DesktopWorkspace {
     } catch (_) {
       if (this.pageActive) {
         prompt.showToast({ message: '无法打开账号弹窗' });
+      }
+    } finally {
+      this.accountOpening = false;
+    }
+  }
+
+  private accountLoginDisappeared(): void {
+    this.accountDialog = -1;
+    const owner = this.accountKeyHandoff;
+    this.accountKeyHandoff = undefined;
+    if (owner !== undefined && this.pageActive && this.data === owner) { this.openAccountKey(owner); }
+  }
+
+  @Builder
+  private AccountKeyDialog(owner: DesktopWorkspaceData, target: DesktopDeepSeekKeyTarget) {
+    DesktopDeepSeekKeyDialog({ host: owner.actions, initialTarget: target, compact: this.workbenchWidth <= 560,
+      availableHeight: Math.max(160, this.workbenchHeight - 48), onLater: (): void => { this.closeAccount(); } })
+  }
+
+  private async openAccountKey(owner: DesktopWorkspaceData): Promise<void> {
+    this.accountOpening = true;
+    this.accountClosePending = false;
+    const prompt = this.getUIContext().getPromptAction();
+    try {
+      const target = await readDesktopDeepSeekKeyTarget(owner.actions);
+      if (target === undefined || !this.pageActive || this.accountClosePending || this.data !== owner) { return; }
+      const material = dialogMaterial();
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.AccountKeyDialog(owner, target); },
+        alignment: DialogAlignment.Center, width: Math.max(220, Math.min(600, this.workbenchWidth - 48)),
+        autoCancel: false, isModal: true, systemMaterial: material,
+        maskColor: $r('app.color.desktop_settings_mask'),
+        backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
+        onWillDismiss: (_action: DismissDialogAction): void => {},
+        onDidDisappear: (): void => { this.accountDialog = -1; }
+      });
+      if (this.pageActive && !this.accountClosePending && this.data === owner) { this.accountDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.pageActive && !this.accountClosePending && this.data === owner) {
+        prompt.showToast({ message: $r('app.string.desktop_deepseek_setup_open_failed') });
       }
     } finally {
       this.accountOpening = false;
@@ -2972,7 +3019,8 @@ struct DesktopWorkspace {
     }
   }
 
-  private closeAccount(): void {
+  private closeAccount(preserveKeyHandoff: boolean = false): void {
+    if (!preserveKeyHandoff) { this.accountKeyHandoff = undefined; }
     this.accountClosePending = true;
     if (this.accountDialog >= 0) {
       this.getUIContext().getPromptAction().closeCustomDialog(this.accountDialog);

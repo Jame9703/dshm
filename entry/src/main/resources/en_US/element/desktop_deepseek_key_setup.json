@@ -1,0 +1,17 @@
+{
+  "string": [
+    { "name": "desktop_deepseek_setup_title", "value": "Add an API key to get started" },
+    { "name": "desktop_deepseek_setup_description", "value": "Configure the official DeepSeek provider to start building." },
+    { "name": "desktop_deepseek_setup_later", "value": "Configure later" },
+    { "name": "desktop_deepseek_setup_save", "value": "Save and continue" },
+    { "name": "desktop_deepseek_setup_saving", "value": "Saving…" },
+    { "name": "desktop_deepseek_setup_key_placeholder", "value": "Enter your API key" },
+    { "name": "desktop_deepseek_setup_key_required", "value": "Enter an API key to continue." },
+    { "name": "desktop_deepseek_setup_key_invalid", "value": "This API key is not in a valid format. Please check it." },
+    { "name": "desktop_deepseek_setup_key_reveal", "value": "Show secret" },
+    { "name": "desktop_deepseek_setup_key_hide", "value": "Hide secret" },
+    { "name": "desktop_deepseek_setup_auth_help", "value": "Authentication details" },
+    { "name": "desktop_deepseek_setup_key_help", "value": "Saved credentials are used first. Environment fallbacks shown here, in order: %1$s. Sources are launch environment, $cwd/.env, then $DSH_HOME/.env." },
+    { "name": "desktop_deepseek_setup_open_failed", "value": "Could not open the API key dialog." }
+  ]
+}

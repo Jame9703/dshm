@@ -1,0 +1,17 @@
+{
+  "string": [
+    { "name": "desktop_deepseek_setup_title", "value": "添加一个 API Key 开始使用" },
+    { "name": "desktop_deepseek_setup_description", "value": "配置 DeepSeek 官方模型，即可开始使用。" },
+    { "name": "desktop_deepseek_setup_later", "value": "稍后配置" },
+    { "name": "desktop_deepseek_setup_save", "value": "保存并继续" },
+    { "name": "desktop_deepseek_setup_saving", "value": "保存中…" },
+    { "name": "desktop_deepseek_setup_key_placeholder", "value": "输入 API 密钥" },
+    { "name": "desktop_deepseek_setup_key_required", "value": "请输入 API 密钥后继续。" },
+    { "name": "desktop_deepseek_setup_key_invalid", "value": "该 API 密钥格式错误，请检查。" },
+    { "name": "desktop_deepseek_setup_key_reveal", "value": "显示密钥" },
+    { "name": "desktop_deepseek_setup_key_hide", "value": "隐藏密钥" },
+    { "name": "desktop_deepseek_setup_auth_help", "value": "认证说明" },
+    { "name": "desktop_deepseek_setup_key_help", "value": "优先使用已保存的凭据。此处显示的环境后备按以下顺序排列：%1$s。来源依次为启动环境、$cwd/.env、$DSH_HOME/.env。" },
+    { "name": "desktop_deepseek_setup_open_failed", "value": "无法打开 API 密钥弹窗。" }
+  ]
+}

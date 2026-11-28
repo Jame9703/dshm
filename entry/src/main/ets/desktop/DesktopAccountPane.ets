@@ -1,3 +1,4 @@
+import { accessibility } from '@kit.AccessibilityKit';
 import { resourceManager } from '@kit.LocalizationKit';
 import { getNumber, getRecord, getString } from 'connection';
 import { copyText, openExternalUrl } from 'platform';
@@ -11,15 +12,44 @@ const POLL_INTERVAL_MS: number = 2000;
 @Component
 struct DesktopAccountSpinner {
   @State private angle: number = 0;
+  @State private reducedMotion: boolean = true;
+  private observingMotion: boolean = false;
+  private readonly motionChanged = (enabled: boolean): void => {
+    this.angle = 0;
+    this.reducedMotion = enabled;
+  };
+
+  aboutToAppear(): void {
+    try {
+      this.reducedMotion = accessibility.isAnimationReduceEnabledSync();
+      accessibility.onAnimationReduceStateChange(this.motionChanged);
+      this.observingMotion = true;
+    } catch (_) {
+      this.reducedMotion = true;
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.observingMotion) {
+      try { accessibility.offAnimationReduceStateChange(this.motionChanged); } catch (_) {}
+      this.observingMotion = false;
+    }
+  }
 
   build() {
-    Image($r('app.media.dsh_account_loading_outline')).width(16).height(16).draggable(false).supportSvg2(true)
-      .rotate({ angle: this.angle }).accessibilityLevel('no')
-      .onAppear((): void => {
-        this.getUIContext().animateTo({ duration: 1000, curve: Curve.Linear, iterations: -1 }, (): void => {
-          this.angle = 360;
-        });
-      })
+    Stack() {
+      if (this.reducedMotion) {
+        Image($r('app.media.dsh_account_loading_outline')).width(16).height(16).draggable(false).supportSvg2(true)
+      } else {
+        Image($r('app.media.dsh_account_loading_outline')).width(16).height(16).draggable(false).supportSvg2(true)
+          .rotate({ angle: this.angle })
+          .onAppear((): void => {
+            this.getUIContext().animateTo({ duration: 1000, curve: Curve.Linear, iterations: -1 }, (): void => {
+              this.angle = 360;
+            });
+          })
+      }
+    }.width(16).height(16).accessibilityLevel('no').hitTestBehavior(HitTestMode.None)
   }
 }
 
@@ -301,18 +331,21 @@ export struct DesktopAccountPane {
 
   private failedSignIn(): boolean { return this.phase === 'failed' || this.failure.length > 0; }
 
+  private waitingForSignIn(): boolean { return (this.busy || this.activeAttempt()) && !this.failedSignIn(); }
+
   private accountTitle(): Resource {
     if (this.signOutMode) { return $r('app.string.desktop_account_sign_out'); }
     if (this.failedSignIn()) { return $r('app.string.desktop_account_login_failed'); }
+    if (this.waitingForSignIn()) { return $r('app.string.desktop_account_login_waiting'); }
     if (this.phase === 'expired') { return $r('app.string.desktop_account_login_expired'); }
-    return this.busy || this.activeAttempt() ? $r('app.string.desktop_account_login_waiting') : $r('app.string.desktop_account_login_title');
+    return $r('app.string.desktop_account_login_title');
   }
 
   private loginDescription(): Resource {
-    if (this.phase === 'expired') { return $r('app.string.desktop_account_login_again'); }
     if (this.failedSignIn()) {
       return this.errorCode === 'no-response' ? $r('app.string.desktop_account_no_response') : $r('app.string.desktop_account_retry_description');
     }
+    if (this.phase === 'expired') { return $r('app.string.desktop_account_login_again'); }
     return this.status.length === 0 ? $r('app.string.desktop_account_settings_loading') : $r('app.string.desktop_account_login_description');
   }
 
@@ -360,8 +393,19 @@ export struct DesktopAccountPane {
   }
 
   @Builder
+  private WaitingButton() {
+    Stack() {
+      Button($r('app.string.desktop_account_continue_in_browser'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .key('desktopAccountSignIn').fontColor(Color.Transparent)
+        .width('100%').height('100%').borderRadius(8).backgroundColor(Color.Transparent)
+        .enabled(false).accessibilityText($r('app.string.desktop_account_continue_in_browser'))
+      DesktopAccountSpinner()
+    }.width(72).height(36).borderRadius(8).backgroundColor($r('sys.color.brand'))
+  }
+
+  @Builder
   private Login() {
-    if ((this.busy || this.activeAttempt()) && !this.failedSignIn()) {
+    if (this.waitingForSignIn()) {
       this.BrowserHint()
     } else { Text(this.loginDescription()).fontSize(14).lineHeight(22) }
     Row({ space: 8 }) {
@@ -372,20 +416,17 @@ export struct DesktopAccountPane {
       } else {
         this.Outlined($r('app.string.desktop_account_add_key'), 'desktopAccountAddKey', (): boolean => !this.busy, this.onAddKey)
       }
-      Button({ buttonStyle: ButtonStyleMode.EMPHASIZED }) {
-        if ((this.busy || this.activeAttempt()) && !this.failedSignIn()) {
-          DesktopAccountSpinner()
-        } else {
-          Text(this.failedSignIn() || this.phase === 'expired' ?
-            $r('app.string.desktop_account_retry') : $r('app.string.desktop_account_sign_in'))
-            .fontSize(14).fontColor(Color.White)
-        }
-      }.key('desktopAccountSignIn').constraintSize({ minWidth: 72 }).height(36).borderRadius(8)
-        .enabled(!this.busy && this.status === 'signed-out' && this.phase !== 'committing' &&
-          (!this.activeAttempt() || this.failedSignIn()))
-        .accessibilityText(this.failedSignIn() || this.phase === 'expired' ? $r('app.string.desktop_account_retry') :
-          this.busy || this.activeAttempt() ? $r('app.string.desktop_account_login_waiting') : $r('app.string.desktop_account_sign_in'))
-        .onClick((): void => { this.signIn(); })
+      if (this.waitingForSignIn()) {
+        this.WaitingButton()
+      } else {
+        Button(this.failedSignIn() || this.phase === 'expired' ?
+          $r('app.string.desktop_account_retry') : $r('app.string.desktop_account_sign_in'),
+          { buttonStyle: ButtonStyleMode.EMPHASIZED }).key('desktopAccountSignIn')
+          .constraintSize({ minWidth: 72 }).height(36).borderRadius(8).fontSize(14).fontColor(Color.White)
+          .enabled(!this.busy && this.status === 'signed-out' && this.phase !== 'committing' &&
+            (!this.activeAttempt() || this.failedSignIn()))
+          .onClick((): void => { this.signIn(); })
+      }
     }.width('100%')
   }
 
