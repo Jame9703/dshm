@@ -13,7 +13,8 @@ import type { DesktopDraftAttachment, DesktopMediaAttachment } from './DesktopAt
 import type { DesktopComposerDraft } from './DesktopDraftReferences';
 import type { DesktopDockChatTarget } from './DesktopRightDock';
 import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
-import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from './DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
+import type { DesktopQuestionProgress } from './DesktopQuestionDrafts';
 import type { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { DesktopPlanDocument } from './DesktopPlan';

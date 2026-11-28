@@ -1,4 +1,5 @@
 import { DEFAULT_DESKTOP_TRANSCRIPT_POLICY, readDesktopTranscriptPolicy } from './DesktopTranscriptPresentation';
+import type { DesktopQuestionDrafts } from './DesktopQuestionDrafts';
 import type { DesktopTranscriptPolicy } from './DesktopTranscriptPresentation';
 import { projectSessionCreate, projectSessionList, projectSessionPrompt, PromptMode, promptPayload, sessionCreatePayload,
   sessionListEndpoint, sessionListPayload, textPart } from 'appstate';
@@ -86,6 +87,7 @@ function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
 }
 
 export class DesktopWorkspaceData {
+  private readonly questionDrafts?: DesktopQuestionDrafts;
   private readonly connection: Connection = new Connection();
   readonly conversation: DesktopConversation;
   readonly interactions: DesktopInteractions;
@@ -143,12 +145,13 @@ export class DesktopWorkspaceData {
     onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void,
     openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void,
     onQuotaNotice: (notice?: DesktopQuotaNotice) => void,
-    onTimelinePreferences: (value: DesktopTimelinePreferences) => void) {
+    onTimelinePreferences: (value: DesktopTimelinePreferences) => void, questionDrafts?: DesktopQuestionDrafts) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
     this.onQuotaNotice = onQuotaNotice;
     this.onTimelinePreferences = onTimelinePreferences;
+    this.questionDrafts = questionDrafts;
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices,
       (state: Object): void => { this.completeAccountLogin(state); });
@@ -228,7 +231,8 @@ export class DesktopWorkspaceData {
   }
 
   async start(url: string): Promise<void> {
-    if (this.connection.configure(url) === undefined || !(await this.connection.authenticate()).ok) {
+    const host = this.connection.configure(url);
+    if (host === undefined || !(await this.connection.authenticate()).ok) {
       this.workspaceError = '无法连接工作区宿主';
       this.publish();
       return;
@@ -236,6 +240,7 @@ export class DesktopWorkspaceData {
     if (!this.active) {
       return;
     }
+    if (this.questionDrafts !== undefined) { this.interactions.bindQuestionDrafts(this.questionDrafts, host.baseUrl); }
     const eventSink: EventSink = {
       onReady: (facts: HostFacts): void => {
         this.interactions.startEvents(facts.clientId);

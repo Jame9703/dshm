@@ -1,13 +1,14 @@
+import { KeyCode } from '@kit.InputKit';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopApprovalCard } from './DesktopApprovalCard';
-import type { DesktopInteraction, DesktopQuestion, DesktopQuestionAnswer, DesktopQuestionDraft,
-  DesktopQuestionOption, DesktopQuestionProgress } from './DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestion, DesktopQuestionAnswer, DesktopQuestionOption } from './DesktopInteractions';
+import type { DesktopQuestionDraft, DesktopQuestionProgress } from './DesktopQuestionDrafts';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import type { DesktopTypography } from './DesktopTheme';
 
 @Component
 export struct DesktopInteractionPane {
-  @Prop request?: DesktopInteraction = undefined;
+  @Prop @Watch('syncClock') request?: DesktopInteraction = undefined;
   @Prop busy: boolean = false;
   @Prop approvalCommand: string = '';
   @Prop typography: DesktopTypography | undefined = undefined;
@@ -28,23 +29,40 @@ export struct DesktopInteractionPane {
   @State private incomplete: boolean = false;
   @State private now: number = 0;
   private clock: number = -1;
+  private composingCustom: boolean = false;
+  private readonly customController: TextAreaController = new TextAreaController();
 
   aboutToAppear(): void {
     const request = this.request;
     if (request?.kind !== 'question' || request.planReview !== undefined) { return; }
-    const progress = request.questionProgress;
+    const savedProgress = request.questionProgress;
+    const progress = savedProgress?.drafts.length === request.questions.length &&
+      request.questions.every((question: DesktopQuestion, index: number): boolean =>
+        savedProgress.drafts[index].id === question.id) ? savedProgress : undefined;
     this.drafts = request.questions.map((question: DesktopQuestion, index: number): DesktopQuestionDraft => {
       const saved = progress?.drafts[index];
-      if (saved?.id === question.id) { return saved; }
+      if (saved !== undefined) {
+        const selected = saved.selected.filter((label: string): boolean =>
+          question.options.some((option: DesktopQuestionOption): boolean => option.label === label));
+        return { id: question.id, selected: question.multi ? selected : selected.slice(0, 1),
+          custom: question.custom ? saved.custom : '', skipped: saved.skipped };
+      }
       const candidates = question.multi ? question.options : question.options.slice(0, 1);
       return { id: question.id, selected: candidates.filter((option: DesktopQuestionOption): boolean => option.recommended)
         .map((option: DesktopQuestionOption): string => option.label), custom: '', skipped: false };
     });
     this.questionIndex = Math.min(progress?.index ?? 0, Math.max(0, request.questions.length - 1));
-    if ((request.waitDeadline ?? 0) > 0) {
-      this.now = Date.now();
-      this.clock = setInterval((): void => { this.now = Date.now(); }, 1000);
+    this.syncClock();
+  }
+
+  private syncClock(): void {
+    if ((this.request?.waitDeadline ?? 0) <= 0) {
+      clearInterval(this.clock);
+      this.clock = -1;
+      return;
     }
+    this.now = Date.now();
+    if (this.clock === -1) { this.clock = setInterval((): void => { this.now = Date.now(); }, 1000); }
   }
 
   aboutToDisappear(): void { clearInterval(this.clock); }
@@ -87,7 +105,10 @@ export struct DesktopInteractionPane {
   }
 
   private save(index: number, engage: boolean = false): void {
-    if (this.questionIndex !== index) { this.expanded = []; }
+    if (this.questionIndex !== index) {
+      this.expanded = [];
+      this.composingCustom = false;
+    }
     this.questionIndex = index;
     this.incomplete = false;
     this.onQuestionProgress(this.request?.id ?? '', { index: index, drafts: this.drafts }, engage);
@@ -112,8 +133,38 @@ export struct DesktopInteractionPane {
   }
 
   private updateText(question: DesktopQuestion, text: string): void {
+    const draft = this.drafts[this.questionIndex];
+    if (draft?.id !== question.id || draft.custom === text) { return; }
     this.update({ id: question.id, selected: question.multi ? this.drafts[this.questionIndex]?.selected ?? [] : [],
       custom: text, skipped: false }, this.questionIndex);
+  }
+
+  private customKey(question: DesktopQuestion, event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down ||
+      (event.keyCode !== KeyCode.KEYCODE_ENTER && event.keyCode !== KeyCode.KEYCODE_NUMPAD_ENTER) ||
+      this.composingCustom) { return false; }
+    if (!this.busy) {
+      if (event.getModifierKeyState?.(['Shift']) === true) { this.insertLineBreak(question); }
+      else if (this.answered(this.drafts[this.questionIndex])) { this.nextQuestion(); }
+      else { this.incomplete = true; }
+    }
+    return true;
+  }
+
+  private insertLineBreak(question: DesktopQuestion): void {
+    const text = this.drafts[this.questionIndex]?.custom ?? '';
+    const range = this.customController.getSelection();
+    const caret = this.customController.getCaretOffset()?.index ?? text.length;
+    const first = range?.start ?? caret;
+    const last = range?.end ?? caret;
+    const start = Math.max(0, Math.min(text.length, first, last));
+    const end = Math.max(start, Math.min(text.length, Math.max(first, last)));
+    if (start < end) { this.customController.deleteText({ start: start, end: end }); }
+    const offset = this.customController.addText('\n', { offset: start });
+    if (offset >= 0) {
+      this.customController.caretPosition(offset);
+      this.updateText(question, text.slice(0, start) + '\n' + text.slice(end));
+    }
   }
 
   private nextQuestion(): void {
@@ -249,10 +300,15 @@ export struct DesktopInteractionPane {
           }, (option: DesktopQuestionOption, index: number): string => question.id + ':' + option.label + ':' + index)
           if (question.custom) {
             TextArea({ text: this.drafts[this.questionIndex]?.custom ?? '',
-              placeholder: $r('app.string.desktop_question_input') })
+              placeholder: $r('app.string.desktop_question_input'), controller: this.customController })
               .width('100%').constraintSize({ minHeight: 42, maxHeight: 120 }).fontSize(14)
               .borderRadius(8).key('desktopQuestionCustom').enabled(!this.busy)
-              .onChange((value: string): void => { this.updateText(question, value); })
+              .onChange((value: string, preview?: PreviewText): void => {
+                this.composingCustom = (preview?.value ?? '').length > 0;
+                if (!this.composingCustom) { this.updateText(question, value); }
+              })
+              .onBlur((): void => { this.composingCustom = false; })
+              .onKeyPreIme((event: KeyEvent): boolean => this.customKey(question, event))
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').constraintSize({ maxHeight: 260 }).align(Alignment.TopStart)

@@ -7,7 +7,9 @@ import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getArray, getRecord, getString, parseTarget } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
-import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
+import { localDesktopQuestionDrafts } from '../desktop/DesktopQuestionDrafts';
+import type { DesktopQuestionProgress } from '../desktop/DesktopQuestionDrafts';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
 import { DesktopTerminalTitle } from '../desktop/DesktopTerminalChrome';
 import type { DesktopTerminalRow } from '../desktop/DesktopTerminalClient';
@@ -623,7 +625,7 @@ struct DesktopWorkspace {
       this.timelinePreferences = value;
       this.timelinePreferencesReady = true;
       this.openFirstTimelineTree();
-    });
+    }, localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
     const data = this.data;
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
   }

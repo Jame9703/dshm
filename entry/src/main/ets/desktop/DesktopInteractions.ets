@@ -3,6 +3,7 @@ import { RemoteEventFrameType, WATERFALL_APPROVAL, WATERFALL_QUESTION } from 'ds
 import { DesktopSidebarPending } from './DesktopSidebarStatus';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopPlanTitle, DesktopPlanReview } from './DesktopPlan';
+import type { DesktopQuestionDrafts, DesktopQuestionProgress } from './DesktopQuestionDrafts';
 
 export interface DesktopQuestionOption {
   label: string;
@@ -25,18 +26,6 @@ export interface DesktopQuestionAnswer {
   id: string;
   selected: string[];
   custom?: string;
-}
-
-export interface DesktopQuestionDraft {
-  id: string;
-  selected: string[];
-  custom: string;
-  skipped: boolean;
-}
-
-export interface DesktopQuestionProgress {
-  index: number;
-  drafts: DesktopQuestionDraft[];
 }
 
 interface DesktopQuestionState {
@@ -146,6 +135,8 @@ export class DesktopInteractions {
   private readonly settling: Set<DesktopInteraction>;
   private readonly owner?: DesktopInteractions;
   private views?: Set<DesktopInteractions>;
+  private drafts?: DesktopQuestionDrafts;
+  private draftOrigin: string = '';
   private eventClientId: string = '';
   private locale: string = 'zh';
   private selected: string = '';
@@ -170,6 +161,11 @@ export class DesktopInteractions {
 
   observeSidebarPending(listener: (pending: Map<string, DesktopSidebarPending>) => void): void {
     this.onSidebarPending = listener;
+  }
+
+  bindQuestionDrafts(drafts: DesktopQuestionDrafts, origin: string): void {
+    this.drafts = drafts;
+    this.draftOrigin = origin;
   }
 
   setLocale(locale: string): void {
@@ -225,7 +221,7 @@ export class DesktopInteractions {
     if (type === RemoteEventFrameType.CANCEL) {
       const row = this.events.get(id);
       if (row?.kind === 'question' && (!row.timed || !row.callId)) {
-        this.questionStates.delete(this.questionKey(row));
+        this.forgetQuestion(this.questionKey(row), row.callId.length > 0);
       }
       if (this.events.delete(id)) {
         this.publish();
@@ -294,7 +290,7 @@ export class DesktopInteractions {
     for (const settled of getArray(projection, 'settled') ?? []) {
       const callId = getString(settled, 'callId') ?? '';
       if (callId) {
-        this.questionStates.delete(sessionId + '\u0000' + callId);
+        this.forgetQuestion(sessionId + '\u0000' + callId, true);
         state.submissions.delete(callId);
       }
     }
@@ -385,6 +381,31 @@ export class DesktopInteractions {
     return row.sessionId + '\u0000' + (row.callId || row.id);
   }
 
+  private readQuestionState(row: DesktopInteraction): DesktopQuestionState | undefined {
+    const key = this.questionKey(row);
+    const existing = this.questionStates.get(key);
+    if (existing !== undefined || !row.callId) { return existing; }
+    const owner = this.owner ?? this;
+    const saved = owner.drafts?.get(owner.draftOrigin + '\u0000' + key);
+    if (saved === undefined) { return undefined; }
+    const state: DesktopQuestionState = { progress: saved.progress, held: saved.held, hidden: false };
+    this.questionStates.set(key, state);
+    return state;
+  }
+
+  private persistQuestion(row: DesktopInteraction, state: DesktopQuestionState): void {
+    if (!row.callId) { return; }
+    const owner = this.owner ?? this;
+    owner.drafts?.put({ key: owner.draftOrigin + '\u0000' + this.questionKey(row),
+      progress: state.progress, held: state.held });
+  }
+
+  private forgetQuestion(key: string, durable: boolean): void {
+    this.questionStates.delete(key);
+    const owner = this.owner ?? this;
+    if (durable) { owner.drafts?.remove(owner.draftOrigin + '\u0000' + key); }
+  }
+
   private questionRow(id: string): DesktopInteraction | undefined {
     const event = this.events.get(id) ?? this.answerableQuestions(this.questionProjections.get(this.selected))
       .find((row: DesktopInteraction): boolean => row.id === id);
@@ -392,19 +413,22 @@ export class DesktopInteractions {
   }
 
   private questionState(row: DesktopInteraction): DesktopQuestionState {
-    const key = this.questionKey(row);
-    const existing = this.questionStates.get(key);
+    const existing = this.readQuestionState(row);
     if (existing !== undefined) { return existing; }
     const state: DesktopQuestionState = { held: false, hidden: false };
-    this.questionStates.set(key, state);
+    this.questionStates.set(this.questionKey(row), state);
     return state;
   }
 
   saveQuestion(id: string, progress: DesktopQuestionProgress, engage: boolean): void {
     const row = this.questionRow(id);
     if (row === undefined) { return; }
-    this.questionState(row).progress = progress;
-    if (engage) { this.holdQuestion(id); }
+    const state = this.questionState(row);
+    state.progress = progress;
+    const startedHold = engage && row.timed && !state.held;
+    if (startedHold) { state.held = true; }
+    this.persistQuestion(row, state);
+    if (startedHold) { this.publish(); }
   }
 
   holdQuestion(id: string): void {
@@ -413,6 +437,7 @@ export class DesktopInteractions {
     const state = this.questionState(row);
     if (state.held) { return; }
     state.held = true;
+    this.persistQuestion(row, state);
     this.publish();
   }
 
@@ -447,7 +472,7 @@ export class DesktopInteractions {
     const encoded: Record<string, Object> = { 'answers': answers };
     if (!event.continued) {
       this.holdQuestion(id);
-      return this.settle(id, encoded, 'result', true);
+      return this.settle(id, encoded, 'result', !event.callId);
     }
     const state = this.questionProjections.get(event.sessionId);
     if (state === undefined || state.submissions.has(event.callId)) { return '正在提交这项回答'; }
@@ -466,7 +491,6 @@ export class DesktopInteractions {
         submission.sending = false;
         submission.inboxSequence = state.inboxSequence;
       }
-      this.questionStates.delete(this.questionKey(event));
     }
     this.publish();
     return '';
@@ -481,7 +505,7 @@ export class DesktopInteractions {
     const error = await this.send(id, kind, value);
     this.settling.delete(event);
     if (error.length === 0 && this.events.get(id) === event && this.events.delete(id)) {
-      if (clearDraft) { this.questionStates.delete(this.questionKey(event)); }
+      if (clearDraft) { this.forgetQuestion(this.questionKey(event), false); }
       this.publish();
     } else if (event.kind === 'approval' && this.events.get(id) === event) {
       this.publish();
@@ -538,7 +562,7 @@ export class DesktopInteractions {
       this.releaseClaim();
       if (claim !== undefined) { this.attachClaim(claim); }
     }
-    if (claim !== undefined && this.questionStates.get(this.questionKey(claim))?.held === true) {
+    if (claim !== undefined && this.readQuestionState(claim)?.held === true) {
       this.clearCountdown();
     }
     const active = all.filter((row: DesktopInteraction): boolean => row.sessionId === this.selected);
@@ -554,7 +578,7 @@ export class DesktopInteractions {
           kind: 'approval', questions: [], continued: false, timed: false, approvalSubmitting: this.settling.has(row) };
       }
       if (row.kind !== 'question' || row.planReview !== undefined) { return row; }
-      const state = this.questionStates.get(this.questionKey(row));
+      const state = this.readQuestionState(row);
       return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: row.reason,
         kind: row.kind, questions: row.questions, continued: row.continued, timed: row.timed,
         questionProgress: state?.progress, questionHidden: state?.hidden, questionHeld: state?.held,
@@ -582,7 +606,7 @@ export class DesktopInteractions {
       onItem: (frame: Object): void => {
         const remaining = getNumber(frame, 'remainingMs');
         if (this.claimEvent !== row.id || remaining === undefined ||
-          this.questionStates.get(this.questionKey(row))?.held === true) { return; }
+          this.readQuestionState(row)?.held === true) { return; }
         this.clearCountdown();
         this.claimDeadline = Date.now() + remaining;
         this.claimTimer = setTimeout((): void => {

@@ -10,7 +10,8 @@ import type { DesktopDroppedFiles } from './DesktopAttachmentIntake';
 import type { ModelOption, ModelSelection } from 'appstate';
 import type { DesktopConversationSnapshot, DesktopPermissionOption, DesktopTranscriptItem } from './DesktopConversation';
 import { DesktopInteractionPane } from './DesktopInteractionPane';
-import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from './DesktopInteractions';
+import type { DesktopInteraction, DesktopQuestionAnswer } from './DesktopInteractions';
+import type { DesktopQuestionProgress } from './DesktopQuestionDrafts';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopArtifactsPane } from './DesktopArtifactsPane';
@@ -1186,9 +1187,14 @@ export struct DesktopConversationPane {
   }
 
   private liveApproval(id: string): DesktopInteraction | undefined {
+    const row = this.liveInteraction(id);
+    return row?.kind === 'approval' ? row : undefined;
+  }
+
+  private liveInteraction(id: string): DesktopInteraction | undefined {
     const session: string | undefined = this.snapshot?.sessionId;
     return session === undefined ? undefined : this.interactions.find((row: DesktopInteraction): boolean =>
-      row.kind === 'approval' && row.id === id && row.sessionId === session);
+      row.id === id && row.sessionId === session);
   }
 
   private approvalCommand(id: string): string {
@@ -2020,7 +2026,7 @@ export struct DesktopConversationPane {
         Row() {
           ForEach(this.visibleInteraction(), (row: DesktopInteraction) => {
             DesktopInteractionPane({
-              request: row.kind === 'approval' ? this.liveApproval(row.id) : row,
+              request: this.liveInteraction(row.id),
               approvalCommand: row.kind === 'approval' ? this.approvalCommand(row.id) : '',
               busy: this.busy, onAnswer: this.onAnswer,
               onDecision: (id: string, allow: boolean): void => { this.decideApproval(id, allow); },
@@ -2029,7 +2035,7 @@ export struct DesktopConversationPane {
               onQuestionProgress: this.onQuestionProgress, onQuestionHold: this.onQuestionHold,
               onQuestionClose: this.onQuestionClose
             })
-          }, (row: DesktopInteraction): string => `${row.id}:${row.waitDeadline ?? 0}:${row.questionHeld === true}`)
+          }, (row: DesktopInteraction): string => row.sessionId + ':' + row.id)
         }
         .width('100%').padding({ left: 20, right: 20, bottom: 8 }).justifyContent(FlexAlign.Center)
       } else if (this.interactions.some((row: DesktopInteraction): boolean => row.reviewHidden === true)) {
