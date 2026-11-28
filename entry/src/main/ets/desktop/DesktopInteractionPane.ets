@@ -32,10 +32,13 @@ export struct DesktopInteractionPane {
   @State private collapsed: boolean = false;
   @State private expanded: string[] = [];
   @State private incomplete: boolean = false;
+  @State private customFocused: boolean = false;
   @State private now: number = 0;
   private clock: number = -1;
   private mounted: boolean = false;
   private composingCustom: boolean = false;
+  private optionKeyCode: number = -1;
+  private optionKeyTarget: string = '';
   private readonly focusInstance: number = nextQuestionFocusInstance++;
   private readonly focusedQuestions: Set<number> = new Set<number>();
   private readonly customController: TextAreaController = new TextAreaController();
@@ -166,6 +169,8 @@ export struct DesktopInteractionPane {
       this.releaseAnswerFocus();
       this.expanded = [];
       this.composingCustom = false;
+      this.customFocused = false;
+      this.resetOptionKey();
     }
     this.questionIndex = index;
     this.incomplete = false;
@@ -253,6 +258,30 @@ export struct DesktopInteractionPane {
     else { this.save(this.questionIndex + 1); }
   }
 
+  private resetOptionKey(): void {
+    this.optionKeyCode = -1;
+    this.optionKeyTarget = '';
+  }
+
+  private optionKey(question: DesktopQuestion, option: DesktopQuestionOption, index: number, event: KeyEvent): boolean {
+    const code = event.keyCode;
+    const enter = code === KeyCode.KEYCODE_ENTER || code === KeyCode.KEYCODE_NUMPAD_ENTER;
+    if (!enter && code !== KeyCode.KEYCODE_SPACE) { return false; }
+    const target = `${this.request?.id ?? ''}:${this.questionIndex}:${question.id}:${index}`;
+    if (event.type === KeyType.Down && this.optionKeyCode === -1 && !this.questionLocked()) {
+      this.optionKeyCode = code;
+      this.optionKeyTarget = target;
+    } else if (event.type === KeyType.Up && this.optionKeyCode === code) {
+      const active = this.optionKeyTarget === target && !this.questionLocked();
+      this.resetOptionKey();
+      if (active) {
+        if (enter) { this.submit(); }
+        else { this.select(question, option.label); }
+      }
+    }
+    return true;
+  }
+
   private skip(question: DesktopQuestion): void {
     if (this.questionLocked()) { return; }
     const last = this.isLast();
@@ -290,12 +319,12 @@ export struct DesktopInteractionPane {
 
 
   @Builder
-  private IconButton(icon: Resource, label: Resource, id: string, enabled: boolean, lockWithQuestion: boolean,
+  private IconButton(icon: Resource, size: number, label: Resource, id: string, enabled: boolean, lockWithQuestion: boolean,
     action: () => void) {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-      Image(icon).width(15).height(15).supportSvg2(true).draggable(false).accessibilityLevel('no')
+      Image(icon).width(size).height(size).supportSvg2(true).draggable(false).accessibilityLevel('no')
         .fillColor($r('sys.color.font_secondary'))
-    }.width(32).height(32).borderRadius(7).padding(0).key(id)
+    }.width(24).height(24).borderRadius(6).padding(0).key(id)
     .accessibilityText(label).enabled(enabled && (!lockWithQuestion || !this.questionLocked()))
     .onClick((): void => {
       if (!lockWithQuestion || !this.questionLocked()) { action(); }
@@ -305,8 +334,16 @@ export struct DesktopInteractionPane {
   @Builder
   private QuestionHeader(question: DesktopQuestion) {
     Row({ space: 6 }) {
-      if (question.header) { Text(question.header).fontSize(12).fontColor($r('sys.color.font_secondary')) }
-      Blank()
+      Column({ space: 5 }) {
+        if (question.header) {
+          Text(question.header).fontSize(11).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontColor($r('sys.color.font_tertiary'))
+        }
+        if (this.collapsed) {
+          Text(question.prompt).key('desktopQuestionCollapsedPrompt').fontSize(16).lineHeight(22)
+            .fontWeight(FontWeight.Medium).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       if (this.request?.continued) {
         Text($r('app.string.desktop_question_continued')).fontSize(12).fontColor($r('sys.color.font_secondary'))
       } else if (this.request?.timed && this.request?.questionHeld) {
@@ -319,16 +356,34 @@ export struct DesktopInteractionPane {
           .height(28).enabled(!this.questionLocked()).onClick((): void => { this.onQuestionHold(this.request?.id ?? ''); })
       }
       this.IconButton(this.collapsed ? $r('app.media.dsh_queue_chevron_up_outline') :
-        $r('app.media.dsh_queue_chevron_down_outline'), this.collapsed ? $r('app.string.desktop_question_expand_card') :
+        $r('app.media.dsh_queue_chevron_down_outline'), 18, this.collapsed ? $r('app.string.desktop_question_expand_card') :
         $r('app.string.desktop_question_collapse_card'), 'desktopQuestionCollapse', true, true,
         (): void => {
-          if (!this.collapsed) { this.releaseAnswerFocus(); }
+          if (!this.collapsed) {
+            this.releaseAnswerFocus();
+            this.customFocused = false;
+            this.resetOptionKey();
+          }
           this.collapsed = !this.collapsed;
         })
-      this.IconButton($r('app.media.dsh_dock_close'), this.request?.callId ? $r('app.string.desktop_question_hide') :
+      this.IconButton($r('app.media.dsh_dock_close'), 15, this.request?.callId ? $r('app.string.desktop_question_hide') :
         $r('app.string.desktop_question_cancel'), 'desktopQuestionClose', true, true,
         (): void => { this.onQuestionClose(this.request?.id ?? ''); })
-    }.width('100%')
+    }.width('100%').alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  private ChoiceCheckbox(checked: boolean) {
+    Stack({ alignContent: Alignment.Center }) {
+      Stack() {}
+        .width(14).height(14).borderRadius(4)
+        .backgroundColor(checked ? $r('sys.color.font_primary') : Color.Transparent)
+        .border({ width: 0.5, color: checked ? $r('sys.color.font_primary') : $r('app.color.workspace_border') })
+      if (checked) {
+        Image($r('app.media.dsh_dock_check')).width(12).height(12).supportSvg2(true).draggable(false)
+          .fillColor($r('app.color.workspace_canvas'))
+      }
+    }.width(20).height(20).margin({ top: 2 }).accessibilityLevel('no')
   }
 
   @Builder
@@ -336,16 +391,18 @@ export struct DesktopInteractionPane {
     Row({ space: 2 }) {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 8 }) {
-          Stack() {
-            if (this.selected(option.label)) {
-              Image($r('app.media.dsh_dock_check')).width(12).height(12).supportSvg2(true).draggable(false)
-                .fillColor($r('sys.color.font_primary'))
-            }
-          }.width(16).height(16).border({ width: 1, color: $r('app.color.workspace_border') })
-          .borderRadius(question.multi ? 4 : 8).accessibilityLevel('no')
+          if (question.multi) {
+            this.ChoiceCheckbox(this.selected(option.label))
+          } else {
+            Text(String(index + 1)).key('desktopQuestionOptionNumber-' + index)
+              .width(20).height(20).margin({ top: 2 }).textAlign(TextAlign.Center)
+              .fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_secondary'))
+              .borderRadius(4).backgroundColor($r('app.color.workspace_action')).accessibilityLevel('no')
+          }
           Column({ space: 2 }) {
             Row({ space: 6 }) {
-              Text(option.caption).fontSize(14).fontColor($r('sys.color.font_primary'))
+              Text(option.caption).fontSize(14).lineHeight(24).fontWeight(FontWeight.Medium)
+                .fontColor($r('sys.color.font_primary'))
               if (option.recommended) {
                 Text($r('app.string.desktop_question_recommended')).fontSize(11).fontColor($r('sys.color.font_secondary'))
               }
@@ -355,12 +412,18 @@ export struct DesktopInteractionPane {
                 .maxLines(this.expanded.includes(option.label) ? 1000 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
             }
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        }.width('100%')
+        }.width('100%').alignItems(VerticalAlign.Top)
       }
       .layoutWeight(1).padding(8).borderRadius(8).key('desktopQuestionOption-' + index)
-      .backgroundColor(this.selected(option.label) ? $r('app.color.workspace_selection') : Color.Transparent)
+      .backgroundColor(!question.multi && this.selected(option.label) ? $r('app.color.workspace_selection') : Color.Transparent)
+      .border({ width: 0.5, color: !question.multi && this.selected(option.label) ?
+        $r('app.color.workspace_border') : Color.Transparent })
       .accessibilityText(option.caption).accessibilitySelected(this.selected(option.label)).enabled(!this.questionLocked())
-      .onClick((): void => { this.select(question, option.label); })
+      .onBlur((): void => { this.resetOptionKey(); })
+      .onKeyEvent((event: KeyEvent): boolean => this.optionKey(question, option, index, event))
+      .onClick((event: ClickEvent): void => {
+        if (event.source !== SourceType.KEY) { this.select(question, option.label); }
+      })
       if (option.detail) {
         this.DetailToggle(option.label, 'desktopQuestionOptionDetail-' + index)
       }
@@ -370,9 +433,62 @@ export struct DesktopInteractionPane {
   @Builder
   private DetailToggle(id: string, keyName: string) {
     this.IconButton(this.expanded.includes(id) ? $r('app.media.dsh_queue_chevron_up_outline') :
-      $r('app.media.dsh_queue_chevron_down_outline'), this.expanded.includes(id) ?
+      $r('app.media.dsh_queue_chevron_down_outline'), 14, this.expanded.includes(id) ?
       $r('app.string.desktop_question_collapse') : $r('app.string.desktop_question_expand'), keyName,
       true, false, (): void => { this.toggleDetail(id); })
+  }
+
+  private customHighlighted(question: DesktopQuestion): boolean {
+    const draft = this.drafts[this.questionIndex];
+    return (draft?.custom ?? '').length > 0 ||
+      (this.customFocused && (question.multi || (draft?.selected.length ?? 0) === 0));
+  }
+
+  private customBorder(question: DesktopQuestion): ResourceColor {
+    if (question.options.length === 0) {
+      return this.customFocused ? $r('app.color.desktop_reference_text') : $r('app.color.workspace_border');
+    }
+    return this.customHighlighted(question) ? $r('app.color.workspace_border') : Color.Transparent;
+  }
+
+  @Builder
+  private CustomAnswer(question: DesktopQuestion) {
+    Row({ space: 8 }) {
+      if (question.options.length > 0) {
+        if (question.multi) {
+          this.ChoiceCheckbox((this.drafts[this.questionIndex]?.custom ?? '').length > 0)
+        } else {
+          Stack({ alignContent: Alignment.Center }) {
+            Image($r('app.media.dsh_dock_edit')).width(12).height(12).supportSvg2(true).draggable(false)
+              .fillColor($r('sys.color.font_secondary'))
+          }.key('desktopQuestionCustomEdit').width(20).height(20).margin({ top: 2 })
+            .borderRadius(4).backgroundColor($r('app.color.workspace_action')).accessibilityLevel('no')
+        }
+      }
+      TextArea({ text: this.drafts[this.questionIndex]?.custom ?? '',
+        placeholder: $r('app.string.desktop_question_input'), controller: this.customController })
+        .layoutWeight(1).constraintSize({ minHeight: question.options.length > 0 ? 24 : 48, maxHeight: 144 })
+        .padding(0).backgroundColor(Color.Transparent).fontSize(14).lineHeight(24)
+        .key('desktopQuestionCustom').id(this.customFocusId()).enabled(!this.questionLocked())
+        .onAppear((): void => { this.focusCustom(question); })
+        .onFocus((): void => {
+          this.customFocused = true;
+          if (question.options.length === 0) { this.focusedQuestions.add(this.questionIndex); }
+        })
+        .onChange((value: string, preview?: PreviewText): void => {
+          this.composingCustom = (preview?.value ?? '').length > 0;
+          if (!this.composingCustom) { this.updateText(question, value); }
+        })
+        .onBlur((): void => {
+          this.customFocused = false;
+          this.composingCustom = false;
+        })
+        .onKeyPreIme((event: KeyEvent): boolean => this.customKey(question, event))
+    }.key(question.options.length > 0 ? 'desktopQuestionCustomInline' : 'desktopQuestionCustomBlock')
+      .width('100%').alignItems(VerticalAlign.Top).padding({ left: 8, right: 12, top: 8, bottom: 8 })
+      .borderRadius(8).backgroundColor(question.options.length === 0 ? $r('app.color.workspace_canvas') :
+        this.customHighlighted(question) ? $r('app.color.workspace_selection') : Color.Transparent)
+      .border({ width: 0.5, color: this.customBorder(question) })
   }
 
   @Builder
@@ -393,20 +509,7 @@ export struct DesktopInteractionPane {
             this.Choice(question, option, index)
           }, (option: DesktopQuestionOption, index: number): string => question.id + ':' + option.label + ':' + index)
           if (question.custom) {
-            TextArea({ text: this.drafts[this.questionIndex]?.custom ?? '',
-              placeholder: $r('app.string.desktop_question_input'), controller: this.customController })
-              .width('100%').constraintSize({ minHeight: 42, maxHeight: 120 }).fontSize(14)
-              .borderRadius(8).key('desktopQuestionCustom').id(this.customFocusId()).enabled(!this.questionLocked())
-              .onAppear((): void => { this.focusCustom(question); })
-              .onFocus((): void => {
-                if (question.options.length === 0) { this.focusedQuestions.add(this.questionIndex); }
-              })
-              .onChange((value: string, preview?: PreviewText): void => {
-                this.composingCustom = (preview?.value ?? '').length > 0;
-                if (!this.composingCustom) { this.updateText(question, value); }
-              })
-              .onBlur((): void => { this.composingCustom = false; })
-              .onKeyPreIme((event: KeyEvent): boolean => this.customKey(question, event))
+            this.CustomAnswer(question)
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.key('desktopQuestionAnswerSurface').initialOffset({ xOffset: 0, yOffset: 0 })
@@ -437,14 +540,13 @@ export struct DesktopInteractionPane {
   @Builder
   private QuestionFooter(question: DesktopQuestion) {
     Row({ space: 6 }) {
-      if (this.drafts.length > 1) {
-        this.IconButton($r('app.media.dsh_browser_chevron_left_outline'), $r('app.string.desktop_question_previous'),
-          'desktopQuestionPrevious', this.questionIndex > 0, true,
-          (): void => { this.save(this.questionIndex - 1); })
-        Text(`${this.questionIndex + 1} / ${this.drafts.length}`).fontSize(12).fontColor($r('sys.color.font_secondary'))
-        this.IconButton($r('app.media.dsh_browser_chevron_right_outline'), $r('app.string.desktop_question_next'),
-          'desktopQuestionNext', !this.isLast(), true, (): void => { this.save(this.questionIndex + 1); })
-      }
+      this.IconButton($r('app.media.dsh_browser_chevron_left_outline'), 14, $r('app.string.desktop_question_previous'),
+        'desktopQuestionPrevious', this.questionIndex > 0, true,
+        (): void => { this.save(this.questionIndex - 1); })
+      Text(`${this.questionIndex + 1} / ${this.drafts.length}`).key('desktopQuestionPage')
+        .fontSize(14).lineHeight(24).fontWeight(FontWeight.Medium).fontColor($r('sys.color.font_secondary'))
+      this.IconButton($r('app.media.dsh_browser_chevron_right_outline'), 14, $r('app.string.desktop_question_next'),
+        'desktopQuestionNext', !this.isLast(), true, (): void => { this.save(this.questionIndex + 1); })
       Blank()
       Button($r('app.string.desktop_question_skip'), { buttonStyle: ButtonStyleMode.NORMAL }).key('desktopQuestionSkip')
         .enabled(!this.questionLocked()).onClick((): void => { this.skip(question); })

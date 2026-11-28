@@ -9,8 +9,24 @@ const FALLBACK_DELAY_MS: number = 600;
 const POLL_INTERVAL_MS: number = 2000;
 
 @Component
+struct DesktopAccountSpinner {
+  @State private angle: number = 0;
+
+  build() {
+    Image($r('app.media.dsh_account_loading_outline')).width(16).height(16).draggable(false).supportSvg2(true)
+      .rotate({ angle: this.angle }).accessibilityLevel('no')
+      .onAppear((): void => {
+        this.getUIContext().animateTo({ duration: 1000, curve: Curve.Linear, iterations: -1 }, (): void => {
+          this.angle = 360;
+        });
+      })
+  }
+}
+
+@Component
 export struct DesktopAccountPane {
   host?: DesktopHostActions;
+  @Prop signOutMode: boolean = false;
   @Prop callbackOrigin: string = '';
   @Prop appearance: string = 'system';
   @Prop localePreference: string = 'system';
@@ -25,10 +41,6 @@ export struct DesktopAccountPane {
   @State private authorize: string = '';
   @State private expiresAt: number = 0;
   @State private errorCode: string = '';
-  @State private name: string = '';
-  @State private contact: string = '';
-  @State private usage: string = '';
-  @State private topUp: string = '';
   @State private busy: boolean = false;
   @State private failure: string = '';
   @State private browserFailure: boolean = false;
@@ -37,7 +49,7 @@ export struct DesktopAccountPane {
 
   private active: boolean = false;
   private successClosed: boolean = false;
-  private startedSignedOut: boolean = false;
+  private actionStarted: boolean = false;
   private stateRevision: number = 0;
   private accountRevision: number = 0;
   private watchRevision: number = 0;
@@ -119,12 +131,8 @@ export struct DesktopAccountPane {
     const status = getString(value, 'status');
     if (value === undefined || (status !== 'signed-out' && status !== 'credential-stored')) { return; }
     const previous = this.status;
-    if (status === 'signed-out') { this.startedSignedOut = true; }
     this.stateRevision++;
     this.status = status;
-    const links = getRecord(value, 'links');
-    this.usage = getString(links, 'usageUrl') ?? '';
-    this.topUp = getString(links, 'topUpUrl') ?? '';
     const attempt = getRecord(value, 'attempt');
     const nextId = getString(attempt, 'id') ?? '';
     const nextUrl = getString(attempt, 'authorizeUrl') ?? '';
@@ -143,26 +151,27 @@ export struct DesktopAccountPane {
     if (credentialsChanged || previous !== status) {
       this.accountRevision++;
       this.signOutImpact = '';
-      this.name = '';
-      this.contact = '';
-      if (status === 'credential-stored' && !this.startedSignedOut) { this.loadProfile(this.accountRevision); }
     }
-    if (status === 'credential-stored' && this.startedSignedOut && !this.successClosed) {
-      this.successClosed = true;
-      this.launchAttempt = '';
-      this.onClose();
+    if (this.signOutMode !== (status === 'credential-stored')) {
+      this.finish();
       return;
     }
-    this.openOwnedAttempt();
+    if (this.signOutMode) {
+      if (!this.signOutImpact) { this.prepareSignOut(); }
+    } else {
+      if (!this.actionStarted) {
+        this.actionStarted = true;
+        this.signIn(true);
+      }
+      this.openOwnedAttempt();
+    }
   }
 
-  private async loadProfile(revision: number): Promise<void> {
-    const result = await this.host?.call('account/getProfile', { 'client': this.clientMetadata() });
-    if (this.active && revision === this.accountRevision && this.status === 'credential-stored' && result?.ok) {
-      const profile = getRecord(result.value, 'value');
-      this.name = getString(profile, 'name') ?? '';
-      this.contact = getString(profile, 'contact') ?? '';
-    }
+  private finish(): void {
+    if (this.successClosed) { return; }
+    this.successClosed = true;
+    this.launchAttempt = '';
+    this.onClose();
   }
 
   private clientMetadata(): Record<string, Object> {
@@ -211,7 +220,7 @@ export struct DesktopAccountPane {
     this.copyTimer = setTimeout((): void => { this.copyResult = ''; }, 2000);
   }
 
-  private async signIn(): Promise<void> {
+  private async signIn(joinActive: boolean = false): Promise<void> {
     const host = this.host;
     if (host === undefined || this.busy || this.status !== 'signed-out' || this.phase === 'committing') { return; }
     if (!desktopAccountCallbackAllowed(this.callbackOrigin)) {
@@ -223,7 +232,7 @@ export struct DesktopAccountPane {
     this.failure = '';
     this.browserFailure = false;
     this.launchAttempt = '';
-    if (this.activeAttempt() && this.attemptId) {
+    if (!joinActive && this.activeAttempt() && this.attemptId) {
       const revision = this.stateRevision;
       const cancelled = await host.call('account/cancelSignIn', { 'attemptId': this.attemptId });
       if (!this.active) { return; }
@@ -262,7 +271,7 @@ export struct DesktopAccountPane {
     this.busy = false;
     if (result.ok) {
       if (revision === this.stateRevision) { this.accept(result.value); }
-      if (!this.successClosed) { this.onClose(); }
+      this.finish();
     } else {
       this.failure = desktopHostProblem(result);
       this.schedulePoll(0);
@@ -276,24 +285,24 @@ export struct DesktopAccountPane {
     const result = await this.host.call('account/hasRunningAccountTasks');
     if (!this.active) { return; }
     this.busy = false;
-    if (revision !== this.accountRevision || this.status !== 'credential-stored') { return; }
+    if (this.status !== 'credential-stored') { return; }
+    if (revision !== this.accountRevision) { this.prepareSignOut(); return; }
     this.failure = '';
     this.signOutImpact = result.ok && typeof result.value === 'boolean' ? (result.value === true ? 'running' : 'idle') : 'unknown';
   }
 
   private dismiss(): void {
     if (this.busy || this.phase === 'committing') { return; }
-    if (this.signOutImpact) { this.signOutImpact = ''; this.failure = ''; return; }
+    if (this.signOutMode) { this.finish(); return; }
     if (this.status === 'signed-out' && this.attemptId && this.activeAttempt()) {
       this.changeAccount('account/cancelSignIn', { 'attemptId': this.attemptId });
-    } else { this.onClose(); }
+    } else { this.finish(); }
   }
 
   private failedSignIn(): boolean { return this.phase === 'failed' || this.failure.length > 0; }
 
   private accountTitle(): Resource {
-    if (this.signOutImpact) { return $r('app.string.desktop_account_sign_out'); }
-    if (this.status === 'credential-stored') { return $r('app.string.desktop_account_title'); }
+    if (this.signOutMode) { return $r('app.string.desktop_account_sign_out'); }
     if (this.failedSignIn()) { return $r('app.string.desktop_account_login_failed'); }
     if (this.phase === 'expired') { return $r('app.string.desktop_account_login_expired'); }
     return this.busy || this.activeAttempt() ? $r('app.string.desktop_account_login_waiting') : $r('app.string.desktop_account_login_title');
@@ -315,27 +324,6 @@ export struct DesktopAccountPane {
   }
 
   @Builder
-  private SignedIn() {
-    Text(this.name || $r('app.string.desktop_account_settings_signed_in')).fontSize(16)
-    if (this.contact.length > 0) { Text(this.contact).fontColor($r('sys.color.font_secondary')) }
-    Row({ space: 8 }) {
-      if (this.usage.length > 0) {
-        Button($r('app.string.desktop_account_settings_usage'), { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => {
-          openExternalUrl(this.usage);
-        })
-      }
-      if (this.topUp.length > 0) {
-        Button($r('app.string.desktop_account_settings_top_up'), { buttonStyle: ButtonStyleMode.TEXTUAL }).onClick((): void => {
-          openExternalUrl(this.topUp);
-        })
-      }
-      Blank()
-      this.Outlined($r('app.string.desktop_account_sign_out'), 'desktopAccountSignOut', (): boolean => !this.busy,
-        (): void => { this.prepareSignOut(); })
-    }.width('100%')
-  }
-
-  @Builder
   private ConfirmSignOut() {
     Text(this.signOutImpact === 'running' ? $r('app.string.desktop_account_sign_out_running') :
       this.signOutImpact === 'idle' ? $r('app.string.desktop_account_sign_out_idle') : $r('app.string.desktop_account_sign_out_unknown'))
@@ -352,24 +340,29 @@ export struct DesktopAccountPane {
   }
 
   @Builder
+  private BrowserHint() {
+    Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Center }) {
+      Text($r('app.string.desktop_account_browser_prompt')).fontSize(14).lineHeight(22)
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Text(this.copyResult === 'copied' ? $r('app.string.desktop_account_link_copied') :
+          this.copyResult === 'failed' ? $r('app.string.desktop_account_copy_failed') : $r('app.string.desktop_account_copy_link'))
+          .fontSize(14).lineHeight(22).decoration({ type: TextDecorationType.Underline })
+      }.key('desktopAccountCopyLoginLink').height(22).padding(0).borderRadius(2)
+        .enabled(!this.busy && this.phase === 'waiting-browser' && !!this.authorize)
+        .onClick((): void => { this.copyAuthorization(); })
+      Text($r('app.string.desktop_account_browser_description')).fontSize(14).lineHeight(22)
+    }.width('100%')
+    if (this.browserFailure && this.phase === 'waiting-browser' && this.authorize.length > 0) {
+      Button($r('app.string.desktop_account_open_browser'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .key('desktopAccountOpenBrowser').fontSize(14).height(32).enabled(!this.busy)
+        .onClick((): void => { this.openAuthorization(); })
+    }
+  }
+
+  @Builder
   private Login() {
     if ((this.busy || this.activeAttempt()) && !this.failedSignIn()) {
-      if (this.phase === 'waiting-browser') {
-        Text($r('app.string.desktop_account_browser_description')).fontSize(14).lineHeight(22)
-        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-          Button(this.copyResult === 'copied' ? $r('app.string.desktop_account_link_copied') :
-            this.copyResult === 'failed' ? $r('app.string.desktop_account_copy_failed') : $r('app.string.desktop_account_copy_link'),
-            { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopAccountCopyLoginLink')
-            .fontSize(14).height(32).padding({ left: 0, right: 8 }).enabled(!this.busy && !!this.authorize)
-            .onClick((): void => { this.copyAuthorization(); })
-          Button($r('app.string.desktop_account_open_browser'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopAccountOpenBrowser').fontSize(14).height(32).enabled(!this.busy && !!this.authorize)
-            .onClick((): void => { this.openAuthorization(); })
-        }.width('100%')
-      } else {
-        Text(this.phase === 'exchanging' || this.phase === 'committing' ?
-          $r('app.string.desktop_account_completing') : $r('app.string.desktop_account_initializing')).fontSize(14).lineHeight(22)
-      }
+      this.BrowserHint()
     } else { Text(this.loginDescription()).fontSize(14).lineHeight(22) }
     Row({ space: 8 }) {
       Blank()
@@ -381,7 +374,7 @@ export struct DesktopAccountPane {
       }
       Button({ buttonStyle: ButtonStyleMode.EMPHASIZED }) {
         if ((this.busy || this.activeAttempt()) && !this.failedSignIn()) {
-          LoadingProgress().width(16).height(16).color(Color.White)
+          DesktopAccountSpinner()
         } else {
           Text(this.failedSignIn() || this.phase === 'expired' ?
             $r('app.string.desktop_account_retry') : $r('app.string.desktop_account_sign_in'))
@@ -406,9 +399,12 @@ export struct DesktopAccountPane {
           .accessibilityText($r('app.string.desktop_account_quota_close'))
           .enabled(!this.busy && this.phase !== 'committing').onClick((): void => { this.dismiss(); })
       }.width('100%')
-      if (this.signOutImpact) { this.ConfirmSignOut() }
-      else if (this.status === 'credential-stored') { this.SignedIn() }
-      else { this.Login() }
+      if (this.signOutMode) {
+        if (this.signOutImpact) { this.ConfirmSignOut() }
+        else {
+          Text($r('app.string.desktop_account_settings_loading')).fontSize(14).lineHeight(22)
+        }
+      } else { this.Login() }
       if (this.failure) { Text(this.failure).fontSize(13).fontColor($r('sys.color.warning')) }
       if (this.browserFailure && this.phase === 'waiting-browser') {
         Text($r('app.string.desktop_account_browser_unavailable')).fontSize(13).fontColor($r('sys.color.warning'))

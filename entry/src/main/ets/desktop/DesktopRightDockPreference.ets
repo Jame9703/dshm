@@ -49,7 +49,8 @@ interface SavedDock {
 }
 
 function restorable(tab: DesktopDockTab): boolean {
-  return tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.TERMINAL || tab.file !== undefined ||
+  return tab.kind === DesktopDockKind.FILES || (tab.kind === DesktopDockKind.TERMINAL && tab.terminalLaunch !== true) ||
+    tab.file !== undefined ||
     (tab.plan?.sequence ?? -1) >= 0 || tab.changeLocation !== undefined || tab.chat !== undefined ||
     tab.kind === DesktopDockKind.BROWSER || tab.kind === DesktopDockKind.COMPACTION || tab.kind === DesktopDockKind.TIMELINE;
 }

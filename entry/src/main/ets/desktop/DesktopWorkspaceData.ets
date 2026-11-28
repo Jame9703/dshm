@@ -52,6 +52,8 @@ export interface DesktopSessionCreation {
   problem: string;
 }
 
+const UNAVAILABLE_PRESETS: string[] = ['agent-preset/not-found', 'agent-preset/invalid'];
+
 export interface DesktopWorkspaceRow {
   id: string;
   path: string;
@@ -468,11 +470,43 @@ export class DesktopWorkspaceData {
   }
 
   async createSession(workspaceId: string, preset: string = ''): Promise<DesktopSessionCreation> {
-    const args = sessionCreatePayload(workspaceId, '', preset ? this.reusableBlank(workspaceId, preset) : '', preset);
+    return this.createInWorkspace(workspaceId, preset ? this.reusableBlank(workspaceId, preset) : '', preset);
+  }
+
+  private canRestoreBlank(workspaceId: string, sessionId: string): boolean {
+    const workspace = this.workspaces.find((row: DesktopWorkspaceRow): boolean => row.id === workspaceId);
+    return workspace !== undefined && workspace.sessionIds.includes(sessionId) && !this.archivedIds.has(sessionId) &&
+      this.sessions.some((row: SessionListItem): boolean => row.id === sessionId && row.blank && row.cwd === workspace.path);
+  }
+
+  savedBlankWorkspace(sessionId: string, cwd: string): string {
+    return this.workspaces.find((row: DesktopWorkspaceRow): boolean =>
+      row.path === cwd && row.sessionIds.includes(sessionId))?.id ?? '';
+  }
+
+  async restoreBlankSession(workspaceId: string, sessionId: string, stillSelected: () => boolean):
+    Promise<DesktopSessionCreation> {
+    if (!this.canRestoreBlank(workspaceId, sessionId)) { return { id: '', problem: '' }; }
+    const result = await this.actions.call('session/projections', { 'sessionId': sessionId });
+    if (!this.active || !stillSelected() || !this.canRestoreBlank(workspaceId, sessionId)) {
+      return { id: '', problem: '' };
+    }
+    if (!result.ok) { return { id: '', problem: desktopHostProblem(result) }; }
+    const preset = getString(getRecord(result.value, 'values'), PROJECTION_AGENT_PRESET) ?? '';
+    return this.createInWorkspace(workspaceId, sessionId, preset, stillSelected);
+  }
+
+  private async createInWorkspace(workspaceId: string, sessionId: string, preset: string,
+    restore?: () => boolean): Promise<DesktopSessionCreation> {
+    const args = sessionCreatePayload(workspaceId, '', sessionId, preset);
     if (args === undefined) {
       return { id: '', problem: '' };
     }
     const result = await this.connection.call(SESSION_CREATE_ENDPOINT, args);
+    if (this.active && restore !== undefined && !result.ok && preset && restore() &&
+      this.canRestoreBlank(workspaceId, sessionId) && UNAVAILABLE_PRESETS.includes(result.error?.code ?? '')) {
+      return this.createInWorkspace(workspaceId, sessionId, '');
+    }
     if (!this.active || !result.ok) {
       return { id: '', problem: desktopHostProblem(result) };
     }

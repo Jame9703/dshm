@@ -5,13 +5,15 @@ import { resourceManager } from '@kit.LocalizationKit';
 import { dialogMaterial } from 'platform';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
-import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalTitle } from './DesktopTerminalChrome';
+import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalShellPicker, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
 import { desktopTerminalKeySequence, DesktopTerminalKey } from './DesktopTerminalKeys';
 import { DesktopTerminalSelection } from './DesktopTerminalSelection';
+import { DesktopTerminalShellPreference } from './DesktopTerminalShells';
 import type { DesktopTerminalSelectionSpan } from './DesktopTerminalSelection';
-import type { DesktopShell, DesktopTerminalReplacement, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
+import type { DesktopTerminalReplacement, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
   DesktopTerminalState } from './DesktopTerminalClient';
+import type { DesktopTerminalLaunchRequest } from './DesktopTerminalShells';
 import type { TerminalCellPaint, TerminalMouseInput, TerminalMouseTracking, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
 const INSET: number = 10;
@@ -53,7 +55,9 @@ export struct DesktopTerminalPane {
   @Prop @Watch('draw') appearance: string = 'system';
   @Prop @Watch('applyFont') cellFontSize: number = 13;
   @Prop @Watch('applyFontFamily') cellFontFamily: string = 'monospace';
-  @Prop @Watch('createFromShortcut') createSession: string = '';
+  @Prop @Watch('createPendingTerminal') createRequest?: DesktopTerminalLaunchRequest = undefined;
+  @Prop origin: string = '';
+  @Prop pendingOccurrence: boolean = false;
   preferredTerminal: string = '';
   observeRetention?: DesktopTerminalRetentionObserver;
   observeRoster?: DesktopTerminalRosterObserver;
@@ -170,7 +174,7 @@ export struct DesktopTerminalPane {
         this.onTerminalSelected(id, state.selected, title);
       }
       if (state.writable && (!wasWritable || state.selected !== previous)) { this.scheduleFocus(); }
-      this.createFromShortcut();
+      this.createPendingTerminal();
     }, (frame: TerminalPaintFrame | undefined): void => {
       if (!this.active || this.sessionId !== id) {
         return;
@@ -179,10 +183,11 @@ export struct DesktopTerminalPane {
       this.selectionActive = frame !== undefined && this.selection.hasSelection(frame);
       this.visibleScreen = this.client?.visibleText() ?? '';
       this.draw();
-    }, this.observeRetention, this.openInNewTab, this.observeRoster, this.replaceInPlace);
+    }, this.observeRetention, this.openInNewTab, this.observeRoster, this.replaceInPlace,
+    new DesktopTerminalShellPreference(this.getUIContext().getHostContext(), this.origin));
     this.client.setFocused(this.inputFocused);
     this.fit();
-    this.client.start(this.preferredTerminal);
+    this.client.start(this.preferredTerminal, this.pendingOccurrence);
   }
 
   private visibilityChanged(): void {
@@ -197,37 +202,18 @@ export struct DesktopTerminalPane {
     else { this.client?.setShown(this.shown); }
   }
 
-  private createFromShortcut(): void {
-    if (this.createSession.length === 0) { this.createIssued = false; return; }
-    if (!this.active || !this.shown || this.createIssued || this.createSession !== this.sessionId || this.client === undefined ||
+  private createPendingTerminal(): void {
+    const request = this.createRequest;
+    if (request === undefined) { this.createIssued = false; return; }
+    if (!this.active || !this.shown || this.createIssued || request.sessionId !== this.sessionId || this.client === undefined ||
       this.state?.canCreate !== true) { return; }
     this.createIssued = true;
     this.onCreateShortcut();
-    this.client.create();
+    this.client.create(request.shellPath);
   }
 
   private selected(): DesktopTerminalRow | undefined {
     return this.state?.terminals.find((row: DesktopTerminalRow): boolean => row.id === this.state?.selected);
-  }
-
-  private shellMenu(): MenuElement[] {
-    const items: MenuElement[] = [{ value: '默认 Shell', action: (): void => { this.client?.create(); } }];
-    for (const shell of this.state?.shells ?? []) {
-      items.push({ value: shell.name, action: (): void => { this.client?.create(shell.path); } });
-    }
-    return items;
-  }
-
-  private toolbarShellMenu(): MenuElement[] {
-    const state = this.state;
-    if (state?.shellsLoading) {
-      return [{ value: $r('app.string.desktop_terminal_chrome_shell_loading'), enabled: false, action: (): void => {} }];
-    }
-    if (state?.shellProblem) {
-      return [{ value: $r('app.string.desktop_terminal_chrome_failed', state.shellProblem), enabled: false, action: (): void => {} },
-        { value: $r('app.string.desktop_terminal_chrome_retry'), action: (): void => { this.client?.retryShells(); } }];
-    }
-    return this.shellMenu();
   }
 
   private createTerminal(): void {
@@ -294,7 +280,7 @@ export struct DesktopTerminalPane {
     const client = this.client;
     if (client === undefined || this.state?.busy) { return; }
     switch (this.state?.issue) {
-      case 'discovery': client.start(this.preferredTerminal); break;
+      case 'discovery': client.start(this.preferredTerminal, this.pendingOccurrence); break;
       case 'create': client.retryCreate(); break;
       case 'attach': client.reconnect(); break;
       default: break;
@@ -980,12 +966,9 @@ export struct DesktopTerminalPane {
           .key('desktopTerminalToolbarCreate').height(32).width(34).padding(0)
           .accessibilityText($r('app.string.desktop_terminal_chrome_new'))
           .enabled(this.state?.canCreate === true).onClick((): void => { this.createTerminal(); })
-        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          Image($r('app.media.dsh_queue_chevron_down_outline')).width(13).height(13).supportSvg2(true).accessibilityLevel('no')
-        }
-          .height(32).width(30).padding(0).accessibilityText('选择 Shell')
-          .enabled(this.state?.canCreate === true)
-          .bindMenu(this.toolbarShellMenu(), desktopMenuOptions(Placement.BottomRight))
+        DesktopTerminalShellPicker({ host: this.host, sessionId: this.sessionId, origin: this.origin,
+          pickerEnabled: this.state?.canCreate === true, controlKey: 'desktopTerminalToolbarShell',
+          buttonWidth: 30, buttonHeight: 32, onLaunch: (shellPath: string): void => { this.client?.create(shellPath); } })
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_dock_close')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
         }
@@ -1022,11 +1005,11 @@ export struct DesktopTerminalPane {
         this.TerminalScreen()
       } else {
         Column() {
-          DesktopTerminalGuide({ canCreate: this.state?.canCreate === true, loading: this.state?.loading ?? true,
-            busy: this.state?.busy === true, problem: this.state?.error ?? '', shellItems: this.shellMenu(),
-            shellLoading: this.state?.shellsLoading === true, shellProblem: this.state?.shellProblem ?? '',
+          DesktopTerminalGuide({ host: this.host, sessionId: this.sessionId, origin: this.origin,
+            canCreate: this.state?.canCreate === true, loading: this.state?.loading ?? true,
+            busy: this.state?.busy === true, problem: this.state?.error ?? '',
             onCreate: (): void => { this.createTerminal(); }, onRetry: (): void => { this.retryTerminal(); },
-            onRetryShells: (): void => { this.client?.retryShells(); } })
+            onShellCreate: (shellPath: string): void => { this.client?.create(shellPath); } })
         }
         .layoutWeight(1).width('100%').padding(10).justifyContent(FlexAlign.Center)
       }

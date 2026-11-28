@@ -5,14 +5,15 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture } from '../desktop/DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
-import { getArray, getRecord, getString, parseTarget } from 'connection';
+import { getArray, getRecord, getString, parseTarget, randomUuid } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { localDesktopQuestionDrafts } from '../desktop/DesktopQuestionDrafts';
 import type { DesktopQuestionProgress } from '../desktop/DesktopQuestionDrafts';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
-import { DesktopTerminalTitle } from '../desktop/DesktopTerminalChrome';
+import { DesktopTerminalGuide, DesktopTerminalTitle } from '../desktop/DesktopTerminalChrome';
 import type { DesktopTerminalRow } from '../desktop/DesktopTerminalClient';
+import type { DesktopTerminalLaunchRequest } from '../desktop/DesktopTerminalShells';
 import { DesktopAgentTerminalInventory } from '../desktop/DesktopTerminalRosters';
 import type { DesktopTerminalRosterSink } from '../desktop/DesktopTerminalRosters';
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
@@ -44,8 +45,10 @@ import { emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
-import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import { desktopAccountPlatformLink, desktopAccountSettingsProfile,
+  emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import { desktopAccountLocale, desktopAccountMetadata } from '../desktop/DesktopAccountClient';
 import { DesktopAccountQuotaDialog, DesktopQuotaToast, DESKTOP_QUOTA_TOAST_HOLD_MS, DESKTOP_QUOTA_TOAST_FADE_MS }
   from '../desktop/DesktopQuotaNotice';
 import type { DesktopQuotaNotice } from '../desktop/DesktopQuotaNoticeModel';
@@ -70,7 +73,7 @@ import type { DesktopDockChatActions } from '../desktop/DesktopDockChatPane';
 import { EMPTY_DESKTOP_DRAFT } from '../desktop/DesktopDraftReferences';
 import type { DesktopComposerDraft } from '../desktop/DesktopDraftReferences';
 import { DesktopShortcutDialog } from '../desktop/DesktopShortcutDialog';
-import { DesktopShortcut, desktopShortcutEqual, desktopShortcutFromEvent, desktopShortcutModifiers, desktopShortcutRows,
+import { DesktopShortcut, desktopShortcutEqual, desktopShortcutFromEvent, desktopShortcutLabels, desktopShortcutModifiers, desktopShortcutRows,
   desktopShortcutValue, readDesktopShortcuts } from '../desktop/DesktopShortcuts';
 import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDockFloatPosition, desktopDockFloatRect,
@@ -94,10 +97,11 @@ import { DesktopAccountSessionNotice, DesktopWorkspaceData } from '../desktop/De
 import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
 import type { DesktopNativeDestination, DesktopPluginLocation, DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
-import type { DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
+import type { DesktopSessionCreation, DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
 import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopWorkspaceEnabled,
-  desktopWorkspaceSelectionHost, readDesktopWorkspaceSelection, saveDesktopWorkspaceSelection,
+  desktopWorkspaceSelectionHost, readDesktopSavedChildSelection, readDesktopWorkspaceSelection, saveDesktopWorkspaceSelection,
   WEB_WORKSPACE_PAGE } from '../desktop/DesktopWorkspacePreference';
+import type { DesktopSavedChildSelection } from '../desktop/DesktopWorkspacePreference';
 import { DEFAULT_DESKTOP_TYPOGRAPHY, sameDesktopTypography } from '../desktop/DesktopTheme';
 import type { DesktopTheme, DesktopTypography } from '../desktop/DesktopTheme';
 import lazy { IndexContent } from './IndexContent';
@@ -252,7 +256,7 @@ struct DesktopWorkspace {
   @State private typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @State private shortcutsOpen: boolean = false;
   @State private shortcutBindings: DesktopShortcutRow[] = desktopShortcutRows([]);
-  @State private terminalCreateSession: string = '';
+  @State private terminalCreateRequest?: DesktopTerminalLaunchRequest = undefined;
   @State private selectedTitle: ResourceStr = '';
   @State private selectedSessionDirectory: string = '';
   @State private referenceOffer: DesktopFileReferenceOffer | undefined = undefined;
@@ -352,6 +356,10 @@ struct DesktopWorkspace {
   private accountClosePending: boolean = false;
   @State private accountDialog: number = -1;
   @State private accountDismissRequest: number = 0;
+  @State private accountLauncherSignedIn: boolean = false;
+  @State private accountLauncherName: string = '';
+  @State private accountLauncherAvatar: string = '';
+  private accountLauncherRevision: number = -1;
   @State private accountNotices: DesktopAccountNotice[] = [];
   @State private accountSessionToasts: DesktopAccountSessionToast[] = [];
   private readonly accountSessionToastTimers = new Map<DesktopAccountSessionNotice, DesktopAccountSessionToastTimers>();
@@ -567,6 +575,10 @@ struct DesktopWorkspace {
     this.data?.stop();
     this.data = undefined;
     this.selectedSubagent = undefined;
+    this.accountLauncherSignedIn = false;
+    this.accountLauncherName = '';
+    this.accountLauncherAvatar = '';
+    this.accountLauncherRevision = -1;
     this.subagentAddresses.clear();
     this.attachmentsBySession.clear();
     this.attachments = [];
@@ -603,7 +615,7 @@ struct DesktopWorkspace {
     this.rightDock = emptyDesktopDock();
     this.clearDockGesture();
     this.clearWorkspaceDrag();
-    this.terminalCreateSession = '';
+    this.terminalCreateRequest = undefined;
     this.chatError = '';
     this.creating = false;
     this.pendingCreator = undefined;
@@ -680,6 +692,9 @@ struct DesktopWorkspace {
      },
     localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
     const data = this.data;
+    data.accountNotices.observeAccount((identity: DesktopAccountSettingsIdentity): void => {
+      this.updateAccountLauncher(data, identity);
+    });
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
   }
 
@@ -764,15 +779,29 @@ struct DesktopWorkspace {
     if (destination?.plugin !== undefined) { this.openPlugins('', '', '', destination.plugin); }
   }
 
-  private rememberSession(sessionId: string): void {
-    if (!this.selectionHost || this.savedSessionId === sessionId) { return; }
+  private rememberSession(selection: string): void {
+    if (!this.selectionHost || this.savedSessionId === selection) { return; }
     const context = this.getUIContext().getHostContext();
     if (context === undefined) { return; }
     const host = this.selectionHost;
-    this.savedSessionId = sessionId;
-    saveDesktopWorkspaceSelection(context, host, sessionId).then((saved: boolean): void => {
-      if (!saved && this.selectionHost === host && this.savedSessionId === sessionId) { this.savedSessionId = undefined; }
+    this.savedSessionId = selection;
+    saveDesktopWorkspaceSelection(context, host, selection).then((saved: boolean): void => {
+      if (!saved && this.selectionHost === host && this.savedSessionId === selection) { this.savedSessionId = undefined; }
     });
+  }
+
+  private rememberChildSession(group: DesktopWorkspaceGroup, child: DesktopSubagentEntry): void {
+    const children: DesktopSubagentEntry[] = [];
+    const seen = new Set<string>();
+    let entry: DesktopSubagentEntry | undefined = child;
+    while (entry !== undefined && entry.mode !== 'external' && !seen.has(entry.id) && !seen.has(entry.parentId)) {
+      children.push(entry);
+      seen.add(entry.id);
+      entry = this.subagentAddresses.get(entry.parentId);
+    }
+    if (children.length === 0) { return; }
+    const selection: DesktopSavedChildSelection = { workspaceId: group.id, children: children };
+    this.rememberSession(JSON.stringify(selection));
   }
 
   private restoreSavedSessionAfterFrame(): void {
@@ -780,21 +809,53 @@ struct DesktopWorkspace {
     const host = this.selectionHost;
     const version = this.nativeSelectionVersion;
     if (owner === undefined || !host) { return; }
+    const stillSelected = (): boolean => this.pageActive && this.ready && this.data === owner &&
+      this.selectionHost === host && !this.sessionId && this.nativeSelectionVersion === version &&
+      this.panel === 'session' && !this.switching && !this.creating && !this.workspaceBusy &&
+      !this.searchOpen && !this.settingsOpen && this.accountDialog < 0;
     this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
-      if (!this.pageActive || !this.ready || this.data !== owner || this.selectionHost !== host || this.sessionId ||
-        this.nativeSelectionVersion !== version || this.panel !== 'session' || this.switching || this.creating ||
-        this.workspaceBusy || this.searchOpen || this.settingsOpen || this.accountDialog >= 0) { return; }
+      if (!stillSelected()) { return; }
       const context = this.getUIContext().getHostContext();
       if (context === undefined) { return; }
-      const id = readDesktopWorkspaceSelection(context, host);
-      this.savedSessionId = id;
-      if (!id) { return; }
-      const row = this.sessionSummaries.find((session: SessionListItem): boolean => session.id === id);
-      if (row === undefined || row.blank || desktopSubagentFromSummary(row) !== undefined ||
-        !this.openSessionById(id, false)) {
-        this.rememberSession('');
+      const saved = readDesktopWorkspaceSelection(context, host);
+      this.savedSessionId = saved;
+      if (!saved) { return; }
+      const child = readDesktopSavedChildSelection(saved);
+      if (child !== undefined) {
+        if (!this.restoreSavedChild(child)) { this.rememberSession(''); }
+        return;
       }
+      const row = this.sessionSummaries.find((session: SessionListItem): boolean => session.id === saved);
+      if (row === undefined || this.archivedIds.includes(saved)) { this.rememberSession(''); return; }
+      const blankWorkspace = row.blank ? owner.savedBlankWorkspace(row.id, row.cwd) : '';
+      if (blankWorkspace) {
+        owner.restoreBlankSession(blankWorkspace, saved, stillSelected).then((result: DesktopSessionCreation): void => {
+          if (!stillSelected()) { return; }
+          if (result.id) { this.openSessionById(result.id, false); }
+          else if (result.problem) { this.getUIContext().getPromptAction().showToast({ message: result.problem }); }
+        }).catch((): void => {});
+      } else if (!this.openSessionById(saved, false)) { this.rememberSession(''); }
     }));
+  }
+
+  private restoreSavedChild(saved: DesktopSavedChildSelection): boolean {
+    const child = saved.children[0];
+    const root = saved.children[saved.children.length - 1].parentId;
+    if (this.archivedIds.includes(root) || saved.children.some((row: DesktopSubagentEntry): boolean =>
+      this.archivedIds.includes(row.id))) { return false; }
+    const group = this.groups.find((candidate: DesktopWorkspaceGroup): boolean =>
+      candidate.sessions.some((row: SessionListItem): boolean => row.id === root)) ??
+      this.groups.find((candidate: DesktopWorkspaceGroup): boolean => candidate.id === saved.workspaceId);
+    if (group === undefined) { return false; }
+    for (const entry of saved.children) { this.subagentAddresses.set(entry.id, entry); }
+    const rootSession = group.sessions.find((row: SessionListItem): boolean => row.id === root);
+    const summary = this.sessionSummaries.find((row: SessionListItem): boolean => row.id === child.id);
+    const session: SessionListItem = summary ?? { id: child.id, title: child.label || child.name,
+      cwd: rootSession?.cwd ?? group.path, createdAt: child.createdAt, updatedAt: 0, running: false, blank: false, raw: '' };
+    this.selectSession(group, session, child);
+    this.revealWorkspace(group.id);
+    this.revealSidebarSession(group.id, root);
+    return true;
   }
 
   private restoreWebSelection(destination: DesktopNativeDestination): void {
@@ -1429,7 +1490,7 @@ struct DesktopWorkspace {
     if (changing) {
       this.nativeSelectionVersion++;
       this.terminalRename = undefined;
-      this.terminalCreateSession = '';
+      this.terminalCreateRequest = undefined;
       this.referenceOffer = undefined;
       this.closeFeedback();
       this.closeImagePreview();
@@ -1445,8 +1506,8 @@ struct DesktopWorkspace {
     }
     this.sessionId = session.id;
     this.selectedSubagent = subagent;
-    if (subagent === undefined && !session.blank) { this.rememberSession(session.id); }
-    else if (changing) { this.rememberSession(''); }
+    if (subagent === undefined) { this.rememberSession(session.id); }
+    else { this.rememberChildSession(group, subagent); }
     this.workspaceId = group.id;
     this.selectedTitle = this.sessionLabel(session);
     this.selectedSessionDirectory = session.cwd;
@@ -1517,7 +1578,7 @@ struct DesktopWorkspace {
     this.resetTimelineLocation();
     this.sessionId = '';
     this.selectedSubagent = undefined;
-    this.terminalCreateSession = '';
+    this.terminalCreateRequest = undefined;
     this.dockSessionId = '';
     this.clearDockGesture();
     this.rightDock = emptyDesktopDock();
@@ -2208,7 +2269,7 @@ struct DesktopWorkspace {
 
   private removeDockTab(index: number, id: string): void {
     this.documentViews.delete(this.documentViewKey(id));
-    if (id === DesktopDockKind.TERMINAL || id.startsWith(DesktopDockKind.TERMINAL + ':')) { this.terminalCreateSession = ''; }
+    if (this.terminalCreateRequest?.tabId === id) { this.terminalCreateRequest = undefined; }
     this.dockTabBounds.delete(id);
     this.setDock(index < 0 ? desktopDockCloseFloat(this.rightDock, id) : desktopDockCloseTab(this.rightDock, index, id));
   }
@@ -2267,7 +2328,7 @@ struct DesktopWorkspace {
         (item: DesktopDockTab): boolean => item.kind === DesktopDockKind.TERMINAL)) ??
       { id: DesktopDockKind.TERMINAL, kind: DesktopDockKind.TERMINAL, title: '终端' };
     this.setDock(desktopDockOpen(this.rightDock, tab, false));
-    if (create) { this.terminalCreateSession = this.sessionId; }
+    if (create) { this.terminalCreateRequest = { sessionId: this.sessionId, tabId: tab.id, shellPath: '' }; }
   }
 
   private openDockTerminal(index: number, tabId: string, row: DesktopTerminalRow): boolean {
@@ -2570,14 +2631,15 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private AccountDialog(owner: DesktopWorkspaceData | undefined, callbackOrigin: string) {
+  private AccountDialog(owner: DesktopWorkspaceData, callbackOrigin: string, signOutMode: boolean) {
     DesktopAccountPane({
-      host: owner?.actions,
+      host: owner.actions,
+      signOutMode: signOutMode,
       callbackOrigin: callbackOrigin,
       appearance: this.appearance,
-      localePreference: owner?.accountLanguagePreference() ?? 'system',
+      localePreference: owner.accountLanguagePreference(),
       dismissRequest: this.accountDismissRequest,
-      onState: (state: Object): void => { if (this.data === owner) { owner?.completeAccountLogin(state); } },
+      onState: (state: Object): void => { if (this.data === owner) { owner.completeAccountLogin(state); } },
       onClose: (): void => { this.closeAccount(); },
       onAddKey: (): void => {
         this.closeAccount();
@@ -2586,20 +2648,20 @@ struct DesktopWorkspace {
     })
   }
 
-  private async openAccount(): Promise<void> {
-    if (this.accountOpening || this.accountDialog >= 0 || this.accountOnboarding.visible) {
+  private async openAccount(signOutMode: boolean): Promise<void> {
+    const owner = this.data;
+    if (owner === undefined || this.accountOpening || this.accountDialog >= 0 || this.accountOnboarding.visible) {
       return;
     }
     this.accountOpening = true;
     this.accountClosePending = false;
-    const owner = this.data;
     const callbackOrigin = parseTarget(this.hostUrl)?.address.baseUrl ?? '';
-    owner?.startAccountUpdates();
+    owner.startAccountUpdates();
     const prompt = this.getUIContext().getPromptAction();
     try {
       const material = dialogMaterial();
       const id = await prompt.openCustomDialog({
-        builder: (): void => { this.AccountDialog(owner, callbackOrigin); },
+        builder: (): void => { this.AccountDialog(owner, callbackOrigin, signOutMode); },
         alignment: DialogAlignment.Center,
         width: Math.max(220, Math.min(440, this.workbenchWidth - 32)),
         autoCancel: false,
@@ -2622,6 +2684,24 @@ struct DesktopWorkspace {
     } finally {
       this.accountOpening = false;
     }
+  }
+
+  private async updateAccountLauncher(owner: DesktopWorkspaceData, identity: DesktopAccountSettingsIdentity): Promise<void> {
+    if (!identity.ready || !this.pageActive || this.data !== owner) { return; }
+    if (this.accountLauncherSignedIn === identity.signedIn && this.accountLauncherRevision === identity.revision) { return; }
+    this.accountLauncherSignedIn = identity.signedIn;
+    this.accountLauncherRevision = identity.revision;
+    this.accountLauncherName = '';
+    this.accountLauncherAvatar = '';
+    if (!identity.signedIn) { return; }
+    const metadata = desktopAccountMetadata(desktopAccountLocale(owner.accountLanguagePreference()));
+    const result = await owner.actions.call('account/getProfile', { 'client': metadata });
+    if (!this.pageActive || this.data !== owner || !this.accountLauncherSignedIn ||
+      this.accountLauncherRevision !== identity.revision) { return; }
+    const profile = result.ok ? desktopAccountSettingsProfile(result.value) : undefined;
+    this.accountLauncherName = profile?.name || profile?.contact ||
+      this.accessibilityLabel($r('app.string.desktop_account_settings_signed_in'));
+    this.accountLauncherAvatar = profile?.avatarUrl ?? '';
   }
 
   private closeAccount(): void {
@@ -2887,9 +2967,13 @@ struct DesktopWorkspace {
 
   private sidebarActions(footer: boolean): Array<MenuElement> {
     if (footer) {
+      const signedIn = this.accountLauncherSignedIn;
       return [
-        { value: '账号', action: (): void => { this.openAccount(); } },
-        { value: $r('app.string.desktop_workspace_settings'), action: (): void => { this.openSettings(); } },
+        { value: $r('app.string.desktop_workspace_settings'), icon: $r('app.media.dsh_account_menu_settings'),
+          action: (): void => { this.openSettings(); } },
+        { value: signedIn ? $r('app.string.desktop_account_sign_out') : $r('app.string.desktop_account_sign_in'),
+          icon: signedIn ? $r('app.media.dsh_account_menu_sign_out') : $r('app.media.dsh_account_menu_sign_in'),
+          enabled: this.ready, action: (): void => { this.openAccount(signedIn); } },
         { value: $r('app.string.desktop_experiment_open_web_home'), action: (): void => { this.openWeb(false); } },
         { value: $r('app.string.desktop_experiment_exit'), action: (): void => { this.openWeb(true); } }
       ];
@@ -3002,13 +3086,19 @@ struct DesktopWorkspace {
   private SidebarMenu(footer: boolean) {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
       Row({ space: 8 }) {
-        this.MenuDots()
+        if (footer && this.accountLauncherSignedIn) {
+          this.AccountLauncherAvatar(this.accountLauncherAvatar)
+        } else if (footer) {
+          Image($r('app.media.dsh_account_menu_dots')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
+        } else { this.MenuDots() }
         if (!this.sidebarCollapsed) {
-          Text($r('app.string.desktop_experiment_more')).fontSize(14).fontColor($r('sys.color.font_primary'))
+          Text(footer && this.accountLauncherSignedIn ? this.accountLauncherName : $r('app.string.desktop_experiment_more'))
+            .fontSize(14).fontColor($r('sys.color.font_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
       }
     }
-    .width('100%').height(34).borderRadius(7).backgroundColor(Color.Transparent)
+    .width('100%').height(footer ? this.sidebarCollapsed ? 36 : this.accountLauncherSignedIn ? 44 : 32 : 34)
+    .borderRadius(7).backgroundColor(Color.Transparent)
     .padding({ left: this.sidebarCollapsed ? 0 : 8, right: this.sidebarCollapsed ? 0 : 8 })
     .align(this.sidebarCollapsed ? Alignment.Center : Alignment.Start)
     .focusOnTouch(false)
@@ -3016,6 +3106,18 @@ struct DesktopWorkspace {
     .accessibilityText(footer ? $r('app.string.desktop_experiment_footer_menu') :
       $r('app.string.desktop_experiment_more'))
     .bindMenu(this.sidebarActions(footer), desktopMenuOptions(footer ? Placement.TopLeft : Placement.BottomLeft))
+  }
+
+  @Builder
+  private AccountLauncherAvatar(href: string) {
+    Stack() {
+      if (href.length > 0) {
+        Image(href).width(24).height(24).borderRadius(12).objectFit(ImageFit.Cover).draggable(false).accessibilityLevel('no')
+          .onError((): void => { if (this.accountLauncherAvatar === href) { this.accountLauncherAvatar = ''; } })
+      } else {
+        Image($r('app.media.dsh_settings_account')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+      }
+    }.width(24).height(24).borderRadius(12).backgroundColor($r('app.color.workspace_selection'))
   }
 
   @Builder
@@ -3670,7 +3772,7 @@ struct DesktopWorkspace {
               onDismiss: (id: string): void => { this.data?.accountNotices.dismiss(id); }
             })
           }, (notice: DesktopAccountNotice): string => notice.id)
-        }.width(Math.min(280, this.sidebarWidth - 20)).margin({ left: 10, bottom: 48 })
+        }.width(Math.min(280, this.sidebarWidth - 20)).margin({ left: 10, bottom: this.accountLauncherSignedIn ? 58 : 48 })
       }
     }.width(this.sidebarCollapsed ? 52 : this.sidebarWidth).height('100%')
   }
@@ -4007,6 +4109,22 @@ struct DesktopWorkspace {
     if (kind === DesktopDockKind.FILES) { this.showWorkspaceFiles(); }
     else if (kind === DesktopDockKind.TERMINAL) { this.showTerminal(true); }
     else if (kind === DesktopDockKind.TIMELINE) { this.showTimeline(); }
+  }
+
+  private launchDockTerminal(index: number, shellPath: string = ''): void {
+    if (!this.sessionId || this.data === undefined || this.terminalCreateRequest !== undefined ||
+      this.rightDock.panes[index] === undefined) { return; }
+    const id = desktopDockResourceId(DesktopDockKind.TERMINAL, 'launch-' + randomUuid());
+    const tab: DesktopDockTab = { id: id, kind: DesktopDockKind.TERMINAL,
+      title: this.accessibilityLabel($r('app.string.desktop_terminal_chrome_title')), terminalLaunch: true };
+    this.setDock(desktopDockOpen(this.rightDock, tab, false, index));
+    this.terminalCreateRequest = { sessionId: this.sessionId, tabId: id, shellPath: shellPath };
+  }
+
+  private terminalGuideShortcut(): string {
+    const binding = this.shortcutBindings.find((row: DesktopShortcutRow): boolean =>
+      row.id === DesktopShortcut.NEW_TERMINAL && !row.occupiedBy);
+    return binding === undefined ? '' : desktopShortcutLabels(binding.binding).join(' + ');
   }
 
   private browserOrigin(): string {
@@ -4388,16 +4506,17 @@ struct DesktopWorkspace {
         shown: this.dockTabShown(index, tab.id),
         focusEligible: this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id : index === this.rightDock.focus,
         cellFontSize: this.typography.terminalSize, cellFontFamily: this.typography.terminalFamily,
-        preferredTerminal: tab.terminalId ?? '',
+        preferredTerminal: tab.terminalId ?? '', origin: this.browserOrigin(), pendingOccurrence: tab.terminalLaunch === true,
         observeRetention: (id: string, listener: (problem: string, code?: string) => void): (() => void) => {
           return this.data?.terminalRetentions.observe(this.sessionId, id, listener) ?? (() => {});
         },
         observeRoster: (sink: DesktopTerminalRosterSink): (() => void) => {
           return this.data?.terminalRosters.watch(this.sessionId, sink) ?? (() => {});
         },
-        createSession: (this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id :
-          index === this.rightDock.focus && this.dockTabShown(index, tab.id)) ? this.terminalCreateSession : '',
-        onCreateShortcut: (): void => { this.terminalCreateSession = ''; },
+        createRequest: this.terminalCreateRequest?.tabId === tab.id ? this.terminalCreateRequest : undefined,
+        onCreateShortcut: (): void => {
+          if (this.terminalCreateRequest?.tabId === tab.id) { this.terminalCreateRequest = undefined; }
+        },
         onRename: (): void => { this.startTerminalRename(index, tab.id); },
         openInNewTab: (row: DesktopTerminalRow): boolean => this.openDockTerminal(index, tab.id, row),
         replaceInPlace: (sessionId: string, oldId: string, row: DesktopTerminalRow): boolean => {
@@ -4523,8 +4642,13 @@ struct DesktopWorkspace {
     Column({ space: 8 }) {
       Button('工作区文件', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideFiles-' + index)
         .onClick((): void => this.openDockTool(index, DesktopDockKind.FILES))
-      Button('新建终端', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockGuideTerminal-' + index)
-        .onClick((): void => this.openDockTool(index, DesktopDockKind.TERMINAL))
+      Column() {
+        DesktopTerminalGuide({ host: this.data?.actions, sessionId: this.sessionId, origin: this.browserOrigin(),
+          createKey: 'desktopDockGuideTerminal-' + index, shellKey: 'desktopDockGuideTerminalShell-' + index,
+          canCreate: this.data !== undefined && this.sessionId.length > 0, shortcutText: this.terminalGuideShortcut(),
+          onCreate: (): void => { this.launchDockTerminal(index); },
+          onShellCreate: (shellPath: string): void => { this.launchDockTerminal(index, shellPath); } })
+      }.width('90%').constraintSize({ maxWidth: 360 })
       if (this.hasTimeline()) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 7 }) {

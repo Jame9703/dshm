@@ -1,12 +1,40 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { parseTarget } from 'connection';
+import { getArray, getNumber, getString, parseJson, parseTarget } from 'connection';
+import type { DesktopSubagentEntry } from './DesktopSubagents';
 
 export const DESKTOP_WORKSPACE_PAGE: string = 'pages/DesktopWorkspace';
 export const WEB_WORKSPACE_PAGE: string = 'pages/WebApp';
 const PREFERENCES: string = 'dshm_desktop_workspace';
 const KEY_ENABLED: string = 'enabled';
 const KEY_APPEARANCE: string = 'appearance';
+
+export interface DesktopSavedChildSelection {
+  workspaceId: string;
+  children: DesktopSubagentEntry[];
+}
+
+export function readDesktopSavedChildSelection(value: string): DesktopSavedChildSelection | undefined {
+  if (!value.startsWith('{')) { return undefined; }
+  const raw = parseJson(value);
+  const workspaceId = getString(raw, 'workspaceId') ?? '';
+  const chain = getArray(raw, 'children');
+  if (chain === undefined || chain.length === 0) { return undefined; }
+  const ids = new Set<string>();
+  const children: DesktopSubagentEntry[] = [];
+  for (const row of chain) {
+    const id = getString(row, 'id') ?? '';
+    const parentId = getString(row, 'parentId') ?? '';
+    const mode = getString(row, 'mode') ?? '';
+    if (!id || !parentId || id === parentId || ids.has(id) || ids.has(parentId) ||
+      (mode !== 'one-shot' && mode !== 'continuable' && mode !== 'unknown')) { return undefined; }
+    if (children.length > 0 && children[children.length - 1].parentId !== id) { return undefined; }
+    ids.add(id);
+    children.push({ id: id, parentId: parentId, mode: mode, name: getString(row, 'name') || id,
+      label: getString(row, 'label') ?? '', createdAt: getNumber(row, 'createdAt') ?? 0 });
+  }
+  return { workspaceId: workspaceId, children: children };
+}
 
 export function desktopWorkspaceEnabled(context: common.Context): boolean {
   try {

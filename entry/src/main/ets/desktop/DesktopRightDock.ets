@@ -28,6 +28,7 @@ export interface DesktopDockTab {
   restoreBrowser?: boolean;
   compactionMarkdown?: string;
   terminalId?: string;
+  terminalLaunch?: boolean;
   agentControlled?: boolean;
   terminalSandbox?: string;
 }

@@ -1,5 +1,8 @@
 import { KeyCode } from '@kit.InputKit';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import { DesktopHostActions } from './DesktopHostActions';
+import { DesktopTerminalShellPreference, desktopTerminalLaunchShell, readDesktopTerminalShells } from './DesktopTerminalShells';
+import type { DesktopShell } from './DesktopTerminalShells';
 
 @Component
 export struct DesktopTerminalTitle {
@@ -113,34 +116,136 @@ struct DesktopTerminalNameInput {
 }
 
 @Component
+export struct DesktopTerminalShellPicker {
+  host?: DesktopHostActions;
+  @Prop @Watch('invalidate') sessionId: string = '';
+  @Prop @Watch('invalidate') origin: string = '';
+  @Prop @Watch('checkEnabled') pickerEnabled: boolean = true;
+  @Prop controlKey: string = '';
+  @Prop buttonWidth: number = 24;
+  @Prop buttonHeight: number = 24;
+  onLaunch: (shellPath: string) => void = (_shellPath: string): void => {};
+
+  @State private open: boolean = false;
+  @State private loading: boolean = false;
+  @State private choices: DesktopShell[] = [];
+  @State private preferred: string = '';
+  @State private problem: string = '';
+  private generation: number = 0;
+  private active: boolean = false;
+
+  aboutToAppear(): void { this.active = true; }
+
+  aboutToDisappear(): void {
+    this.active = false;
+    this.invalidate();
+  }
+
+  private invalidate(): void {
+    this.generation++;
+    this.open = false;
+    this.loading = false;
+  }
+
+  private checkEnabled(): void {
+    if (!this.pickerEnabled) { this.invalidate(); }
+  }
+
+  private menuOptions(): MenuOptions {
+    const options = desktopMenuOptions(Placement.BottomRight);
+    options.onDisappear = (): void => { if (this.open) { this.invalidate(); } };
+    return options;
+  }
+
+  private async load(): Promise<void> {
+    const host = this.host;
+    if (host === undefined) { return; }
+    const generation = ++this.generation;
+    const session = this.sessionId;
+    this.loading = true;
+    this.problem = '';
+    this.choices = [];
+    try {
+      const catalog = await readDesktopTerminalShells(host, session);
+      if (!this.active || !this.open || this.generation !== generation || this.host !== host) { return; }
+      const preference = new DesktopTerminalShellPreference(this.getUIContext().getHostContext(), this.origin);
+      this.choices = catalog.choices;
+      this.problem = catalog.problem;
+      this.preferred = desktopTerminalLaunchShell(catalog.choices, preference.read());
+    } catch (_) {
+      if (this.active && this.open && this.generation === generation && this.host === host) {
+        this.problem = 'terminal/shells';
+      }
+    } finally {
+      if (this.generation === generation) { this.loading = false; }
+    }
+  }
+
+  private launch(path: string): void {
+    if (!this.active || !this.open || this.loading || this.problem ||
+      !this.choices.some((choice: DesktopShell): boolean => choice.path === path)) { return; }
+    const preference = new DesktopTerminalShellPreference(this.getUIContext().getHostContext(), this.origin);
+    preference.remember(path);
+    this.invalidate();
+    this.onLaunch(path);
+  }
+
+  @Builder
+  private ShellMenu() {
+    Menu() {
+      if (this.loading) {
+        MenuItem({ content: $r('app.string.desktop_terminal_chrome_shell_loading') }).enabled(false)
+      } else if (this.problem) {
+        MenuItem({ content: $r('app.string.desktop_terminal_chrome_failed', this.problem) }).enabled(false)
+        MenuItem({ content: $r('app.string.desktop_terminal_chrome_retry') })
+          .key(this.controlKey + 'Retry').onChange((): void => { this.load(); })
+      } else if (this.choices.length === 0) {
+        MenuItem({ content: $r('app.string.desktop_terminal_chrome_shell_empty') }).enabled(false)
+      } else {
+        ForEach(this.choices, (choice: DesktopShell): void => {
+          MenuItem({ content: choice.name })
+            .key(this.controlKey + '-' + choice.path).selectIcon(true).selected(this.preferred === choice.path)
+            .accessibilitySelected(this.preferred === choice.path)
+            .onChange((): void => { this.launch(choice.path); })
+        }, (choice: DesktopShell): string => choice.path)
+      }
+    }
+  }
+
+  build() {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Image($r('app.media.dsh_queue_chevron_down_outline')).width(14).height(14)
+        .supportSvg2(true).draggable(false).accessibilityLevel('no')
+    }.key(this.controlKey).width(this.buttonWidth).height(this.buttonHeight).padding(0).borderRadius(4)
+      .focusOnTouch(false).enabled(this.pickerEnabled && this.host !== undefined && this.sessionId.length > 0)
+      .accessibilityText($r('app.string.desktop_terminal_chrome_shell')).accessibilitySelected(this.open)
+      .onClick((): void => {
+        if (this.open) { this.invalidate(); }
+        else {
+          this.open = true;
+          this.load();
+        }
+      })
+      .bindMenu(this.open, this.ShellMenu, this.menuOptions())
+  }
+}
+
+@Component
 export struct DesktopTerminalGuide {
+  host?: DesktopHostActions;
+  @Prop sessionId: string = '';
+  @Prop origin: string = '';
+  @Prop createKey: string = 'desktopTerminalGuideCreate';
+  @Prop shellKey: string = 'desktopTerminalGuideShell';
   @Prop canCreate: boolean = true;
   @Prop loading: boolean = false;
   @Prop busy: boolean = false;
   @Prop problem: string = '';
-  @Prop shellItems: MenuElement[] = [];
-  @Prop shellLoading: boolean = false;
-  @Prop shellProblem: string = '';
   @Prop shortcutText: string = '';
   @Prop compact: boolean = false;
   onCreate: () => void = () => {};
   onRetry: () => void = () => {};
-  onRetryShells: () => void = () => {};
-
-  private shellChoices(): MenuElement[] {
-    if (this.shellLoading) {
-      return [{ value: $r('app.string.desktop_terminal_chrome_shell_loading'), enabled: false, action: () => {} }];
-    }
-    if (this.shellProblem.length > 0) {
-      return [
-        { value: $r('app.string.desktop_terminal_chrome_failed', this.shellProblem), enabled: false,
-          action: () => {} },
-        { value: $r('app.string.desktop_terminal_chrome_retry'), action: this.onRetryShells }
-      ];
-    }
-    if (this.shellItems.length > 0) { return this.shellItems; }
-    return [{ value: $r('app.string.desktop_terminal_chrome_shell_empty'), enabled: false, action: () => {} }];
-  }
+  onShellCreate: (shellPath: string) => void = (_shellPath: string): void => {};
 
   build() {
     Column({ space: 8 }) {
@@ -159,19 +264,14 @@ export struct DesktopTerminalGuide {
               }
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           }.width('100%')
-        }.key('desktopTerminalGuideCreate').padding(0).borderRadius(6).layoutWeight(1)
+        }.key(this.createKey).padding(0).borderRadius(6).layoutWeight(1)
           .constraintSize({ minHeight: this.compact ? 28 : 36 }).focusOnTouch(false)
           .enabled(this.canCreate && !this.loading && !this.busy && this.problem.length === 0)
           .accessibilityText($r('app.string.desktop_terminal_chrome_new'))
           .accessibilityDescription($r('app.string.desktop_terminal_chrome_description'))
           .onClick(this.onCreate)
-        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          Image($r('app.media.dsh_queue_chevron_down_outline')).width(14).height(14)
-            .supportSvg2(true).draggable(false).accessibilityLevel('no')
-        }.key('desktopTerminalGuideShell').width(24).height(24).padding(0).borderRadius(4)
-          .focusOnTouch(false).enabled(this.canCreate && !this.busy)
-          .accessibilityText($r('app.string.desktop_terminal_chrome_shell'))
-          .bindMenu(this.shellChoices(), desktopMenuOptions(Placement.BottomRight))
+        DesktopTerminalShellPicker({ host: this.host, sessionId: this.sessionId, origin: this.origin,
+          pickerEnabled: this.canCreate && !this.busy, controlKey: this.shellKey, onLaunch: this.onShellCreate })
         if (this.shortcutText.length > 0) {
           Text(this.shortcutText).key('desktopTerminalGuideShortcut').fontSize(11)
             .fontColor($r('sys.color.font_tertiary')).padding({ left: 4 }).maxLines(1)

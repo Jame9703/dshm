@@ -1,15 +1,12 @@
 import { getArray, getBoolean, getNumber, getRecord, getString, randomUuid } from 'connection';
 import type { DuplexStream } from 'connection';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './DesktopHostActions';
+import { desktopTerminalLaunchShell, readDesktopTerminalShells } from './DesktopTerminalShells';
+import type { DesktopShellCatalog, DesktopTerminalShellPreference } from './DesktopTerminalShells';
 import { loadTerminalEmulator } from './terminal/TerminalEmulator';
 import type { TerminalEmulator, TerminalEmulatorFactory, TerminalPaintFrame } from './terminal/TerminalEmulator';
 import type { TerminalMouseInput, TerminalMouseModes } from './terminal/TerminalEmulator';
 import type { DesktopTerminalRosterSink } from './DesktopTerminalRosters';
-
-export interface DesktopShell {
-  path: string;
-  name: string;
-}
 
 export interface DesktopTerminalRow {
   id: string;
@@ -26,7 +23,6 @@ export type DesktopTerminalIssue = 'none' | 'discovery' | 'create' | 'attach';
 
 export interface DesktopTerminalState {
   terminals: DesktopTerminalRow[];
-  shells: DesktopShell[];
   selected: string;
   writable: boolean;
   canTakeInput: boolean;
@@ -37,8 +33,6 @@ export interface DesktopTerminalState {
   outcome?: 'exited' | 'missing';
   exitCode?: number;
   canCreate: boolean;
-  shellProblem: string;
-  shellsLoading: boolean;
 }
 
 interface DesktopTerminalCreateAttempt {
@@ -97,10 +91,10 @@ export class DesktopTerminalClient {
   private readonly openInNewTab?: (row: DesktopTerminalRow) => boolean;
   private readonly observeRoster?: DesktopTerminalRosterObserver;
   private readonly replaceInPlace?: DesktopTerminalReplacement;
+  private readonly shellPreference?: DesktopTerminalShellPreference;
   private live: boolean = true;
   private shown: boolean = true;
   private terminals: DesktopTerminalRow[] = [];
-  private shells: DesktopShell[] = [];
   private selected: string = '';
   private exited?: DesktopTerminalRow;
   private missing: string = '';
@@ -117,8 +111,6 @@ export class DesktopTerminalClient {
   private checkingRosterId: string = '';
   private lastShellPath: string = '';
   private lastReplacement: string = '';
-  private shellProblem: string = '';
-  private shellsLoading: boolean = false;
   private cols: number = DEFAULT_COLS;
   private rows: number = DEFAULT_ROWS;
   private desiredCols: number = DEFAULT_COLS;
@@ -147,7 +139,8 @@ export class DesktopTerminalClient {
   constructor(host: DesktopHostActions, sessionId: string,
     onState: (view: DesktopTerminalState) => void, onDraw: (frame: TerminalPaintFrame | undefined) => void,
     observeRetention?: DesktopTerminalRetentionObserver, openInNewTab?: (row: DesktopTerminalRow) => boolean,
-    observeRoster?: DesktopTerminalRosterObserver, replaceInPlace?: DesktopTerminalReplacement) {
+    observeRoster?: DesktopTerminalRosterObserver, replaceInPlace?: DesktopTerminalReplacement,
+    shellPreference?: DesktopTerminalShellPreference) {
     this.host = host;
     this.sessionId = sessionId;
     this.onState = onState;
@@ -156,9 +149,10 @@ export class DesktopTerminalClient {
     this.openInNewTab = openInNewTab;
     this.observeRoster = observeRoster;
     this.replaceInPlace = replaceInPlace;
+    this.shellPreference = shellPreference;
   }
 
-  async start(preferredId: string): Promise<void> {
+  async start(preferredId: string, pendingOccurrence: boolean = false): Promise<void> {
     if (!this.live || this.discovering || this.discovered) { return; }
     this.discovering = true;
     this.loading = true;
@@ -170,8 +164,7 @@ export class DesktopTerminalClient {
     const engine = loadTerminalEmulator().catch((): undefined => undefined);
     const replies = await Promise.all([
       this.host.call('terminal/list', session),
-      this.host.call('terminal/environment', agent),
-      this.host.call('terminal/shells', agent)
+      this.host.call('terminal/environment', agent)
     ]);
     this.createEmulator = await engine;
     this.discovering = false;
@@ -197,13 +190,11 @@ export class DesktopTerminalClient {
     this.maxRows = getNumber(replies[1].value, 'maxRows') ?? this.maxRows;
     this.scrollback = getNumber(replies[1].value, 'scrollback') ?? this.scrollback;
     this.maxInputBytes = getNumber(replies[1].value, 'maxInputBytes') ?? this.maxInputBytes;
-    this.setShells(desktopHostItems(replies[2]));
-    this.shellProblem = desktopHostProblem(replies[2]);
     this.setTerminals(desktopHostItems(replies[0]));
     const preferred = this.terminals.find((row: DesktopTerminalRow): boolean => row.id === preferredId);
     if (preferred !== undefined || (preferredId && this.openInNewTab !== undefined)) {
       this.select(preferredId);
-    } else if (this.terminals.length > 0 && (!preferredId || this.openInNewTab === undefined)) {
+    } else if (!pendingOccurrence && this.terminals.length > 0 && (!preferredId || this.openInNewTab === undefined)) {
       this.select(this.terminals[0].id);
     }
     this.openWatch();
@@ -269,11 +260,27 @@ export class DesktopTerminalClient {
     this.publish();
     let attempt = this.createAttempt;
     if (attempt === undefined || attempt.shellPath !== shellPath || attempt.replacement !== replacement) {
+      this.createAttempt = undefined;
+      let selectedShell = shellPath;
+      if (!selectedShell) {
+        const catalog: DesktopShellCatalog = await readDesktopTerminalShells(this.host, this.sessionId)
+          .catch((): DesktopShellCatalog => ({ choices: [], problem: 'terminal/shells' }));
+        if (!this.live) { return; }
+        if (catalog.problem) {
+          this.busy = false;
+          this.error = catalog.problem;
+          this.issue = 'create';
+          this.publish();
+          return;
+        }
+        selectedShell = desktopTerminalLaunchShell(catalog.choices, this.shellPreference?.read() ?? '');
+      }
+      if (selectedShell) { this.shellPreference?.remember(selectedShell); }
       const id = 'native-' + randomUuid();
       const request: Record<string, Object> = {
         'id': id, 'cols': Math.min(this.maxCols, this.desiredCols), 'rows': Math.min(this.maxRows, this.desiredRows)
       };
-      if (shellPath) { request['shellPath'] = shellPath; }
+      if (selectedShell) { request['shellPath'] = selectedShell; }
       attempt = { id: id, shellPath: shellPath, replacement: replacement, request: request };
       this.createAttempt = attempt;
     }
@@ -299,28 +306,6 @@ export class DesktopTerminalClient {
   }
 
   retryCreate(): void { this.create(this.lastShellPath, this.lastReplacement); }
-
-  async retryShells(): Promise<void> {
-    if (!this.live || this.shellsLoading || !this.discovered) { return; }
-    this.shellsLoading = true;
-    this.shellProblem = '';
-    this.publish();
-    const result = await this.host.call('terminal/shells', { 'agentId': this.sessionId });
-    if (!this.live) { return; }
-    this.shellsLoading = false;
-    this.shellProblem = desktopHostProblem(result);
-    this.setShells(desktopHostItems(result));
-    this.publish();
-  }
-
-  private setShells(items: Object[]): void {
-    const choices: DesktopShell[] = [];
-    for (const item of items) {
-      const path = getString(item, 'path') ?? '';
-      if (path) { choices.push({ path: path, name: getString(item, 'name') ?? path }); }
-    }
-    this.shells = choices;
-  }
 
   private retainedAttempt(): DesktopTerminalRow | undefined {
     const id = this.createAttempt?.id;
@@ -835,12 +820,11 @@ export class DesktopTerminalClient {
       const outcome = this.missing.length > 0 && this.missing === this.selected ? 'missing' :
         selected?.state === 'exited' ? 'exited' : undefined;
       this.onState({
-        terminals: this.terminals, shells: this.shells, selected: this.selected,
+        terminals: this.terminals, selected: this.selected,
         writable: this.writable, canTakeInput: !this.writable && this.lastOutput >= 0 && selected?.state === 'running',
         loading: this.loading, busy: this.busy, error: this.error,
         issue: this.issue, canCreate: this.discovered && !this.loading && !this.busy,
-        outcome: outcome, exitCode: selected?.exitCode,
-        shellProblem: this.shellProblem, shellsLoading: this.shellsLoading
+        outcome: outcome, exitCode: selected?.exitCode
       });
     }
   }
