@@ -87,6 +87,8 @@ must('hostruntime/src/main/ets/runtime/NodeRuntime.ets', 'setStartupListeningCal
 /* ── D：启动期仪表 + 锁快扫（main.js）─────────────────────────────────── */
 must('hostcore/app/main.js', "const DSHM_BOOT_RING_ON = process.env.DSHM_BOOT_RING !== '0';",
   'D 层：启动期同步环必须默认开启（否则 SYNC-COUNT 归因永远测不到）');
+must('hostcore/app/main.js', 'wrapped.native = orig.native;',
+  'D 层：同步环包装必须保留 Node 原生 realpath，供安装包查找快路径使用');
 must('hostcore/app/main.js', 'recoverOrphanLocks(HOME_DIR, 4000)',
   'D 层：启动路径必须只做 4000 项快扫（完整巡检放 host-ready 之后）');
 

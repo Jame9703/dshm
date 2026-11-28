@@ -1485,7 +1485,12 @@ try {
     const orig = fs[name];
     if (typeof orig !== "function") { continue; }
     try {
-      fs[name] = dshmTrack(name, orig);
+      const wrapped = dshmTrack(name, orig);
+      if (name === "realpathSync" && typeof orig.native === "function") {
+        // The core resolves installed packages through Node's native realpath during boot.
+        wrapped.native = orig.native;
+      }
+      fs[name] = wrapped;
       dshmRingRestore.push(() => { try { fs[name] = orig; } catch (e) { /* ignore */ } });
     } catch (e) { /* 只读属性就跳过 */ }
   }
