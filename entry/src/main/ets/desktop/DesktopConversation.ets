@@ -130,6 +130,7 @@ export interface DesktopConversationSnapshot {
   continuationSequence: number;
   historyLoaded: boolean;
   timeline?: DesktopTimelineSource;
+  timelineCommandOpen: number;
   receivedTurn: number;
   waitingForInput: boolean;
   models: ModelOption[];
@@ -278,6 +279,7 @@ export class DesktopConversation {
   private historyLoaded: boolean = false;
   private timeline?: DesktopTimelineSource;
   private timelineSequence: number = -2;
+  private timelineCommandOpen: number = 0;
   private receivedTurn: number = 0;
   private waitingForInput: boolean = false;
   private attempt: string = '';
@@ -396,6 +398,7 @@ export class DesktopConversation {
     this.historyLoaded = false;
     this.timeline = undefined;
     this.timelineSequence = -2;
+    this.timelineCommandOpen = 0;
     this.receivedTurn = 0;
     this.waitingForInput = false;
     this.attempt = '';
@@ -822,6 +825,10 @@ export class DesktopConversation {
     }
     if (this.current(generation) && this.sessionId === sessionId) {
       await this.loadSelection(generation);
+      if (commandInvocation(line)?.token === 'timeline' && this.current(generation) && this.sessionId === sessionId) {
+        this.timelineCommandOpen++;
+        this.publish();
+      }
     }
     return '';
   }
@@ -1704,7 +1711,8 @@ export class DesktopConversation {
       runningStartedAt: openTurn && latestTurn.startTime > 0 ? latestTurn.startTime : undefined,
       runningHolding: !this.running && openTurn,
       continuationSequence: this.canContinue() && sending === undefined ? this.continuationSequence : -1,
-      historyLoaded: this.historyLoaded, timeline: this.timeline, receivedTurn: this.receivedTurn,
+      historyLoaded: this.historyLoaded, timeline: this.timeline, timelineCommandOpen: this.timelineCommandOpen,
+      receivedTurn: this.receivedTurn,
       models: this.modelCatalog?.models ?? [], modelsLoading: this.modelsLoading, modelCatalog: this.modelCatalog,
       modelError: this.modelError, selection: selection, error: this.error,
       permissions: this.permission.length > 0 ? this.permissions : [], permission: this.permission,

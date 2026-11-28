@@ -91,6 +91,7 @@ export struct DesktopConversationPane {
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop sessionSummaries: SessionListItem[] = [];
   @Prop embedded: boolean = false;
+  onTimelineReceipt: (session: string, tree: string, task: string) => void = (): void => {};
   onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
   onSubagentAside: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
   onSubagentParent: (child: DesktopSubagentEntry) => void = (): void => {};
@@ -1499,6 +1500,9 @@ export struct DesktopConversationPane {
         expanded: this.expandedProcesses.includes(item.id),
         codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
         inspected: this.inspectedTool, onFile: this.onArtifactFile,
+        onTimelineReceipt: (tree: string, task: string): void => {
+          this.onTimelineReceipt(this.snapshot?.sessionId ?? '', tree, task);
+        },
         hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
         onQuestionReview: (id: string): boolean => this.openQuestionReview(id),
         onToggle: (): void => {

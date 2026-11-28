@@ -1,5 +1,12 @@
 import { getArray, getNumber, getRecord, getString, parseJson } from 'connection';
 
+export interface DesktopTimelineLocation {
+  session: string;
+  tree: string;
+  task: string;
+  revision: number;
+}
+
 export interface DesktopTimelineSource {
   sequence: number;
   value: Object;
@@ -53,6 +60,17 @@ export interface DesktopTimelineView {
   reports: DesktopTimelineReport[];
   annotations: Object[];
   error: string;
+}
+
+export function desktopTimelineStatus(value: string): Resource {
+  switch (value) {
+    case 'active': return $r('app.string.desktop_timeline_active');
+    case 'done': return $r('app.string.desktop_timeline_done');
+    case 'blocked': return $r('app.string.desktop_timeline_blocked');
+    case 'paused': return $r('app.string.desktop_timeline_paused');
+    case 'retired': return $r('app.string.desktop_timeline_retired');
+    default: return $r('app.string.desktop_timeline_pending');
+  }
 }
 
 function numeric(value?: Object): number {

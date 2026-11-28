@@ -33,6 +33,7 @@ export interface DesktopDockChatActions {
   dropAttachments: (id: string, conversation: DesktopConversation, files: DesktopDroppedFiles) => Promise<string>;
   pasteAttachments: (id: string, conversation: DesktopConversation) => Promise<string>;
   openMain: (target: DesktopDockChatTarget, title: string) => void;
+  openTimeline: (target: DesktopDockChatTarget, title: string, tree: string, task: string) => void;
   openChild: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean) => void;
   openParent: (child: DesktopSubagentEntry) => void;
   openImage: (id: string, image: DesktopMediaAttachment) => void;
@@ -101,7 +102,10 @@ export struct DesktopDockChatPane {
     this.draft = this.actions?.readDraft(target.id) ?? EMPTY_DESKTOP_DRAFT;
     this.attachments = this.actions?.readAttachments(target.id) ?? [];
     this.binding = this.data?.createDockConversation((snapshot: DesktopConversationSnapshot): void => {
-      if (generation === this.generation && snapshot.sessionId === target.id) { this.snapshot = snapshot; }
+      if (generation !== this.generation || snapshot.sessionId !== target.id) { return; }
+      const previous = this.snapshot?.timelineCommandOpen ?? 0;
+      this.snapshot = snapshot;
+      if (snapshot.timelineCommandOpen > previous) { this.actions?.openTimeline(target, this.title, '', ''); }
     }, (items: DesktopInteraction[]): void => {
       if (generation === this.generation) { this.interactions = items; }
     });
@@ -182,6 +186,10 @@ export struct DesktopDockChatPane {
       if (this.snapshot !== undefined && this.target !== undefined) {
         DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis, replyMedia: this.replyMedia,
           snapshot: this.snapshot, embedded: true,
+          onTimelineReceipt: (owner: string, tree: string, task: string): void => {
+            const target = this.target;
+            if (target !== undefined && target.id === owner) { this.actions?.openTimeline(target, this.title, tree, task); }
+          },
           title: this.title, sessionDirectory: this.directory, appearance: this.appearance, typography: this.typography,
           sessionSummaries: this.summaries, interactions: this.interactions, busy: this.busy, stopping: this.stopping,
           forking: this.forking,

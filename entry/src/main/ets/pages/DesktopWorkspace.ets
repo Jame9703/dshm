@@ -52,6 +52,7 @@ import { followSessionAddress, followSubagentAddress, projectSessionPage } from 
 import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate';
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import { DesktopTimelinePane } from '../desktop/DesktopTimelinePane';
+import type { DesktopTimelineLocation } from '../desktop/DesktopTimelineModel';
 import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
 import { DesktopReplyMedia } from '../desktop/DesktopReplyMedia';
 import type { DesktopDockChatActions } from '../desktop/DesktopDockChatPane';
@@ -269,6 +270,9 @@ struct DesktopWorkspace {
   private renameId: string = '';
   private renameWorkspace: boolean = false;
   @State private chat: DesktopConversationSnapshot | undefined = undefined;
+  @State private timelineLocation?: DesktopTimelineLocation = undefined;
+  private pendingTimelineLocation?: DesktopTimelineLocation;
+  private timelineLocationRevision: number = 0;
   @State private interactions: DesktopInteraction[] = [];
   @State private draft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
   @State private chatError: string = '';
@@ -511,6 +515,7 @@ struct DesktopWorkspace {
     this.ready = false;
     this.error = '';
     this.chat = undefined;
+    this.resetTimelineLocation();
     this.interactions = [];
     this.unreadSessions = new Map<string, DesktopUnreadSession>();
     this.runningSidebarChildren = new Map<string, number>();
@@ -553,7 +558,13 @@ struct DesktopWorkspace {
       this.updateGroups(snapshot.workspaces, snapshot.sessions, newPins);
       this.ready = true;
     }, (snapshot: DesktopConversationSnapshot): void => {
+      const previous = this.chat?.sessionId === snapshot.sessionId ? this.chat?.timelineCommandOpen ?? 0 : 0;
       this.chat = snapshot;
+      if (snapshot.sessionId === this.sessionId && snapshot.timelineCommandOpen > previous) {
+        this.requestTimeline(snapshot.sessionId, '', '');
+      } else {
+        this.openPendingTimeline();
+      }
       if (snapshot.subagent !== undefined) { this.subagentAddresses.set(snapshot.subagent.id, snapshot.subagent); }
       this.syncReading();
     }, (items: DesktopInteraction[]): void => {
@@ -1303,6 +1314,7 @@ struct DesktopWorkspace {
       this.attachments = this.attachmentsBySession.get(session.id) ?? [];
       this.chatError = '';
     }
+    if (changing) { this.resetTimelineLocation(); }
     this.sessionId = session.id;
     this.selectedSubagent = subagent;
     this.workspaceId = group.id;
@@ -1371,6 +1383,7 @@ struct DesktopWorkspace {
     this.terminalRename = undefined;
     this.closeFeedback();
     this.closeImagePreview();
+    this.resetTimelineLocation();
     this.sessionId = '';
     this.selectedSubagent = undefined;
     this.terminalCreateSession = '';
@@ -3475,6 +3488,9 @@ struct DesktopWorkspace {
           host: this.data?.actions, replyMedia: this.replyMedia,
           cordis: this.data?.cordis,
           snapshot: this.chat,
+          onTimelineReceipt: (owner: string, tree: string, task: string): void => {
+            this.requestTimeline(owner, tree, task);
+          },
           sessionSummaries: this.sessionSummaries,
           onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]): void => {
             this.openSubagent(entry, parents);
@@ -3643,6 +3659,26 @@ struct DesktopWorkspace {
 
   private hasTimeline(): boolean {
     return this.chat?.sessionId === this.sessionId && this.chat?.timeline !== undefined;
+  }
+
+  private resetTimelineLocation(): void {
+    this.pendingTimelineLocation = undefined;
+    this.timelineLocation = undefined;
+  }
+
+  private requestTimeline(owner: string, tree: string, task: string): void {
+    if (!owner || owner !== this.sessionId) { return; }
+    this.timelineLocationRevision++;
+    this.pendingTimelineLocation = { session: owner, tree: tree, task: task, revision: this.timelineLocationRevision };
+    this.openPendingTimeline();
+  }
+
+  private openPendingTimeline(): void {
+    const location = this.pendingTimelineLocation;
+    if (location === undefined || location.session !== this.sessionId || !this.hasTimeline()) { return; }
+    this.pendingTimelineLocation = undefined;
+    this.timelineLocation = location;
+    this.showTimeline();
   }
 
   private showTimeline(toggle: boolean = false): void {
@@ -3941,6 +3977,10 @@ struct DesktopWorkspace {
       pasteAttachments: (id: string, conversation: DesktopConversation): Promise<string> => data === undefined ?
         Promise.resolve('无法读取剪贴板附件') : this.stageClipboard(data, id, conversation),
       openMain: (target: DesktopDockChatTarget, title: string): void => this.openRelatedSession(target.id, title, target.subagent),
+      openTimeline: (target: DesktopDockChatTarget, title: string, tree: string, task: string): void => {
+        if (target.id !== this.sessionId) { this.openRelatedSession(target.id, title, target.subagent); }
+        this.requestTimeline(target.id, tree, task);
+      },
       openChild: (child: DesktopSubagentEntry, parents: DesktopSubagentEntry[], aside: boolean): void =>
         this.openSubagent(child, parents, aside),
       openParent: (child: DesktopSubagentEntry): void => this.openSubagentParent(child),
@@ -4008,7 +4048,7 @@ struct DesktopWorkspace {
   @Builder
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.TIMELINE) {
-      DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId,
+      DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId, location: this.timelineLocation,
         opening: this.chat?.sessionId === this.sessionId ? this.chat?.timeline : undefined,
         active: this.hasTimeline() && (index < 0 || (this.rightDock.expanded && this.rightDock.panes[index]?.active === tab.id)),
         writable: this.hasTimeline() && (this.selectedSubagent === undefined || this.selectedSubagent.mode === 'continuable'),

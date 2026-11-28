@@ -2,6 +2,8 @@ import { makeItem, projectWireRecord, ToolState, TrajectoryItem, TrajectoryKind 
 import { getArray, getBoolean, getNumber, getRecord, getString, parseJson, stringifyJson } from 'connection';
 import { desktopCordisAction, desktopCordisCard, desktopCordisRunKey } from './DesktopCordisCards';
 import type { DesktopCordisCard } from './DesktopCordisCards';
+import { readDesktopTimelineReceipt } from './DesktopTimelineReceipt';
+import type { DesktopTimelineReceipt } from './DesktopTimelineReceipt';
 
 interface ToolEntry {
   id: string;
@@ -14,6 +16,9 @@ interface ToolEntry {
   result?: TrajectoryItem;
   cordisArgs?: string;
   cordisResult?: Object;
+  timeline?: DesktopTimelineReceipt;
+  timelineStamp?: string;
+  timelineRevision?: number;
   error: string;
 }
 
@@ -25,6 +30,8 @@ export interface DesktopToolStep {
   step: number;
   resultSequence: number;
   cordis?: DesktopCordisCard;
+  timeline?: DesktopTimelineReceipt;
+  timelineRevision: number;
   interrupted: boolean;
   error: string;
 }
@@ -121,13 +128,19 @@ export class DesktopToolLog {
         item.toolState = failed ? ToolState.FAILED : ToolState.SUCCESS;
       }
       item.toolOutput = renderContent(child ? data : resultMessage) || item.toolOutput;
+      const timeline = !child && item.toolState === ToolState.SUCCESS ?
+        readDesktopTimelineReceipt(getRecord(getRecord(data, 'meta'), 'timeline')) : undefined;
+      const timelineStamp = timeline === undefined ? undefined : stringifyJson(timeline);
       const previous = entry.result;
       const changed = seq !== entry.end || problem !== entry.error || previous?.at !== item.at ||
         previous?.toolName !== item.toolName || previous?.toolState !== item.toolState ||
-        previous?.toolOutput !== item.toolOutput;
+        previous?.toolOutput !== item.toolOutput || timelineStamp !== entry.timelineStamp;
       if (changed) { this.cachedGroups = undefined; }
       entry.error = problem;
       entry.result = item;
+      entry.timeline = timeline;
+      if (timelineStamp !== entry.timelineStamp) { entry.timelineRevision = (entry.timelineRevision ?? 0) + 1; }
+      entry.timelineStamp = timelineStamp;
       entry.end = seq;
       if (desktopCordisAction(entry.call?.toolName || name) || getString(getRecord(data, 'meta'), 'pluginId')) {
         const previousData = entry.cordisResult;
@@ -164,7 +177,9 @@ export class DesktopToolLog {
       interrupted || getString(getRecord(entry.cordisResult, 'error'), 'code') === 'interrupted') : undefined;
     return { id: entry.id, sequence: timestamp(entry), item: item, depth: depth, step: entry.step || parentStep,
       resultSequence: entry.end,
-      interrupted: interrupted, error: entry.error, cordis: cordis };
+      interrupted: interrupted, error: entry.error, cordis: cordis,
+      timeline: item.toolName === 'timeline_tasks' ? entry.timeline : undefined,
+      timelineRevision: entry.timelineRevision ?? 0 };
   }
 
   groups(): DesktopProcessGroup[] {
@@ -214,6 +229,7 @@ export class DesktopToolLog {
     const step = this.step(row, depth, turn, parentStep);
     steps.push(step);
     stamps.push(`${row.id}:${row.start}:${row.end}:${step.interrupted}`);
+    if (step.timelineRevision > 0) { stamps.push(String(step.timelineRevision)); }
     for (const child of children.get(row.id) ?? []) {
       this.attach(child, depth + 1, turn, step.step, children, seen, steps, stamps);
     }

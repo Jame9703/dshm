@@ -7,15 +7,26 @@ import { DesktopTimelineRuler } from './DesktopTimelineRuler';
 import { desktopTimelineCheckpoint, desktopTimelineCheckpointName, previewDesktopTimelineCheckpoint } from './DesktopTimelineCheckpoint';
 import { saveDesktopTimelineCheckpoint } from './DesktopTimelineTransferIO';
 import { DesktopTimelineTransferDialog } from './DesktopTimelineTransferDialog';
+import { DesktopTimelineRemoveDialog } from './DesktopTimelineRemoveDialog';
 import type { DesktopTimelineImportRequest } from './DesktopTimelineTransferDialog';
 import { desktopTimelineControlDeadline, desktopTimelinePlayback } from './DesktopTimelineControl';
 import type { DesktopTimelinePlayback } from './DesktopTimelineControl';
 import { desktopTimelineDiscussionKey, desktopTimelineDiscussionNotice, desktopTimelineDiscussionPayload,
   desktopTimelineOwnAnnotation, TIMELINE_DISCUSSION_LIMIT, TIMELINE_PRIORITIES } from './DesktopTimelineActions';
 import type { DesktopTimelineDiscussionTarget, DesktopTimelineNoticeLabels } from './DesktopTimelineActions';
-import { desktopTimelineValue, readDesktopTimeline } from './DesktopTimelineModel';
-import type { DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
+import { desktopTimelineStatus, desktopTimelineValue, readDesktopTimeline } from './DesktopTimelineModel';
+import type { DesktopTimelineLocation, DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
+
+interface TimelineRemoveTarget {
+  tree: DesktopTimelineTree;
+  annotations: Object[];
+}
+
+interface TimelineBackupResult {
+  saved: boolean;
+  error: string;
+}
 
 interface TimelineControlAttempt {
   key: string;
@@ -34,6 +45,7 @@ export struct DesktopTimelinePane {
   host?: DesktopHostActions;
   @Prop sessionId: string = '';
   @Prop @Watch('openingChanged') opening?: DesktopTimelineSource = undefined;
+  @Prop @Watch('applyLocation') location?: DesktopTimelineLocation = undefined;
   @Prop @Watch('activeChanged') active: boolean = false;
   @Prop writable: boolean = false;
   @Prop running: boolean = false;
@@ -55,6 +67,8 @@ export struct DesktopTimelinePane {
   @State private editBusy: boolean = false;
   @State private transferStatus: string = '';
   @State private exportBusy: boolean = false;
+  @State private removeStale: boolean = false;
+  private removeTarget?: TimelineRemoveTarget;
   private transferDialog: number = -1;
   private transferOpening: boolean = false;
   private transferBusy: boolean = false;
@@ -81,6 +95,7 @@ export struct DesktopTimelinePane {
   private retryTimer: number = -1;
   private retries: number = 0;
   private scrollVersion: number = 0;
+  private locationRevision: number = 0;
 
   aboutToAppear(): void {
     this.mounted = true;
@@ -97,6 +112,7 @@ export struct DesktopTimelinePane {
   private activeChanged(): void {
     if (this.mounted && this.active) {
       this.retries = 0;
+      this.applyLocation();
       this.connect();
     } else {
       this.closeTransfer();
@@ -112,6 +128,8 @@ export struct DesktopTimelinePane {
     if (source.sequence <= this.sequence) { return; }
     this.sequence = source.sequence;
     this.view = readDesktopTimeline(source.value);
+    const removal = this.removeTarget;
+    if (removal !== undefined && !this.sameRemovalTarget(removal)) { this.removeStale = true; }
     const observed = new Set<string>(this.view.annotations.map((row: Object): string => getString(row, 'id') ?? ''));
     this.acknowledgedControls = this.acknowledgedControls.filter((row: Object): boolean =>
       !observed.has(getString(row, 'id') ?? ''));
@@ -122,6 +140,20 @@ export struct DesktopTimelinePane {
     this.ready = true;
     this.updating = false;
     this.failed = false;
+    this.applyLocation();
+  }
+
+  private applyLocation(): void {
+    const location = this.location;
+    if (!this.mounted || !this.active || !this.ready || location === undefined ||
+        location.session !== this.sessionId || location.revision <= this.locationRevision) { return; }
+    if (location.tree && !this.view.trees.some((tree: DesktopTimelineTree): boolean => tree.id === location.tree)) { return; }
+    if (location.task && this.task({ tree: location.tree, id: location.task, scroll: 0 }) === undefined) { return; }
+    this.locationRevision = location.revision;
+    this.selectTab('tasks');
+    this.reportTrail = [];
+    this.selectTree(location.tree);
+    if (location.task) { this.pushDetail(location.tree, location.task); }
   }
 
   private stop(): void {
@@ -178,6 +210,7 @@ export struct DesktopTimelinePane {
     } else if (sequence >= this.sequence) {
       this.sequence = sequence;
       this.view = readDesktopTimeline();
+      if (this.removeTarget !== undefined) { this.removeStale = true; }
       this.acknowledgedControls = [];
       this.scheduleControlTimer();
       this.reportById.clear();
@@ -617,16 +650,6 @@ export struct DesktopTimelinePane {
     }
   }
 
-  private status(value: string): Resource {
-    switch (value) {
-      case 'active': return $r('app.string.desktop_timeline_active');
-      case 'done': return $r('app.string.desktop_timeline_done');
-      case 'blocked': return $r('app.string.desktop_timeline_blocked');
-      case 'paused': return $r('app.string.desktop_timeline_paused');
-      default: return $r('app.string.desktop_timeline_pending');
-    }
-  }
-
   private time(value: number): string { return new Date(value).toLocaleString(); }
 
   private duration(ms: number): string {
@@ -668,7 +691,7 @@ export struct DesktopTimelinePane {
         Column({ space: 4 }) {
           Text(task.title).fontSize(14).fontWeight(FontWeight.Medium).width('100%')
           Row({ space: 6 }) {
-            Text(this.status(task.status)).fontSize(11).fontColor($r('sys.color.font_secondary'))
+            Text(desktopTimelineStatus(task.status)).fontSize(11).fontColor($r('sys.color.font_secondary'))
             if (task.priority) { Text(task.priority).fontSize(11).fontColor($r('sys.color.brand')) }
             if (task.note) {
               Text(task.note).fontSize(11).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
@@ -735,29 +758,40 @@ export struct DesktopTimelinePane {
     }
     items.push({ value: $r('app.string.desktop_timeline_export_tree'), enabled: !this.exportBusy,
       action: (): void => { this.exportTree(tree.id); } });
+    if (this.writable) {
+      items.push({ value: $r('app.string.desktop_timeline_remove_tree'), enabled: this.canImport(),
+        action: (): void => { this.openTransfer(tree); } });
+    }
     return items;
   }
 
-  private async exportTree(id: string): Promise<void> {
+  private async writeBackup(tree: DesktopTimelineTree, notes: Object[], owner: string): Promise<TimelineBackupResult> {
     const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return { saved: false, error: this.resourceText($r('app.string.desktop_timeline_transfer_export_failed')) };
+    }
+    try {
+      const content = desktopTimelineCheckpoint(tree.raw, notes, owner, Date.now());
+      if (content === undefined || previewDesktopTimelineCheckpoint(content) === undefined) {
+        return { saved: false, error: this.resourceText($r('app.string.desktop_timeline_transfer_invalid')) };
+      }
+      return { saved: await saveDesktopTimelineCheckpoint(context, desktopTimelineCheckpointName(tree.title), content), error: '' };
+    } catch (error) {
+      return { saved: false, error: this.resourceText(error instanceof Error && error.message === 'limit' ?
+        $r('app.string.desktop_timeline_transfer_limit') : $r('app.string.desktop_timeline_transfer_export_failed')) };
+    }
+  }
+
+  private async exportTree(id: string): Promise<void> {
     const tree = this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === id);
-    if (!this.mounted || !this.active || context === undefined || tree === undefined || this.exportBusy) { return; }
+    if (!this.mounted || !this.active || tree === undefined || this.exportBusy) { return; }
     this.exportBusy = true;
     this.transferStatus = '';
     try {
-      const content = desktopTimelineCheckpoint(tree.raw, this.view.annotations, this.sessionId, Date.now());
-      if (content === undefined || previewDesktopTimelineCheckpoint(content) === undefined) {
-        this.transferStatus = this.resourceText($r('app.string.desktop_timeline_transfer_invalid'));
-        return;
-      }
-      const saved = await saveDesktopTimelineCheckpoint(context, desktopTimelineCheckpointName(tree.title), content);
-      if (this.mounted && saved) {
-        this.transferStatus = this.resourceText($r('app.string.desktop_timeline_transfer_exported'));
-      }
-    } catch (error) {
+      const result = await this.writeBackup(tree, this.view.annotations, this.sessionId);
       if (this.mounted) {
-        this.transferStatus = this.resourceText(error instanceof Error && error.message === 'limit' ?
-          $r('app.string.desktop_timeline_transfer_limit') : $r('app.string.desktop_timeline_transfer_export_failed'));
+        this.transferStatus = result.saved ? this.resourceText($r('app.string.desktop_timeline_transfer_exported')) :
+          result.error;
       }
     } finally {
       if (this.mounted) { this.exportBusy = false; }
@@ -790,8 +824,70 @@ export struct DesktopTimelinePane {
     }
   }
 
+  private sameRemovalTarget(target: TimelineRemoveTarget): boolean {
+    const tree = this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === target.tree.id);
+    return tree !== undefined && getNumber(tree.raw, 'createdAt') === getNumber(target.tree.raw, 'createdAt');
+  }
+
+  private async backupRemoval(owner: string, version: number, target: TimelineRemoveTarget): Promise<string> {
+    if (!this.mounted || this.sessionId !== owner || version !== this.transferVersion) {
+      return this.resourceText($r('app.string.desktop_timeline_remove_disabled'));
+    }
+    const latest = !this.removeStale && this.sameRemovalTarget(target) ?
+      this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === target.tree.id) : undefined;
+    const result = await this.writeBackup(latest ?? target.tree,
+      latest === undefined ? target.annotations : this.view.annotations, owner);
+    return result.error;
+  }
+
+  private async removeTree(owner: string, version: number, target: TimelineRemoveTarget): Promise<string> {
+    const host = this.host;
+    const id = target.tree.id;
+    if (!this.canImport() || this.removeStale || owner !== this.sessionId || version !== this.transferVersion ||
+      host === undefined || !this.sameRemovalTarget(target)) {
+      return this.resourceText($r('app.string.desktop_timeline_remove_disabled'));
+    }
+    this.editBusy = true;
+    this.transferStatus = '';
+    try {
+      const payload: Record<string, Object> = { 'action': 'remove', 'sessionId': owner, 'tree': id };
+      const reply = await host.editTimeline(payload);
+      if (!this.mounted || !this.active || this.sessionId !== owner || version !== this.transferVersion) { return ''; }
+      const removed = getField(reply.value, 'removed');
+      if (!reply.ok || getString(reply.value, 'action') !== 'remove' || typeof removed !== 'boolean') {
+        await this.refreshEditedTimeline();
+        return reply.error?.message || this.resourceText($r('app.string.desktop_timeline_remove_failed'));
+      }
+      if (this.selectedTree()?.id === id) { this.selectTree(''); }
+      this.taskTrail = this.taskTrail.filter((row: TimelineDetailTarget): boolean => row.tree !== id);
+      this.acknowledgedControls = this.acknowledgedControls.filter((row: Object): boolean =>
+        getString(getRecord(row, 'target'), 'tree') !== id);
+      this.scheduleControlTimer();
+      this.transferStatus = this.resourceText(removed && getField(reply.value, 'notified') !== true &&
+        getField(reply.value, 'draft') !== true ? $r('app.string.desktop_timeline_remove_notice_unknown') :
+        $r('app.string.desktop_timeline_removed'));
+      await this.refreshEditedTimeline();
+      return '';
+    } finally {
+      if (this.mounted) { this.editBusy = false; }
+    }
+  }
+
   @Builder
-  private TransferContent(owner: string, version: number) {
+  private TransferContent(owner: string, version: number, removal?: TimelineRemoveTarget) {
+    if (removal !== undefined) {
+      DesktopTimelineRemoveDialog({ title: removal.tree.title, disabled: this.running || this.removeStale,
+        onBusy: (busy: boolean): void => { if (this.transferVersion === version) { this.transferBusy = busy; } },
+        onExport: (): Promise<string> => this.backupRemoval(owner, version, removal),
+        onRemove: (): Promise<string> => this.removeTree(owner, version, removal),
+        onClose: (): void => { if (this.transferVersion === version) { this.closeTransfer(); } } })
+    } else {
+      this.ImportContent(owner, version)
+    }
+  }
+
+  @Builder
+  private ImportContent(owner: string, version: number) {
     DesktopTimelineTransferDialog({ running: this.running,
       readOnly: (): boolean => !this.canImport() || owner !== this.sessionId || version !== this.transferVersion,
       onBusy: (busy: boolean): void => { if (this.transferVersion === version) { this.transferBusy = busy; } },
@@ -799,7 +895,7 @@ export struct DesktopTimelinePane {
       onClose: (): void => { if (this.transferVersion === version) { this.closeTransfer(); } } })
   }
 
-  private async openTransfer(): Promise<void> {
+  private async openTransfer(remove?: DesktopTimelineTree): Promise<void> {
     if (!this.canImport() || this.transferOpening || this.transferDialog >= 0) { return; }
     const owner = this.sessionId;
     const version = ++this.transferVersion;
@@ -807,8 +903,12 @@ export struct DesktopTimelinePane {
     const material = dialogMaterial();
     this.transferOpening = true;
     this.transferBusy = false;
+    const removal: TimelineRemoveTarget | undefined = remove === undefined ? undefined :
+      { tree: remove, annotations: this.view.annotations };
+    this.removeTarget = removal;
+    this.removeStale = removal !== undefined && !this.sameRemovalTarget(removal);
     try {
-      const id = await prompt.openCustomDialog({ builder: (): void => { this.TransferContent(owner, version); },
+      const id = await prompt.openCustomDialog({ builder: (): void => { this.TransferContent(owner, version, removal); },
         width: 420, alignment: DialogAlignment.Center, autoCancel: true, systemMaterial: material,
         backgroundColor: material === undefined ? $r('app.color.workspace_panel') : undefined,
         cornerRadius: 22, onWillDismiss: (action): void => { if (!this.transferBusy) { action.dismiss(); } },
@@ -816,6 +916,7 @@ export struct DesktopTimelinePane {
           if (version === this.transferVersion) {
             this.transferDialog = -1;
             this.transferBusy = false;
+            this.removeTarget = undefined;
             this.transferVersion++;
           }
         }
@@ -838,6 +939,7 @@ export struct DesktopTimelinePane {
     const id = this.transferDialog;
     this.transferDialog = -1;
     this.transferBusy = false;
+    this.removeTarget = undefined;
     if (id >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(id); }
   }
 
@@ -888,7 +990,7 @@ export struct DesktopTimelinePane {
     Column({ space: 9 }) {
       if (task !== undefined && target !== undefined) {
         Text(task.title).width('100%').fontSize(18).fontWeight(FontWeight.Medium)
-        Text(this.status(task.status)).fontSize(13).fontColor($r('sys.color.font_secondary'))
+        Text(desktopTimelineStatus(task.status)).fontSize(13).fontColor($r('sys.color.font_secondary'))
         Progress({ value: task.progress * 100, total: 100, type: ProgressType.Linear }).width('100%')
         if (task.description) { Text(task.description).width('100%').fontSize(14) }
         if (task.note) { Text(task.note).width('100%').fontSize(13).copyOption(CopyOptions.LocalDevice) }
@@ -987,14 +1089,14 @@ export struct DesktopTimelinePane {
       if (!this.rulerShown()) {
         Scroll(this.scroll) {
           Column({ space: 9 }) {
-            ForEach([this.viewRevision], (_revision: number): void => {
+            ForEach([this.viewRevision + ':' + this.treeId], (_revision: string): void => {
               if (this.tab === 'tasks') {
                 if (this.target() === undefined) { this.Tasks(this.selectedTree()) }
                 else { this.TaskDetail(this.task(this.target()), this.target()) }
               } else {
                 this.ReportDetail(this.report(this.target()?.id ?? ''))
               }
-            }, (revision: number): string => String(revision))
+            }, (revision: string): string => revision)
           }.width('100%').alignItems(HorizontalAlign.Start)
         }.layoutWeight(1).width('100%').align(Alignment.TopStart)
       }
