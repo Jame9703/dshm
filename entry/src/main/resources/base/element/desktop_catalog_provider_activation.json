@@ -1,0 +1,28 @@
+{
+  "string": [
+    {
+      "name": "desktop_catalog_provider_advanced",
+      "value": "自定义设置"
+    },
+    {
+      "name": "desktop_catalog_provider_env",
+      "value": "留空使用环境认证（%1$s）"
+    },
+    {
+      "name": "desktop_catalog_provider_required_key",
+      "value": "此协议需要 API 密钥。"
+    },
+    {
+      "name": "desktop_catalog_provider_unavailable",
+      "value": "无法编辑提供方 %1$s 的设置路径。"
+    },
+    {
+      "name": "desktop_catalog_provider_save_failed",
+      "value": "未能保存模型提供方。"
+    },
+    {
+      "name": "desktop_catalog_provider_saved",
+      "value": "模型提供方已保存。"
+    }
+  ]
+}

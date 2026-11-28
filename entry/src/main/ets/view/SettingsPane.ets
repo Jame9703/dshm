@@ -287,6 +287,7 @@ export struct SettingsPane {
               selection: this.selection,
               credentials: this.credentials,
               piAiProviders: this.piAiProviders,
+              nativeProviderAdd: this.desktopShortcuts,
               settingsHost: this.desktopAccountHost,
               onEditProvider: (route: string) => {
                 this.onEditProvider(route);

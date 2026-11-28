@@ -1,0 +1,28 @@
+{
+  "string": [
+    {
+      "name": "desktop_catalog_provider_advanced",
+      "value": "Custom settings"
+    },
+    {
+      "name": "desktop_catalog_provider_env",
+      "value": "Leave empty to use environment authentication (%1$s)"
+    },
+    {
+      "name": "desktop_catalog_provider_required_key",
+      "value": "This protocol requires an API key."
+    },
+    {
+      "name": "desktop_catalog_provider_unavailable",
+      "value": "The settings path for provider %1$s cannot be edited."
+    },
+    {
+      "name": "desktop_catalog_provider_save_failed",
+      "value": "Could not save the model provider."
+    },
+    {
+      "name": "desktop_catalog_provider_saved",
+      "value": "Model provider saved."
+    }
+  ]
+}

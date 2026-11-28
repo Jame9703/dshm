@@ -1,0 +1,44 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_add_entry",
+      "value": "Add model provider"
+    },
+    {
+      "name": "desktop_model_add_mode",
+      "value": "How to add"
+    },
+    {
+      "name": "desktop_model_add_catalog",
+      "value": "Third-party model provider"
+    },
+    {
+      "name": "desktop_model_add_custom",
+      "value": "Custom model API"
+    },
+    {
+      "name": "desktop_model_add_catalog_hint",
+      "value": "Pick OpenAI, Anthropic, Kimi, or another provider from the built-in catalog and enter its API key."
+    },
+    {
+      "name": "desktop_model_add_custom_hint",
+      "value": "Connect a relay, a self-hosted server, or any other OpenAI-, Anthropic-, or Gemini-compatible endpoint by its base URL, protocol, and models."
+    },
+    {
+      "name": "desktop_model_add_catalog_exhausted",
+      "value": "Every catalog provider is already configured."
+    },
+    {
+      "name": "desktop_model_add_custom_unavailable",
+      "value": "No API protocol is available to declare."
+    },
+    {
+      "name": "desktop_model_add_provider",
+      "value": "Provider"
+    },
+    {
+      "name": "desktop_model_add_cancel",
+      "value": "Cancel"
+    }
+  ]
+}

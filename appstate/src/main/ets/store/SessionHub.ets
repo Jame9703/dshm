@@ -3608,6 +3608,10 @@ export class SessionHub {
     return this.providerEntriesFrom(LLM_LIST_CONFIGURABLE_PROVIDERS_ENDPOINT);
   }
 
+  async registeredModelProviders(): Promise<Object[]> {
+    return this.providerEntriesFrom(LLM_LIST_PROVIDERS_ENDPOINT);
+  }
+
   /** 读取 Host 的提供方目录条目。 */
   private async providerEntriesFrom(endpoint: string): Promise<Object[]> {
     const inner: Record<string, Object> = {};

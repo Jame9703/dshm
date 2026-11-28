@@ -1,0 +1,44 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_add_entry",
+      "value": "添加模型提供商"
+    },
+    {
+      "name": "desktop_model_add_mode",
+      "value": "添加方式"
+    },
+    {
+      "name": "desktop_model_add_catalog",
+      "value": "第三方模型提供商"
+    },
+    {
+      "name": "desktop_model_add_custom",
+      "value": "自定义模型 API"
+    },
+    {
+      "name": "desktop_model_add_catalog_hint",
+      "value": "从内置目录中选择 OpenAI、Anthropic、Kimi 等提供商，填入其 API 密钥即可使用。"
+    },
+    {
+      "name": "desktop_model_add_custom_hint",
+      "value": "连接中转站、自部署服务或其他兼容 OpenAI / Anthropic / Gemini 协议的接口，需填写 API 地址、协议和模型。"
+    },
+    {
+      "name": "desktop_model_add_catalog_exhausted",
+      "value": "目录中的提供商都已添加。"
+    },
+    {
+      "name": "desktop_model_add_custom_unavailable",
+      "value": "没有可用的 API 协议。"
+    },
+    {
+      "name": "desktop_model_add_provider",
+      "value": "提供商"
+    },
+    {
+      "name": "desktop_model_add_cancel",
+      "value": "取消"
+    }
+  ]
+}

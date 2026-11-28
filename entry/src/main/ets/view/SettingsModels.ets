@@ -24,6 +24,7 @@ import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { DEEPSEEK_ACCOUNT_ROUTE, DEEPSEEK_API_ROUTE, DEEPSEEK_SETTINGS_NS } from '../desktop/DesktopDeepSeekProviderModel';
 import { DesktopDeepSeekProvider } from './DesktopDeepSeekProvider';
+import { DesktopModelProviderAddFlow } from './DesktopModelProviderAddFlow';
 
 
 /**
@@ -100,6 +101,7 @@ export struct SettingsModels {
    * 中枢已按逐字段投影好（`HubSnapshot.piAiProviders`），这里直接用。
    */
   @Prop piAiProviders: PiAiProviderView[] = [];
+  @Prop nativeProviderAdd: boolean = false;
   settingsHost?: DesktopHostActions;
 
   /** 点提供方卡片上的「编辑」 */
@@ -367,7 +369,7 @@ export struct SettingsModels {
       .fontColor($r('sys.color.font_tertiary'))
       .width('100%')
 
-    if (this.piAiProviders.length === 0) {
+    if (!this.nativeProviderAdd && this.piAiProviders.length === 0) {
       Text('还没有声明任何路由。点下面的「添加自定义模型 API」开始。')
         .fontSize(Fs.CAPTION)
         .fontColor($r('sys.color.font_tertiary'))
@@ -445,13 +447,10 @@ export struct SettingsModels {
       .backgroundColor($r('sys.color.background_secondary'))
     }, (p: PiAiProviderView) => p.route)
 
-    Button('添加自定义模型 API')
-      .width('100%')
-      .backgroundColor($r('sys.color.background_secondary'))
-      .fontColor($r('sys.color.brand'))
-      .onClick(() => {
-        this.onAddProvider();
-      })
+    if (!this.nativeProviderAdd) {
+      Button('添加自定义模型 API').width('100%').backgroundColor($r('sys.color.background_secondary'))
+        .fontColor($r('sys.color.brand')).onClick((): void => { this.onAddProvider(); })
+    }
   }
 
   /**
@@ -491,7 +490,7 @@ export struct SettingsModels {
      * 由**它自己的设置分区**声明；我们只把用户带到那个分区（写入仍走既有设置通道），
      * 分区不存在时**如实说明**——不凭猜测往一个不存在的命名空间里写。
      */
-    if (this.providerCandidates().length > 0) {
+    if (!this.nativeProviderAdd && this.providerCandidates().length > 0) {
       Text('可添加的提供方')
         .fontSize(Fs.CAPTION)
         .fontColor($r('sys.color.font_tertiary'))
@@ -701,6 +700,9 @@ export struct SettingsModels {
       .borderRadius(Radius.M)
       .backgroundColor($r('sys.color.background_secondary'))
     }, (g: ModelProviderGroup) => g.provider)
+    if (this.nativeProviderAdd) {
+      DesktopModelProviderAddFlow({ host: this.settingsHost })
+    }
   }
 
   private providerGroups(): ModelProviderGroup[] {
