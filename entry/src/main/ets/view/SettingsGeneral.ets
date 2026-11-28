@@ -24,6 +24,15 @@ import { DesktopShortcutSettingsRow } from '../desktop/DesktopShortcutDialog';
 import { DesktopThemeSettings } from '../desktop/DesktopThemeSettings';
 import { DESKTOP_THEME_NS } from '../desktop/DesktopTheme';
 import { DesktopCodingToolsSnapshot, emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
+import { getBoolean, getString } from 'connection';
+import { SETTINGS_CONFLICT, SETTINGS_DESCRIBE_ENDPOINT } from 'dshcompat';
+import { DesktopPermissionDefault } from '../desktop/DesktopPermissionDefault';
+import { allowsDesktopPermissionDefault, DESKTOP_FULL_ACCESS_PRESET, desktopPermissionDefaultView, readDesktopGeneralHostDocuments,
+  writeDesktopGeneralHostPreference } from '../desktop/DesktopGeneralHostPreferences';
+import type { DesktopPermissionDefaultView } from '../desktop/DesktopGeneralHostPreferences';
+import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
+import { readDesktopPluginDocument } from '../desktop/DesktopPluginSettingsModel';
+import type { DesktopPluginDocument } from '../desktop/DesktopPluginSettingsModel';
 
 
 /**
@@ -58,6 +67,7 @@ export struct SettingsGeneral {
   @Prop permissionOptions: string[] = [];
   @Prop desktopShortcuts: boolean = false;
   @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
+  settingsHost?: DesktopGeneralHostAccess;
   onOpenShortcuts: () => void = () => {};
   onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
 
@@ -76,6 +86,152 @@ export struct SettingsGeneral {
   onResetSetting: (key: string) => void = () => {
   };
 
+  @State private writable: boolean = false;
+  @State private permissionServed: boolean = false;
+  @State private permissionLoading: boolean = false;
+  @State private permissionSaving: boolean = false;
+  @State private permissionView?: DesktopPermissionDefaultView = undefined;
+  @State private permissionProblem: ResourceStr = '';
+  @State private uploadDocument?: DesktopPluginDocument = undefined;
+  @State private uploadSaving: boolean = false;
+  @State private uploadToggleEpoch: number = 0;
+  private active: boolean = false;
+  private loadEpoch: number = 0;
+
+  aboutToAppear(): void {
+    this.active = true;
+    if (this.desktopShortcuts) { this.loadHostPreferences(); }
+  }
+
+  aboutToDisappear(): void {
+    this.active = false;
+    this.loadEpoch++;
+  }
+
+  private async loadHostPreferences(): Promise<void> {
+    const host = this.settingsHost;
+    if (!this.active || host === undefined) { return; }
+    const epoch = ++this.loadEpoch;
+    this.permissionLoading = true;
+    this.writable = false;
+    try {
+      const described = await host.call(SETTINGS_DESCRIBE_ENDPOINT);
+      if (!this.active || epoch !== this.loadEpoch) { return; }
+      const documents = readDesktopGeneralHostDocuments(described.ok ? described.value : undefined);
+      this.writable = documents.writable;
+      if (documents.uploads === undefined || documents.uploads.revision >= (this.uploadDocument?.revision ?? -1)) {
+        this.uploadDocument = documents.uploads;
+      }
+      this.permissionServed = documents.permission !== undefined;
+      if (documents.permission === undefined) { this.permissionView = undefined; return; }
+      const catalog = await host.call('permissionPresets/catalog');
+      if (!this.active || epoch !== this.loadEpoch) { return; }
+      if (documents.permission.revision >= (this.permissionView?.document.revision ?? -1)) {
+        this.permissionView = catalog.ok ? desktopPermissionDefaultView(documents.permission, catalog.value) : undefined;
+      }
+      if (this.permissionView === undefined) {
+        this.permissionProblem = catalog.error?.message || $r('app.string.desktop_default_permission_unavailable');
+      }
+    } catch (_) {
+      if (this.active && epoch === this.loadEpoch) {
+        this.permissionProblem = $r('app.string.desktop_default_permission_unavailable');
+      }
+    } finally {
+      if (epoch === this.loadEpoch) { this.permissionLoading = false; }
+    }
+  }
+
+  private async savePermission(id: string, acknowledged: boolean): Promise<void> {
+    const host = this.settingsHost;
+    const view = this.permissionView;
+    if (!this.active || host === undefined || view === undefined || !this.writable || this.permissionLoading ||
+        this.permissionSaving || !allowsDesktopPermissionDefault(view, id, acknowledged)) { return; }
+    this.permissionSaving = true;
+    this.permissionProblem = '';
+    try {
+      if (id === DESKTOP_FULL_ACCESS_PRESET) {
+        const authorization = await host.call(SETTINGS_DESCRIBE_ENDPOINT);
+        if (!this.active) { return; }
+        const current = readDesktopGeneralHostDocuments(authorization.ok ? authorization.value : undefined);
+        if (!current.writable || current.permission === undefined) {
+          this.writable = current.writable;
+          this.permissionServed = current.permission !== undefined;
+          this.permissionProblem = authorization.error?.message || $r('app.string.desktop_default_permission_unavailable');
+          return;
+        }
+      }
+      const catalog = await host.call('permissionPresets/catalog');
+      if (!this.active || !this.writable) { return; }
+      const fresh = catalog.ok ? desktopPermissionDefaultView(view.document, catalog.value) : undefined;
+      if (!allowsDesktopPermissionDefault(fresh, id, acknowledged)) {
+        this.permissionProblem = $r('app.string.desktop_default_permission_unavailable');
+        await this.loadHostPreferences();
+        return;
+      }
+      const result = await writeDesktopGeneralHostPreference(host, view.document, 'defaultPreset', id);
+      if (!this.active) { return; }
+      const accepted = result.ok ? readDesktopPluginDocument(result.value) : undefined;
+      if (accepted?.id === view.document.id && accepted.revision >= view.document.revision &&
+          getString(accepted.value, 'defaultPreset') === id) {
+        if (accepted.revision >= (this.permissionView?.document.revision ?? -1)) {
+          this.permissionView = desktopPermissionDefaultView(accepted, catalog.value);
+        }
+      } else {
+        this.permissionProblem = result.error?.message || $r('app.string.desktop_general_preference_failed');
+        if (result.error?.code === SETTINGS_CONFLICT || result.ok) { await this.loadHostPreferences(); }
+      }
+    } catch (_) {
+      if (this.active) { this.permissionProblem = $r('app.string.desktop_general_preference_failed'); }
+    } finally {
+      if (this.active) { this.permissionSaving = false; }
+    }
+  }
+
+  private async saveUpload(enabled: boolean): Promise<void> {
+    const host = this.settingsHost;
+    const document = this.uploadDocument;
+    if (!this.active || host === undefined || document === undefined || !this.writable || this.uploadSaving ||
+        enabled === getBoolean(document.value, 'enabled')) { return; }
+    const prompt = this.getUIContext().getPromptAction();
+    this.uploadSaving = true;
+    this.uploadToggleEpoch++;
+    let accepted = false;
+    try {
+      const result = await writeDesktopGeneralHostPreference(host, document, 'enabled', enabled);
+      const saved = result.ok ? readDesktopPluginDocument(result.value) : undefined;
+      if (saved?.id === document.id && saved.revision >= document.revision && getBoolean(saved.value, 'enabled') === enabled) {
+        accepted = true;
+        if (this.active && saved.revision >= (this.uploadDocument?.revision ?? -1)) { this.uploadDocument = saved; }
+      } else if (this.active && (result.error?.code === SETTINGS_CONFLICT || result.ok)) {
+        await this.loadHostPreferences();
+      }
+    } catch (_) {
+      // Keep the accepted Host state and report the failed save.
+    } finally {
+      if (this.active) { this.uploadSaving = false; }
+      try {
+        prompt.showToast({ message: accepted ? $r('app.string.desktop_general_preference_saved') :
+          $r('app.string.desktop_general_preference_failed') });
+      } catch (_) {}
+    }
+  }
+
+  @Builder
+  private UploadPreference() {
+    Row({ space: 12 }) {
+      Column({ space: 4 }) {
+        Text($r('app.string.desktop_session_log_upload_title')).fontSize(14).width('100%')
+        Text($r('app.string.desktop_session_log_upload_description')).fontSize(13).width('100%')
+          .fontColor($r('sys.color.font_secondary'))
+      }.layoutWeight(1)
+      ForEach([this.uploadToggleEpoch], (_epoch: number): void => {
+        Toggle({ type: ToggleType.Switch, isOn: getBoolean(this.uploadDocument?.value, 'enabled') === true })
+          .key('desktopSessionLogUpload').accessibilityText($r('app.string.desktop_session_log_upload_title'))
+          .enabled(this.writable && !this.uploadSaving).onChange((enabled: boolean): void => { this.saveUpload(enabled); })
+      }, (epoch: number): string => epoch.toString())
+    }.width('100%').constraintSize({ minHeight: 44 })
+  }
+
   private themeItems(): SettingItem[] {
     if (!this.desktopShortcuts) { return []; }
     return this.groups.flatMap((group: SettingGroup): SettingItem[] =>
@@ -84,11 +240,12 @@ export struct SettingsGeneral {
 
   private otherGroups(): SettingGroup[] {
     const hasTheme = this.themeItems().length > 0;
-    if (!hasTheme && !this.codingTools.available) { return this.groups; }
+    if (!this.desktopShortcuts && !hasTheme && !this.codingTools.available) { return this.groups; }
     return this.groups.map((group: SettingGroup): SettingGroup => ({ title: group.title,
       items: group.items.filter((item: SettingItem): boolean =>
         (!hasTheme || (!item.key.startsWith(DESKTOP_THEME_NS + '.') && item.key !== 'local.themeMode')) &&
-        (!this.codingTools.available || item.key !== 'ui-settings.enabled'))
+        (!this.codingTools.available || item.key !== 'ui-settings.enabled') &&
+        (!this.desktopShortcuts || (item.key !== 'permission.defaultPreset' && item.key !== 'session-log-deepseek.enabled')))
     })).filter((group: SettingGroup): boolean => group.items.length > 0);
   }
 
@@ -113,6 +270,11 @@ export struct SettingsGeneral {
            * 于是这里既**不隐藏**（用户明确问过这三档，藏起来等于让他以为没有这个概念），
            * 也**不给可点的假档位**：只读地说明当前生效的是什么、另外两档为什么不可选。
            */
+          if (this.desktopShortcuts && this.permissionServed) {
+            DesktopPermissionDefault({ view: this.permissionView, writable: this.writable, loading: this.permissionLoading,
+              saving: this.permissionSaving, problem: this.permissionProblem,
+              onSelect: (id: string, acknowledged: boolean): void => { this.savePermission(id, acknowledged); } })
+          } else if (!this.desktopShortcuts) {
           Column({ space: 2 }) {
             Row({ space: Sp.XS }) {
               Text('权限模式')
@@ -147,6 +309,7 @@ export struct SettingsGeneral {
           .padding(Sp.M)
           .borderRadius(Radius.M)
           .backgroundColor($r('sys.color.background_secondary'))
+          }
 
           ForEach(this.otherGroups(), (group: SettingGroup) => {
             Column({ space: Sp.XS }) {
@@ -184,6 +347,7 @@ export struct SettingsGeneral {
             .width('100%')
           }, (group: SettingGroup): string => JSON.stringify(group))
 
+          if (this.desktopShortcuts && this.uploadDocument !== undefined) { this.UploadPreference() }
           this.diagnosticsEntry()
     }
     .width('100%')

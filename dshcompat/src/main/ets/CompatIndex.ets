@@ -17,6 +17,7 @@ import {
   ProbeTable
 } from './CompatTypes';
 import { DSH_CAPABILITIES, DSH_ENDPOINTS, UPSTREAM_IDENTITY } from './Endpoints';
+import { DSHM_SPREADSHEET_DESCRIPTOR, WORKSPACE_FILES_SPREADSHEET_ENDPOINT } from './SpreadsheetEndpoint';
 
 /** 版本判定结论 */
 export enum VersionVerdict {
@@ -216,6 +217,7 @@ function idx(): Index {
 
 /** 取 endpoint 定义（不存在返回 undefined） */
 export function endpointOf(key: string): DshEndpoint | undefined {
+  if (key === WORKSPACE_FILES_SPREADSHEET_ENDPOINT) { return DSHM_SPREADSHEET_DESCRIPTOR; }
   return idx().byKey.get(key);
 }
 

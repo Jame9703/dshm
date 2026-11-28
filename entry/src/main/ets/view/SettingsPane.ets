@@ -44,6 +44,7 @@ import { DesktopCloudSyncSettings } from '../desktop/DesktopCloudSyncSettings';
 import { DesktopAccountSettings } from '../desktop/DesktopAccountSettings';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
+import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 
@@ -139,6 +140,7 @@ export struct SettingsPane {
   @Prop desktopShortcuts: boolean = false;
   @Prop settingsCompact: boolean = false;
   desktopAccountHost?: DesktopHostActions;
+  desktopGeneralHost?: DesktopGeneralHostAccess;
   desktopAccountDetails?: DesktopAccountDetailsAccess;
   @Prop desktopAccountIdentity?: DesktopAccountSettingsIdentity = undefined;
   @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
@@ -252,6 +254,7 @@ export struct SettingsPane {
             SettingsGeneral({
               groups: this.groups,
               desktopShortcuts: this.desktopShortcuts,
+              settingsHost: this.desktopGeneralHost,
               codingTools: this.codingTools,
               onCodingToolsChange: this.onCodingToolsChange,
               onOpenShortcuts: this.onOpenShortcuts,

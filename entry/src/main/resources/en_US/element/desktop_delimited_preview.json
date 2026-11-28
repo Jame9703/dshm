@@ -4,8 +4,20 @@
     { "name": "desktop_table_invalid", "value": "This spreadsheet could not be opened. Check its format, contents, or password protection." },
     { "name": "desktop_table_too_large", "value": "This workbook exceeds the preview size limit." },
     { "name": "desktop_table_timeout", "value": "Opening this workbook timed out. Try a smaller file." },
+    { "name": "desktop_table_busy", "value": "Another workbook is opening. Try again shortly." },
     { "name": "desktop_table_encoding", "value": "This text encoding could not be read. Save the file as UTF-8 or UTF-16 with a BOM and retry." },
     { "name": "desktop_table_retry", "value": "Retry" },
-    { "name": "desktop_table_copy", "value": "Copy" }
+    { "name": "desktop_table_copy", "value": "Copy" },
+    { "name": "desktop_table_formula_warning", "value": "This workbook contains formulas. Displayed results may be missing or inaccurate." },
+    { "name": "desktop_table_unsupported", "value": "This preview does not support %1$s in this workbook. Open it in a system application for the full experience." },
+    { "name": "desktop_table_charts", "value": "charts" },
+    { "name": "desktop_table_images", "value": "images" },
+    { "name": "desktop_table_shapes", "value": "shapes" },
+    { "name": "desktop_table_conditional_formatting", "value": "conditional formatting" },
+    { "name": "desktop_table_feature_separator", "value": ", " },
+    { "name": "desktop_table_tabs_left", "value": "Scroll sheet tabs left" },
+    { "name": "desktop_table_tabs_right", "value": "Scroll sheet tabs right" },
+    { "name": "desktop_table_zoom_out", "value": "Zoom out" },
+    { "name": "desktop_table_zoom_in", "value": "Zoom in" }
   ]
 }

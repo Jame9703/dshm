@@ -1,0 +1,20 @@
+{
+  "string": [
+    { "name": "desktop_default_permission_title", "value": "Permission" },
+    { "name": "desktop_default_permission_description", "value": "Choose the default permission mode for new sessions" },
+    { "name": "desktop_default_permission_loading", "value": "Loading" },
+    { "name": "desktop_default_permission_unavailable", "value": "Unavailable" },
+    { "name": "desktop_default_permission_read_only", "value": "Read Only" },
+    { "name": "desktop_default_permission_workspace", "value": "Workspace Write" },
+    { "name": "desktop_default_permission_full", "value": "Full access" },
+    { "name": "desktop_default_permission_confirm_title", "value": "Enable Full access?" },
+    { "name": "desktop_default_permission_confirm_description", "value": "Full access lets new sessions reduce confirmation steps and perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust subsequent tasks." },
+    { "name": "desktop_default_permission_confirm_ack", "value": "I understand the risks and want to continue" },
+    { "name": "desktop_default_permission_cancel", "value": "Cancel" },
+    { "name": "desktop_default_permission_confirm_enable", "value": "Enable Full access" },
+    { "name": "desktop_session_log_upload_title", "value": "Upload Session Log when using the official model API" },
+    { "name": "desktop_session_log_upload_description", "value": "Help improve DeepSeek models and products." },
+    { "name": "desktop_general_preference_saved", "value": "Preference saved" },
+    { "name": "desktop_general_preference_failed", "value": "Could not save preference" }
+  ]
+}

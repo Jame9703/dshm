@@ -7,6 +7,7 @@ import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { desktopDockTabRevealDelta } from '../desktop/DesktopDockTabScroll';
 import { getArray, getRecord, getString, parseTarget, randomUuid } from 'connection';
+import type { RpcResult } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
 import { localDesktopQuestionDrafts } from '../desktop/DesktopQuestionDrafts';
@@ -52,6 +53,7 @@ import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
 import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountDetailsAccess, DesktopAccountDetailsSnapshot } from '../desktop/DesktopAccountDetails';
+import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
 import { desktopAccountContactUrl } from '../desktop/DesktopAccountContact';
 import { DesktopAccountQuotaDialog, DesktopQuotaToast, DESKTOP_QUOTA_TOAST_HOLD_MS, DESKTOP_QUOTA_TOAST_FADE_MS }
   from '../desktop/DesktopQuotaNotice';
@@ -2691,14 +2693,18 @@ struct DesktopWorkspace {
 
   private settingsSurfaceParams(): DesktopSettingsSurfaceParams {
     const details = this.data?.accountNotices.details;
+    const actions = this.data?.actions;
     // Keep the account subscription bound to the workbench owner across the settings sheet's state snapshots.
     const accountDetails: DesktopAccountDetailsAccess | undefined = details === undefined ? undefined : {
       observe: (listener: (snapshot: DesktopAccountDetailsSnapshot) => void): () => void => details.observe(listener),
       refreshAfterCurrent: (): void => { details.refreshAfterCurrent(); }
     };
+    const generalHost: DesktopGeneralHostAccess | undefined = actions === undefined ? undefined : {
+      call: (endpoint: string, body?: Record<string, Object | null>): Promise<RpcResult> => actions.call(endpoint, body)
+    };
     return { compact: this.settingsSurfaceSize?.compact ?? false, mode: this.workspaceColorMode(),
       section: this.settingsSection, accountNotices: this.data?.accountNotices, accountDetails: accountDetails,
-      host: this.data?.actions,
+      host: actions, generalHost: generalHost,
       codingTools: this.codingTools, changeCodingTools: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
       close: (): void => { this.closeSettings(); },
       startCreator: (): void => { this.startPresetCreator(); },

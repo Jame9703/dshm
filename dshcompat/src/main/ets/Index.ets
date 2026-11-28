@@ -50,6 +50,7 @@ export type { TableStats, VersionCheck } from './CompatIndex';
 
 // 上游接口面（注入给 connection）
 export { SURFACE, TIMELINE_EDIT_ROUTE } from './Surface';
+export { WORKSPACE_FILES_SPREADSHEET_ENDPOINT } from './SpreadsheetEndpoint';
 
 // DSHM Web UI 品牌垫片（仅替换宿主内可见品牌，不改上游源码或许可证）
 export { BRAND_SHIM_JS } from './WebBrand';

@@ -1,5 +1,6 @@
 import type { DesktopAccountNotices } from './DesktopAccountNotices';
 import type { DesktopAccountDetailsAccess } from './DesktopAccountDetails';
+import type { DesktopGeneralHostAccess } from './DesktopGeneralHostPreferences';
 import type { DesktopCodingToolsSnapshot } from './DesktopCodingTools';
 import type { DesktopHostActions } from './DesktopHostActions';
 import type { DesktopPresetDefaultSync } from './DesktopPresetDefaults';
@@ -24,6 +25,7 @@ export interface DesktopSettingsSurfaceParams {
   accountNotices?: DesktopAccountNotices;
   accountDetails?: DesktopAccountDetailsAccess;
   host?: DesktopHostActions;
+  generalHost?: DesktopGeneralHostAccess;
   codingTools: DesktopCodingToolsSnapshot;
   changeCodingTools: (enabled: boolean) => void;
   close: () => void;
@@ -38,7 +40,7 @@ export function buildDesktopSettingsSurface(params: DesktopSettingsSurfaceParams
   WithTheme({ colorMode: params.mode }) {
     IndexContent({ desktopSection: params.section, desktopSettingsCompact: params.compact,
       desktopAccountNotices: params.accountNotices, desktopAccountDetails: params.accountDetails,
-      desktopAccountHost: params.host, desktopCodingTools: params.codingTools,
+      desktopAccountHost: params.host, desktopGeneralHost: params.generalHost, desktopCodingTools: params.codingTools,
       onDesktopCodingToolsChange: params.changeCodingTools, onCloseSettings: params.close, onStartPresetCreator: params.startCreator,
       capturePresetDefaultSync: params.capturePresetDefaultSync,
       onSettingsSection: params.selectSection, onOpenPlugins: params.openPlugins })

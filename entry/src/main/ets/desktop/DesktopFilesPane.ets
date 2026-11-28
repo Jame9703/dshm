@@ -22,6 +22,8 @@ import { DESKTOP_TABLE_MAX_BYTES, DESKTOP_TABLE_MAX_CELLS, DESKTOP_TABLE_TIMEOUT
   DesktopDelimitedTable, desktopDelimitedFormat } from './DesktopDelimitedTable';
 import { parseDesktopDelimitedBytes } from './DesktopDelimitedWorker';
 import lazy { DesktopDelimitedPreview } from './DesktopDelimitedPreview';
+import { DesktopWorkbook, desktopWorkbookFormat, readDesktopWorkbook } from './DesktopWorkbookModel';
+import lazy { DesktopWorkbookPreview } from './DesktopWorkbookPreview';
 import { DesktopFileContextAction, DesktopFileContextItem, desktopFileContextCopyPath, desktopFileContextPathItems,
   desktopFileContextTransferItems } from './DesktopFileContextModel';
 import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
@@ -94,6 +96,7 @@ export struct DesktopFilesPane {
   @State private preview?: FilePreview = undefined;
   @State private htmlFile?: DesktopHtmlFile = undefined;
   @State private delimitedTable?: DesktopDelimitedTable = undefined;
+  @State private workbook?: DesktopWorkbook = undefined;
   @State private delimitedProblem: string = '';
   @State private sourceHtml: boolean = false;
   @State private previewUri: string = '';
@@ -382,6 +385,7 @@ export struct DesktopFilesPane {
     this.preview = undefined;
     this.htmlFile = undefined;
     this.delimitedTable = undefined;
+    this.workbook = undefined;
     this.delimitedProblem = '';
     this.sourceHtml = false;
     this.previewUri = '';
@@ -423,6 +427,13 @@ export struct DesktopFilesPane {
     const visualAsset = pdfName(row.name) || imageName(row.name);
     this.previewLoading = !visualAsset || !this.previewPath;
     this.previewError = '';
+    if (desktopWorkbookFormat(row.name)) {
+      this.delimitedProblem = '';
+      this.workbook = undefined;
+      this.preview = undefined;
+      await this.loadWorkbook(host, row.path, revision);
+      return;
+    }
     const format = desktopDelimitedFormat(row.name);
     if (format) {
       this.delimitedProblem = '';
@@ -547,8 +558,25 @@ export struct DesktopFilesPane {
       case 'tooLarge': return $r('app.string.desktop_table_too_large');
       case 'timeout': return $r('app.string.desktop_table_timeout');
       case 'encoding': return $r('app.string.desktop_table_encoding');
+      case 'busy': return $r('app.string.desktop_table_busy');
       default: return $r('app.string.desktop_table_invalid');
     }
+  }
+
+  private async loadWorkbook(host: DesktopHostActions, path: string, revision: number): Promise<void> {
+    const response = await host.call('workspaceFiles/spreadsheet', this.args(path), 22000, 32 * 1024 * 1024 + 64 * 1024)
+      .catch((): undefined => undefined);
+    if (!this.active || revision !== this.previewRevision) { return; }
+    this.workbook = response?.ok ? readDesktopWorkbook(response.value) : undefined;
+    switch (response?.error?.code) {
+      case 'spreadsheet/too-large':
+      case 'workspace-file/too-large': this.delimitedProblem = 'tooLarge'; break;
+      case 'spreadsheet/timeout': this.delimitedProblem = 'timeout'; break;
+      case 'spreadsheet/busy': this.delimitedProblem = 'busy'; break;
+      default: this.delimitedProblem = 'invalid'; break;
+    }
+    this.previewAssetVersion++;
+    this.previewLoading = false;
   }
 
   private async loadHtml(host: DesktopHostActions, path: string, revision: number): Promise<void> {
@@ -571,7 +599,17 @@ export struct DesktopFilesPane {
 
   private async openSystem(row: DesktopFileNavigatorRow): Promise<void> {
     const ability = this.ability;
-    if (ability === undefined || !(await openSystemPreview(ability, this.previewUri, row.name, mimeTypeForName(row.name)))) {
+    const revision = this.previewRevision;
+    let previewUri = this.previewUri;
+    if (ability !== undefined && !previewUri && desktopWorkbookFormat(row.name)) {
+      const result = await this.host?.call('workspaceFiles/stat', this.args(row.path))
+        .catch((): undefined => undefined);
+      if (!this.active || revision !== this.previewRevision) { return; }
+      const path = result?.ok ? getString(result.value, 'absolutePath') ?? '' : '';
+      if (path.startsWith('/') && !path.includes('\0')) { previewUri = uriFromPath(path); }
+    }
+    if (ability === undefined || !previewUri ||
+      !(await openSystemPreview(ability, previewUri, row.name, mimeTypeForName(row.name)))) {
       this.getUIContext().getPromptAction().showToast({ message: '系统未能打开此文件的预览' });
     }
   }
@@ -1014,16 +1052,46 @@ export struct DesktopFilesPane {
   }
 
   @Builder
+  private SpreadsheetProblem(systemFallback: boolean) {
+    Column({ space: 6 }) {
+      Text(this.delimitedNotice()).fontSize(13).fontColor($r('sys.color.warning')).width('100%')
+        .key('desktopDelimitedProblem')
+      Row({ space: 8 }) {
+        Button($r('app.string.desktop_table_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopDelimitedRetry').onClick((): void => {
+            if (this.selected !== undefined) { this.loadPreview(this.selected); }
+          })
+        if (systemFallback) {
+          Button($r('app.string.desktop_file_preview_system'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopWorkbookOpenSystem').onClick((): void => {
+              if (this.selected !== undefined) { this.openSystem(this.selected); }
+            })
+        }
+      }.width('100%')
+    }.width('100%').padding(14)
+  }
+
+  @Builder
   private PreviewBody() {
     if (this.previewLoading) {
       Row({ space: 8 }) {
         LoadingProgress().width(25).height(25)
-        if (desktopDelimitedFormat(this.selected?.name ?? '')) {
+        if (desktopDelimitedFormat(this.selected?.name ?? '') || desktopWorkbookFormat(this.selected?.name ?? '')) {
           Text($r('app.string.desktop_table_loading')).fontSize(13).fontColor($r('sys.color.font_secondary'))
         }
       }.margin(15)
     } else if (this.previewError) {
       Text(this.previewError).fontSize(13).fontColor($r('sys.color.warning')).padding(12)
+    } else if (desktopWorkbookFormat(this.selected?.name ?? '')) {
+      if (this.workbook !== undefined) {
+        Column() {
+          ForEach([this.previewAssetVersion], (_version: number): void => {
+            DesktopWorkbookPreview({ workbook: this.workbook, focusScope: this.focusScope })
+          }, (version: number): string => String(version))
+        }.width('100%').layoutWeight(1)
+      } else {
+        this.SpreadsheetProblem(true)
+      }
     } else if (desktopDelimitedFormat(this.selected?.name ?? '')) {
       if (this.delimitedTable !== undefined) {
         Column() {
@@ -1033,14 +1101,7 @@ export struct DesktopFilesPane {
           }, (version: number): string => String(version))
         }.width('100%').layoutWeight(1)
       } else {
-        Row({ space: 8 }) {
-          Text(this.delimitedNotice()).fontSize(13).fontColor($r('sys.color.warning')).layoutWeight(1)
-            .key('desktopDelimitedProblem')
-          Button($r('app.string.desktop_table_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopDelimitedRetry').onClick((): void => {
-              if (this.selected !== undefined) { this.loadPreview(this.selected); }
-            })
-        }.width('100%').padding(14)
+        this.SpreadsheetProblem(false)
       }
     } else if (desktopIsHtmlFile(this.selected?.name ?? '') && !this.sourceHtml) {
       if (this.htmlFile === undefined) {
@@ -1202,6 +1263,12 @@ export struct DesktopFilesPane {
           if (this.preview?.kind === PreviewKind.MARKDOWN) {
             Button(this.rawMarkdown ? '预览' : '源码', { buttonStyle: ButtonStyleMode.TEXTUAL })
               .onClick((): void => { this.rawMarkdown = !this.rawMarkdown; })
+          }
+          if ((this.workbook?.unsupported.length ?? 0) > 0) {
+            Button($r('app.string.desktop_file_preview_system'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+              .key('desktopWorkbookOpenSystem').onClick((): void => {
+                if (this.selected !== undefined) { this.openSystem(this.selected); }
+              })
           }
           if (this.preview !== undefined && (this.preview.kind !== PreviewKind.MARKDOWN || this.rawMarkdown)) {
             Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {

@@ -4,8 +4,20 @@
     { "name": "desktop_table_invalid", "value": "无法打开此表格。请检查文件格式、内容或密码保护。" },
     { "name": "desktop_table_too_large", "value": "此表格超过预览大小限制。" },
     { "name": "desktop_table_timeout", "value": "打开表格超时。请缩小文件后重试。" },
+    { "name": "desktop_table_busy", "value": "正在打开其他表格。请稍后重试。" },
     { "name": "desktop_table_encoding", "value": "无法识别此文本文件的编码。请另存为 UTF-8 或带 BOM 的 UTF-16 后重试。" },
     { "name": "desktop_table_retry", "value": "重试" },
-    { "name": "desktop_table_copy", "value": "复制" }
+    { "name": "desktop_table_copy", "value": "复制" },
+    { "name": "desktop_table_formula_warning", "value": "此工作簿包含公式，显示结果可能缺失或不准确。" },
+    { "name": "desktop_table_unsupported", "value": "当前预览不支持此工作簿中的%1$s。请使用系统应用打开，以获得完整体验。" },
+    { "name": "desktop_table_charts", "value": "图表" },
+    { "name": "desktop_table_images", "value": "图片" },
+    { "name": "desktop_table_shapes", "value": "形状" },
+    { "name": "desktop_table_conditional_formatting", "value": "条件格式" },
+    { "name": "desktop_table_feature_separator", "value": "、" },
+    { "name": "desktop_table_tabs_left", "value": "向左滚动工作表" },
+    { "name": "desktop_table_tabs_right", "value": "向右滚动工作表" },
+    { "name": "desktop_table_zoom_out", "value": "缩小" },
+    { "name": "desktop_table_zoom_in", "value": "放大" }
   ]
 }

@@ -43,6 +43,7 @@ import { patchCordisStartup } from './lib/cordis-startup.mjs';
 import { patchPostStartupImports } from './lib/post-startup-imports.mjs';
 import { patchNativeWebPickers } from './lib/native-web-pickers.mjs';
 import { patchOpenInAppReveal } from './lib/open-in-app-reveal.mjs';
+import { prepareSpreadsheetPreview } from './lib/spreadsheet-preview.mjs';
 /*
  * 【语法检查子进程的启动标志（2026-10-31）】检测用的 `node --check` 是**子进程**，
  * 不继承父进程的 `--jitless`。而本机（HarmonyOS 端侧）内核拒绝 JIT 所需的
@@ -5755,6 +5756,7 @@ patchPostStartupImports(STAGE);
 // 「在文件夹显示」移动端可用性（2026-11-26）：客户端菜单在 desktop=false 时
 // 改走壳层 __DSHM_BRIDGES__.openFileLocation；纯客户端补丁，不进启动路径。
 patchOpenInAppReveal(STAGE);
+prepareSpreadsheetPreview(STAGE, ROOT);
 /*
  * 【报告 3 ③】构建期自签名**必须放在最后、pack() 之前**。
  * 踩过的坑：最初放在 replaceKoffiJs() 之后，结果签名被后续的

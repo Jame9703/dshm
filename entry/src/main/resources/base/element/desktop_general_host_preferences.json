@@ -1,0 +1,20 @@
+{
+  "string": [
+    { "name": "desktop_default_permission_title", "value": "权限" },
+    { "name": "desktop_default_permission_description", "value": "选择新会话的默认权限模式" },
+    { "name": "desktop_default_permission_loading", "value": "加载中" },
+    { "name": "desktop_default_permission_unavailable", "value": "不可用" },
+    { "name": "desktop_default_permission_read_only", "value": "仅可查看" },
+    { "name": "desktop_default_permission_workspace", "value": "工作区内修改" },
+    { "name": "desktop_default_permission_full", "value": "完全权限" },
+    { "name": "desktop_default_permission_confirm_title", "value": "确认启用完全权限？" },
+    { "name": "desktop_default_permission_confirm_description", "value": "启用完全权限后，新会话将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。" },
+    { "name": "desktop_default_permission_confirm_ack", "value": "我已了解风险，并愿意继续" },
+    { "name": "desktop_default_permission_cancel", "value": "取消" },
+    { "name": "desktop_default_permission_confirm_enable", "value": "启用完全权限" },
+    { "name": "desktop_session_log_upload_title", "value": "在使用官方模型 API 时上传 Session Log" },
+    { "name": "desktop_session_log_upload_description", "value": "帮助改进 DeepSeek 模型与产品" },
+    { "name": "desktop_general_preference_saved", "value": "设置已保存" },
+    { "name": "desktop_general_preference_failed", "value": "无法保存设置" }
+  ]
+}
