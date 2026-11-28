@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "desktop_account_session_expired", "value": "登录信息已失效，请重新登录" },
+    { "name": "desktop_account_model_sign_in_required", "value": "当前模型暂不可用，请登录后再试" }
+  ]
+}

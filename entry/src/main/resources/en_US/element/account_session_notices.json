@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "desktop_account_session_expired", "value": "You have signed out of your account, please log in again." },
+    { "name": "desktop_account_model_sign_in_required", "value": "Model unavailable. Please sign in and try again." }
+  ]
+}

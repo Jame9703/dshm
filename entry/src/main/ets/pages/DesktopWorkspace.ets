@@ -90,7 +90,7 @@ import type { DesktopUnreadSession } from '../desktop/DesktopSessionReading';
 import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } from '../desktop/DesktopSessionArchive';
 import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
-import { DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
+import { DesktopAccountSessionNotice, DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
 import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
 import type { DesktopNativeDestination, DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
@@ -118,6 +118,17 @@ interface DesktopDockDrag {
   session: string;
   pane: number;
   tab: string;
+}
+
+interface DesktopAccountSessionToast {
+  notice: DesktopAccountSessionNotice;
+  token: number;
+  fading: boolean;
+}
+
+interface DesktopAccountSessionToastTimers {
+  fade: number;
+  dismiss: number;
 }
 
 interface DesktopQuotaBrowserVisit {
@@ -338,6 +349,9 @@ struct DesktopWorkspace {
   @State private accountDialog: number = -1;
   @State private accountDismissRequest: number = 0;
   @State private accountNotices: DesktopAccountNotice[] = [];
+  @State private accountSessionToasts: DesktopAccountSessionToast[] = [];
+  private readonly accountSessionToastTimers = new Map<DesktopAccountSessionNotice, DesktopAccountSessionToastTimers>();
+  private accountSessionToastToken: number = 0;
   @State private accountOnboarding: DesktopOnboardingView = emptyDesktopOnboardingView();
   @State private codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   private onboardingBrowser?: DesktopWorkspaceData;
@@ -420,6 +434,7 @@ struct DesktopWorkspace {
     try { this.readingWindow?.off('windowEvent', this.readingWindowEvent); } catch (_) {}
     this.readingWindow = undefined;
     this.closeAccount();
+    this.resetAccountSessionToasts();
     this.resetAccountOnboarding();
     this.resetQuota();
     this.closeSettings();
@@ -526,6 +541,7 @@ struct DesktopWorkspace {
       return;
     }
     this.closeAccount();
+    this.resetAccountSessionToasts();
     this.resetAccountOnboarding();
     this.closeFeedback();
     this.closeImagePreview();
@@ -645,6 +661,9 @@ struct DesktopWorkspace {
       this.openFirstTimelineTree();
     }, (view: DesktopOnboardingView): void => { this.showAccountOnboarding(view); },
     (state: DesktopCodingToolsSnapshot): void => { if (this.pageActive) { this.codingTools = state; } },
+     (owner: DesktopWorkspaceData, notice: DesktopAccountSessionNotice): void => {
+       this.showAccountSessionToast(owner, notice);
+     },
     localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
     const data = this.data;
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
@@ -2599,6 +2618,47 @@ struct DesktopWorkspace {
       this.clearOnboardingBrowser();
       if (owner === this.data) { owner.onboarding.refreshBalance(); }
     }
+  }
+
+  private showAccountSessionToast(owner: DesktopWorkspaceData, notice: DesktopAccountSessionNotice): void {
+    if (!this.pageActive || owner !== this.data) { return; }
+    if (notice === DesktopAccountSessionNotice.SESSION_EXPIRED && this.accountSessionToastTimers.has(notice)) { return; }
+    const previous = this.accountSessionToastTimers.get(notice);
+    if (previous !== undefined) {
+      clearTimeout(previous.fade);
+      clearTimeout(previous.dismiss);
+    }
+    const token = ++this.accountSessionToastToken;
+    const toast: DesktopAccountSessionToast = { notice: notice, token: token, fading: false };
+    this.accountSessionToasts = this.accountSessionToasts.filter((item: DesktopAccountSessionToast): boolean =>
+      item.notice !== notice).concat(toast);
+    const fade = setTimeout((): void => {
+      if (this.data !== owner) { return; }
+      this.accountSessionToasts = this.accountSessionToasts.map((item: DesktopAccountSessionToast): DesktopAccountSessionToast =>
+        item.token === token ? { notice: item.notice, token: item.token, fading: true } : item);
+    }, DESKTOP_QUOTA_TOAST_HOLD_MS);
+    const dismiss = setTimeout((): void => {
+      if (this.data !== owner || !this.accountSessionToasts.some((item: DesktopAccountSessionToast): boolean =>
+        item.token === token)) { return; }
+      this.accountSessionToastTimers.delete(notice);
+      this.accountSessionToasts = this.accountSessionToasts.filter((item: DesktopAccountSessionToast): boolean =>
+        item.token !== token);
+    }, DESKTOP_QUOTA_TOAST_HOLD_MS + DESKTOP_QUOTA_TOAST_FADE_MS);
+    this.accountSessionToastTimers.set(notice, { fade: fade, dismiss: dismiss });
+  }
+
+  private resetAccountSessionToasts(): void {
+    this.accountSessionToastTimers.forEach((timers: DesktopAccountSessionToastTimers): void => {
+      clearTimeout(timers.fade);
+      clearTimeout(timers.dismiss);
+    });
+    this.accountSessionToastTimers.clear();
+    this.accountSessionToasts = [];
+  }
+
+  private accountSessionToastFading(token: number): boolean {
+    return this.accountSessionToasts.find((item: DesktopAccountSessionToast): boolean => item.token === token)
+      ?.fading ?? false;
   }
 
   private resetQuota(): void {
@@ -4668,9 +4728,17 @@ struct DesktopWorkspace {
         if (this.archiveNotice !== undefined) {
           this.ArchiveNoticeContent(this.archiveNotice)
         }
-        if (this.quotaToastToken >= 0) {
-          Column() {
-            DesktopQuotaToast({ fading: this.quotaToastFading })
+        if (this.quotaToastToken >= 0 || this.accountSessionToasts.length > 0) {
+          Column({ space: 8 }) {
+            if (this.quotaToastToken >= 0) { DesktopQuotaToast({ fading: this.quotaToastFading }) }
+            ForEach(this.accountSessionToasts, (toast: DesktopAccountSessionToast): void => {
+              Column() {
+                DesktopQuotaToast({ message: toast.notice === DesktopAccountSessionNotice.SESSION_EXPIRED ?
+                  $r('app.string.desktop_account_session_expired') : $r('app.string.desktop_account_model_sign_in_required'),
+                  fading: this.accountSessionToastFading(toast.token), showWarningIcon: false })
+              }.key(toast.notice === DesktopAccountSessionNotice.SESSION_EXPIRED ?
+                'desktopAccountSessionExpiredNotice' : 'desktopAccountModelSignInRequiredNotice')
+            }, (toast: DesktopAccountSessionToast): string => String(toast.token))
           }.width('100%').height('100%').padding({ top: 40, left: 24, right: 24 })
             .alignItems(HorizontalAlign.Center).hitTestBehavior(HitTestMode.None)
         }

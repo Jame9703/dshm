@@ -13,6 +13,7 @@ import { DESKTOP_VOICE_BUNDLE, DesktopVoiceSettings } from './DesktopVoiceSettin
 import { desktopVoiceNeedsInstallation, desktopVoiceSelectedProvider, readDesktopVoiceCatalog } from './DesktopVoiceSettingsModel';
 import { showDesktopVoiceSetup } from './DesktopVoiceSettingsPrompt';
 import { DesktopPluginInstall } from './DesktopPluginInstall';
+import type { DesktopPluginCatalogTarget } from './DesktopPluginInstall';
 import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
 import { DesktopPluginMaintenance } from './DesktopPluginMaintenance';
 import { DesktopPluginMaintenanceDialog } from './DesktopPluginMaintenanceDialog';
@@ -34,9 +35,12 @@ interface DesktopPluginRow {
   toggle: boolean;
   removable: boolean;
   installed: boolean;
+  availability: string;
+  unsupportedPlatform: boolean;
   version: string;
   update: string;
   installSpec: string;
+  installVersion: string;
   phase: string;
   diagnostic: string;
   components: DesktopPluginComponent[];
@@ -66,6 +70,13 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
         continue;
       }
       const target = getRecord(value, 'installTarget');
+      const availability = bundle ? getString(value, 'availability') ?? '' : '';
+      const installSpec = getString(target, 'spec') ?? '';
+      const installVersion = getString(target, 'version') ?? '';
+      const error = getRecord(value, 'error');
+      const unsupportedPlatform = bundle && getString(error, 'code') === 'unsupported-platform';
+      const canEnableBundle = !unsupportedPlatform && (availability === 'missing' ?
+        !!installSpec && !!installVersion : error === undefined);
       const meta = getRecord(value, 'meta');
       rows.push({
         id: id,
@@ -74,15 +85,18 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
           getString(value, 'fiberPhase') ?? getString(value, 'phase') ?? '',
         version: getString(value, 'version') ?? '',
         installed: installed,
+        availability: availability,
+        unsupportedPlatform: unsupportedPlatform,
         enabled: enabled,
         toggle: !getString(value, 'readOnlyReason') && (bundle ?
-          enabled || optional || installed : !!getString(value, 'patchId')),
+          enabled || ((optional || installed) && canEnableBundle) : !!getString(value, 'patchId')),
         removable: bundle && getBoolean(value, 'removable') === true && !getString(value, 'readOnlyReason'),
         update: bundle ? getString(value, 'update') ?? '' : '',
-        installSpec: getString(target, 'spec') ?? '',
+        installSpec: installSpec,
+        installVersion: installVersion,
         phase: getString(value, 'fiberPhase') ?? '',
         diagnostic: getString(value, 'diagnostic') ?? '',
-        components: bundle && getString(value, 'availability') !== 'missing' ? desktopPluginComponents(value) : []
+        components: bundle && availability !== 'missing' ? desktopPluginComponents(value) : []
       });
   }
   return rows;
@@ -351,10 +365,11 @@ export struct DesktopPluginsPane {
       onEnable: (): void => { this.enableInstalled(); } })
   }
 
-  private async openInstall(spec: string = '', registry: string = ''): Promise<void> {
+  private async openInstall(spec: string = '', registry: string = '', target?: DesktopPluginCatalogTarget): Promise<void> {
     if (!this.active || this.installOpening || this.installDialog >= 0 || this.maintenance.phase === 'running') { return; }
     this.installOpening = true;
-    this.installer.offer(spec, registry);
+    if (target === undefined) { this.installer.offer(spec, registry); }
+    else { this.installer.installCatalogTarget(target); }
     const prompt = this.getUIContext().getPromptAction();
     try {
       const material = dialogMaterial();
@@ -374,6 +389,7 @@ export struct DesktopPluginsPane {
       if (this.active) { prompt.showToast({ message: $r('app.string.desktop_plugin_install_open_failed') }); }
     } finally {
       this.installOpening = false;
+      this.updateActivation();
     }
   }
 
@@ -424,6 +440,9 @@ export struct DesktopPluginsPane {
 
   private updateActivation(): void {
     if (!this.active) { return; }
+    const catalog = this.installer.takeCatalogActivation();
+    if (catalog) { this.activationBundle = catalog; }
+    if (this.installOpening) { return; }
     if (this.activationBundle === DESKTOP_VOICE_BUNDLE) {
       if (!this.bundles.some((row: DesktopPluginRow): boolean => row.id === DESKTOP_VOICE_BUNDLE && row.enabled)) { return; }
       if (this.installDialog >= 0) { this.closeInstall(); return; }
@@ -618,21 +637,37 @@ export struct DesktopPluginsPane {
     }).catch((): void => {});
   }
 
+  private toggleBundle(name: string, enabled: boolean): void {
+    const row = this.bundles.find((item: DesktopPluginRow): boolean => item.id === name);
+    if (!this.active || this.busy || row?.toggle !== true || row.enabled === enabled) { return; }
+    if (enabled && row.availability === 'missing') {
+      this.openInstall('', '', { name: row.id, version: row.installVersion, spec: row.installSpec,
+        description: row.description });
+      return;
+    }
+    if (!enabled && this.activationBundle === row.id) { this.activationBundle = ''; }
+    if (!enabled && row.id === DESKTOP_VOICE_BUNDLE) { this.stopVoiceSetup(); }
+    this.mutate('pluginManager/setBundleEnabled', { 'name': row.id, 'enabled': enabled }, enabled ? row.id : '');
+  }
+
   private rowActions(row: DesktopPluginRow): MenuElement[] {
     const result: MenuElement[] = [];
     if (row.toggle) {
       result.push({ value: row.enabled ? '停用' : '启用', action: (): void => {
         if (this.tab === 'bundles') {
-          if (row.enabled && this.activationBundle === row.id) { this.activationBundle = ''; }
-          if (row.enabled && row.id === DESKTOP_VOICE_BUNDLE) { this.stopVoiceSetup(); }
-          this.mutate('pluginManager/setBundleEnabled', { 'name': row.id, 'enabled': !row.enabled }, row.enabled ? '' : row.id);
+          this.toggleBundle(row.id, !row.enabled);
         } else {
           this.mutate('pluginManager/setPluginEnabled', { 'id': row.id, 'enabled': !row.enabled });
         }
       } });
     }
-    if (row.installSpec.length > 0) {
-      result.push({ value: '安装', action: (): void => { this.openInstall(row.installSpec); } });
+    if (row.installSpec.length > 0 && !row.unsupportedPlatform) {
+      result.push({ value: '安装', action: (): void => {
+        const current = this.bundles.find((item: DesktopPluginRow): boolean => item.id === row.id);
+        if (current?.installSpec === row.installSpec && !current.unsupportedPlatform) {
+          this.openInstall(row.installSpec);
+        }
+      } });
     }
     return result;
   }
@@ -665,6 +700,10 @@ export struct DesktopPluginsPane {
           Text(row.description).fontSize(13).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontColor($r('sys.color.font_secondary'))
         }
+        if (row.unsupportedPlatform) {
+          Text($r('app.string.desktop_plugin_unsupported_platform')).key('desktopPluginUnavailable-' + row.id)
+            .fontSize(12).fontColor($r('sys.color.font_secondary'))
+        }
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
       if (navigable) {
@@ -673,7 +712,7 @@ export struct DesktopPluginsPane {
       }
       if (this.rowActions(row).length > 0) {
         Button('更多', { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .accessibilityText('管理 ' + row.title).enabled(!this.busy)
+          .key('desktopPluginManage-' + row.id).accessibilityText('管理 ' + row.title).enabled(!this.busy)
           .bindMenu(this.rowActions(row), desktopMenuOptions(Placement.BottomRight))
       }
     }
@@ -956,7 +995,7 @@ export struct DesktopPluginsPane {
           Text('当前核心未启用插件市场').fontColor($r('sys.color.font_secondary')).layoutWeight(1)
           Button('启用插件市场', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
             .onClick((): void => {
-              this.mutate('pluginManager/setBundleEnabled', { 'name': MARKET_BUNDLE, 'enabled': true });
+              this.toggleBundle(MARKET_BUNDLE, true);
             })
         }
         .width('100%')

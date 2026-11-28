@@ -76,6 +76,11 @@ export interface DesktopDockConversation {
   close: () => void;
 }
 
+export enum DesktopAccountSessionNotice {
+  SESSION_EXPIRED = 'session-expired',
+  MODEL_SIGN_IN_REQUIRED = 'model-sign-in-required'
+}
+
 function workspaceFromHost(raw: Object): DesktopWorkspaceRow | undefined {
   const id: string = getString(raw, 'workspaceId') ?? '';
   if (id.length === 0) {
@@ -115,6 +120,7 @@ export class DesktopWorkspaceData {
   private timelinePreferences?: DesktopTimelinePreferences;
   private readonly quota = new DesktopQuotaNoticeModel();
   private readonly onQuotaNotice: (notice?: DesktopQuotaNotice) => void;
+  private readonly onAccountSessionNotice: (owner: DesktopWorkspaceData, notice: DesktopAccountSessionNotice) => void;
   private readonly onLiveTurnEnd = (sessionId: string, frame: Object): void => {
     if (this.active && this.quota.observe(sessionId, frame, true)) { this.onQuotaNotice(this.quota.snapshot()); }
   };
@@ -153,11 +159,14 @@ export class DesktopWorkspaceData {
     onQuotaNotice: (notice?: DesktopQuotaNotice) => void,
     onTimelinePreferences: (value: DesktopTimelinePreferences) => void,
     onOnboarding: (view: DesktopOnboardingView) => void,
-    onCodingTools: (value: DesktopCodingToolsSnapshot) => void, questionDrafts?: DesktopQuestionDrafts) {
+    onCodingTools: (value: DesktopCodingToolsSnapshot) => void,
+    onAccountSessionNotice: (owner: DesktopWorkspaceData, notice: DesktopAccountSessionNotice) => void,
+    questionDrafts?: DesktopQuestionDrafts) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
     this.onQuotaNotice = onQuotaNotice;
+    this.onAccountSessionNotice = onAccountSessionNotice;
     this.onTimelinePreferences = onTimelinePreferences;
     this.questionDrafts = questionDrafts;
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
@@ -287,6 +296,13 @@ export class DesktopWorkspaceData {
         this.pluginMaintenance.observe(frame);
         const event = getString(frame, 'event');
         this.cordis.observe(event);
+        if (this.active && getString(frame, 'type') === 'emit') {
+          if (event === 'deepseek-account/session-expired') {
+            this.onAccountSessionNotice(this, DesktopAccountSessionNotice.SESSION_EXPIRED);
+          } else if (event === 'deepseek-account/model-sign-in-required') {
+            this.onAccountSessionNotice(this, DesktopAccountSessionNotice.MODEL_SIGN_IN_REQUIRED);
+          }
+        }
         if (event === EVENT_COMMANDS_CHANGE) {
           this.conversation.invalidateCommands();
           this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.conversation.invalidateCommands());

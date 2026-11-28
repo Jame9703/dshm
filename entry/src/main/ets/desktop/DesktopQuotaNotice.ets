@@ -7,6 +7,7 @@ export const DESKTOP_QUOTA_TOAST_FADE_MS: number = 1000;
 export struct DesktopQuotaToast {
   @Prop message: ResourceStr = $r('app.string.desktop_transcript_failure_quota');
   @Prop fading: boolean = false;
+  @Prop showWarningIcon: boolean = true;
 
   aboutToAppear(): void {
     const name: string | undefined = this.getUIContext().getHostContext()?.applicationInfo.name;
@@ -22,8 +23,10 @@ export struct DesktopQuotaToast {
 
   build() {
     Row({ space: 10 }) {
-      Image($r('app.media.dsh_quota_warning_outline')).key('desktopQuotaToastWarning')
-        .width(18).height(18).supportSvg2(true).draggable(false).accessibilityLevel('no')
+      if (this.showWarningIcon) {
+        Image($r('app.media.dsh_quota_warning_outline')).key('desktopQuotaToastWarning')
+          .width(18).height(18).supportSvg2(true).draggable(false).accessibilityLevel('no')
+      }
       Text(this.message).key('desktopQuotaToastMessage').fontSize(14).lineHeight(22)
         .fontColor($r('sys.color.font_primary')).flexShrink(1)
     }.key('desktopQuotaToast').padding({ left: 16, right: 16, top: 12, bottom: 12 })

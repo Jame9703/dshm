@@ -139,7 +139,7 @@ export struct DesktopPluginInstallDialog {
             .onClick((): void => { this.detailsOpen = false; this.installer.reset(); })
         } else {
           Button($r('app.string.desktop_plugin_install_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopPluginInstallRetry').onClick((): void => { this.detailsOpen = false; this.installer.edit(); })
+            .key('desktopPluginInstallRetry').onClick((): void => { this.detailsOpen = false; this.installer.retry(); })
         }
         if (this.installer.phase === 'done' && this.installer.installedName && !this.installer.enabled) {
           Button($r('app.string.desktop_plugin_install_enable')).key('desktopPluginInstallEnable')

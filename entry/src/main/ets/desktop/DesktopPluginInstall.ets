@@ -7,6 +7,13 @@ import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 const MAX_OUTPUT: number = 24000;
 const OUTPUT_ESCAPE = new RegExp('\\x1b\\[[0-?]*[ -/]*[@-~]|[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]', 'g');
 
+export interface DesktopPluginCatalogTarget {
+  name: string;
+  version: string;
+  spec: string;
+  description: string;
+}
+
 @Observed
 export class DesktopPluginInstall {
   phase: string = 'idle';
@@ -36,6 +43,8 @@ export class DesktopPluginInstall {
   private recovering: boolean = false;
   private readRegistries: boolean = false;
   private inspectedRegistry: string = '';
+  private catalogSelection: boolean = false;
+  private catalogActivation: string = '';
 
   constructor(host: DesktopHostActions) { this.host = host; }
 
@@ -69,6 +78,26 @@ export class DesktopPluginInstall {
     this.loadRegistries();
   }
 
+  installCatalogTarget(target: DesktopPluginCatalogTarget): void {
+    if (!this.active || !target.name || !target.spec || !target.version || this.busy() ||
+        this.phase === 'checking' || this.enabling) { return; }
+    this.reset();
+    this.name = target.name;
+    this.spec = target.spec;
+    this.version = target.version;
+    this.description = target.description;
+    this.source = target.spec;
+    this.catalogSelection = true;
+    this.phase = 'review';
+    this.start();
+  }
+
+  takeCatalogActivation(): string {
+    const pending = this.catalogActivation;
+    this.catalogActivation = '';
+    return pending;
+  }
+
   private async loadRegistries(): Promise<void> {
     if (this.readRegistries) { return; }
     this.readRegistries = true;
@@ -87,7 +116,18 @@ export class DesktopPluginInstall {
   }
 
   edit(): void {
-    if (!this.busy() && !this.enabling) { this.phase = 'idle'; this.problem = ''; }
+    if (!this.busy() && !this.enabling) {
+      this.catalogSelection = false;
+      this.phase = 'idle';
+      this.problem = '';
+    }
+  }
+
+  retry(): void {
+    if (this.catalogSelection && (this.phase === 'failed' || this.phase === 'cancelled')) {
+      this.phase = 'review';
+      this.start();
+    } else { this.edit(); }
   }
 
   reset(): void {
@@ -96,6 +136,9 @@ export class DesktopPluginInstall {
     this.phase = 'idle';
     this.spec = '';
     this.registry = '';
+    this.inspectedRegistry = '';
+    this.catalogSelection = false;
+    this.catalogActivation = '';
     this.problem = '';
     this.output = '';
     this.tried = '';
@@ -147,8 +190,9 @@ export class DesktopPluginInstall {
     this.enabled = false;
     this.restartRequired = false;
     this.phase = 'starting';
-    const opts: Record<string, Object> = { 'enabled': false, 'requestId': id };
+    const opts: Record<string, Object> = { 'enabled': this.catalogSelection, 'requestId': id };
     if (this.inspectedRegistry) { opts['registry'] = this.inspectedRegistry; }
+    if (this.catalogSelection && !this.spec.startsWith('link:')) { opts['saveExact'] = true; }
     const result = await this.host.call('pluginManager/installBundle', { 'spec': this.spec, 'options': opts }, 180000);
     if (!this.current(id)) { return; }
     if (result.ok) { this.settle(result); return; }
@@ -261,7 +305,8 @@ export class DesktopPluginInstall {
       this.installedName = getString(value, 'bundle') ?? '';
       this.version = getString(value, 'version') ?? this.version;
       this.restartRequired = application === 'restart-required';
-      this.enabled = false;
+      this.enabled = this.catalogSelection;
+      if (this.catalogSelection && !this.restartRequired) { this.catalogActivation = this.installedName; }
     } else {
       this.phase = 'failed';
       this.problem = desktopHostProblem(result) || '宿主未确认安装结果';
