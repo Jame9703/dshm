@@ -32,6 +32,8 @@ import type { CoreViewState, PanelDescriptor, PiAiProviderView } from 'appstate'
 import { SettingRow } from './SettingRow';
 import { SettingsInventory } from './SettingsInventory';
 import { SettingsGeneral } from './SettingsGeneral';
+import { desktopPresetVisible, emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
+import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import { SettingsDevice } from './SettingsDevice';
 import { SettingsModels } from './SettingsModels';
 import { SettingsPlugins } from './SettingsPlugins';
@@ -135,6 +137,8 @@ export struct SettingsPane {
   @Prop desktopShortcuts: boolean = false;
   desktopAccountHost?: DesktopHostActions;
   @Prop desktopAccountIdentity?: DesktopAccountSettingsIdentity = undefined;
+  @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
+  onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
   @State private panelWidth: number = 824;
   onOpenShortcuts: () => void = () => {};
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
@@ -190,7 +194,8 @@ export struct SettingsPane {
             // 预设段归 SettingsPresets（P4-5 拆出的域组件）：两半（名单卡片 + agent-* 编辑器）、
             // 三个组件内临时态（两步确认 / 只读查看）与「查看」的中枢直读都随之搬走。
             SettingsPresets({
-              presets: this.presets,
+              presets: this.desktopShortcuts ? this.presets.filter((row: AgentPresetRow): boolean =>
+                desktopPresetVisible(row.id, row.name || undefined, this.codingTools.enabled)) : this.presets,
               note: this.presetNote,
               allGroups: this.allGroups,
               onCopy: (from: string, name: string) => {
@@ -240,6 +245,8 @@ export struct SettingsPane {
             SettingsGeneral({
               groups: this.groups,
               desktopShortcuts: this.desktopShortcuts,
+              codingTools: this.codingTools,
+              onCodingToolsChange: this.onCodingToolsChange,
               onOpenShortcuts: this.onOpenShortcuts,
               permissionCurrent: this.permissionCurrent,
               permissionOptions: this.permissionOptions,

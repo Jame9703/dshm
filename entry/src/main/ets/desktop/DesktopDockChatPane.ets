@@ -67,6 +67,7 @@ export struct DesktopDockChatPane {
   @Prop typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @Prop timelineDecimals: number = 2;
   @Prop timelineSegmented: boolean = true;
+  @Prop developerTools: boolean = false;
   @Prop @Watch('syncVisibility') shown: boolean = false;
   @Prop busy: boolean = false;
   @Prop stopping: boolean = false;
@@ -188,6 +189,7 @@ export struct DesktopDockChatPane {
     Column() {
       if (this.snapshot !== undefined && this.target !== undefined) {
         DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis, replyMedia: this.replyMedia,
+          developerTools: this.developerTools,
           snapshot: this.snapshot, embedded: true,
           timelineDecimals: this.timelineDecimals, timelineSegmented: this.timelineSegmented,
           onTimelineDockToggle: (owner: string, tree: string): void => {

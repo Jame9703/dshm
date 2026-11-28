@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "desktop_coding_tools_title", "value": "Show coding view" },
+    { "name": "desktop_coding_tools_description", "value": "Shows trajectory, code diffs, and all Agent presets" },
+    { "name": "desktop_coding_tools_save_failed", "value": "Could not save. Please try again." }
+  ]
+}

@@ -23,6 +23,7 @@ import { SettingsUsage } from './SettingsUsage';
 import { DesktopShortcutSettingsRow } from '../desktop/DesktopShortcutDialog';
 import { DesktopThemeSettings } from '../desktop/DesktopThemeSettings';
 import { DESKTOP_THEME_NS } from '../desktop/DesktopTheme';
+import { DesktopCodingToolsSnapshot, emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 
 
 /**
@@ -56,7 +57,9 @@ export struct SettingsGeneral {
   /** 宿主给出的可选集合（只读展示） */
   @Prop permissionOptions: string[] = [];
   @Prop desktopShortcuts: boolean = false;
+  @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   onOpenShortcuts: () => void = () => {};
+  onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
 
   /** 打开本地调试（连接诊断 + 协议往返验证） */
   onOpenDiagnostics: () => void = () => {
@@ -80,10 +83,13 @@ export struct SettingsGeneral {
   }
 
   private otherGroups(): SettingGroup[] {
-    if (this.themeItems().length === 0) { return this.groups; }
+    const hasTheme = this.themeItems().length > 0;
+    if (!hasTheme && !this.codingTools.available) { return this.groups; }
     return this.groups.map((group: SettingGroup): SettingGroup => ({ title: group.title,
-      items: group.items.filter((item: SettingItem): boolean => !item.key.startsWith(DESKTOP_THEME_NS + '.') &&
-        item.key !== 'local.themeMode') })).filter((group: SettingGroup): boolean => group.items.length > 0);
+      items: group.items.filter((item: SettingItem): boolean =>
+        (!hasTheme || (!item.key.startsWith(DESKTOP_THEME_NS + '.') && item.key !== 'local.themeMode')) &&
+        (!this.codingTools.available || item.key !== 'ui-settings.enabled'))
+    })).filter((group: SettingGroup): boolean => group.items.length > 0);
   }
 
   // 【ArkUI 约束】组件的 build() 只能有一个根节点 ⇒ 多段内容包进 Column
@@ -92,6 +98,7 @@ export struct SettingsGeneral {
           if (this.themeItems().length > 0) { DesktopThemeSettings({ items: this.themeItems() }) }
           /* 用量统计（docs/178）：桌面卡片同源数据，应用内也能看四档 token 用量 */
           SettingsUsage()
+          if (this.codingTools.available) { this.codingToolsRow() }
           if (this.desktopShortcuts) {
             DesktopShortcutSettingsRow({ onOpen: this.onOpenShortcuts })
           }
@@ -180,6 +187,31 @@ export struct SettingsGeneral {
           this.diagnosticsEntry()
     }
     .width('100%')
+  }
+
+  @Builder
+  private codingToolsRow() {
+    Row({ space: Sp.M }) {
+      Column({ space: 4 }) {
+        Text($r('app.string.desktop_coding_tools_title')).fontSize(Fs.BODY).width('100%')
+        Text($r('app.string.desktop_coding_tools_description')).fontSize(Fs.CAPTION)
+          .fontColor($r('sys.color.font_secondary')).width('100%')
+        if (this.codingTools.error.length > 0) {
+          Text($r('app.string.desktop_coding_tools_save_failed')).key('desktopCodingToolsError')
+            .fontSize(Fs.CAPTION).fontColor($r('sys.color.warning')).width('100%')
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: this.codingTools.enabled })
+        .key('desktopCodingToolsSwitch').enabled(this.codingTools.writable && !this.codingTools.busy)
+        .accessibilityText($r('app.string.desktop_coding_tools_title'))
+        .accessibilityDescription($r('app.string.desktop_coding_tools_description'))
+        .onChange((enabled: boolean): void => {
+          if (this.codingTools.writable && !this.codingTools.busy && enabled !== this.codingTools.enabled) {
+            this.onCodingToolsChange(enabled);
+          }
+        })
+    }.key('desktopCodingToolsRow').width('100%').padding(Sp.M).borderRadius(Radius.M)
+      .backgroundColor($r('sys.color.background_secondary'))
   }
 
   @Builder

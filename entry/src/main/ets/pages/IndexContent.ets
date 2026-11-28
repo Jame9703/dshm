@@ -22,6 +22,8 @@ import type { DesktopAccountNotices } from '../desktop/DesktopAccountNotices';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import { emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
+import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 
 import { display, router, window } from '@kit.ArkUI';
 import { KeyCode } from '@kit.InputKit';
@@ -361,6 +363,8 @@ export class IndexPageLifecycle {
 export struct IndexContent {
   desktopAccountNotices?: DesktopAccountNotices;
   desktopAccountHost?: DesktopHostActions;
+  @Prop desktopCodingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
+  onDesktopCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
   @State private desktopAccountIdentity: DesktopAccountSettingsIdentity = emptyDesktopAccountSettingsIdentity();
   private stopDesktopAccount?: () => void;
   pageLifecycle?: IndexPageLifecycle;
@@ -4525,6 +4529,7 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
     settingsSection: this.nav.settingsSection,
     desktopShortcuts: this.desktopSettingsEntry,
     desktopAccountHost: this.desktopAccountHost, desktopAccountIdentity: this.desktopAccountIdentity,
+    desktopCodingTools: this.desktopCodingTools, onDesktopCodingToolsChange: this.onDesktopCodingToolsChange,
     onOpenDesktopShortcuts: (): void => { this.desktopShortcutOpen = true; },
     settingsSections: this.panelRegistry.descriptors(PanelLocation.SETTINGS),
     onSelectSettingsSection: (sectionId: string) => this.selectSettingsSection(sectionId),

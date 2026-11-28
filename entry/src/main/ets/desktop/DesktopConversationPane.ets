@@ -1,8 +1,9 @@
 import { Speaker, TrajectoryItem } from 'appstate';
 import { KeyCode } from '@kit.InputKit';
+import { preferences } from '@kit.ArkData';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { resourceManager } from '@kit.LocalizationKit';
-import { getString } from 'connection';
+import { getRecord, getString } from 'connection';
 import { dialogMaterial } from 'platform';
 import { DESKTOP_ATTACHMENT_DROP_TYPES, desktopClipboardHasAttachments, desktopClipboardHasText,
   desktopDroppedFiles } from './DesktopAttachmentIntake';
@@ -15,6 +16,7 @@ import type { DesktopQuestionProgress } from './DesktopQuestionDrafts';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopArtifactsPane } from './DesktopArtifactsPane';
+import { DesktopAgentPresetPicker } from './DesktopAgentPresetPicker';
 import { DesktopChangeTarget } from './DesktopArtifacts';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopJobsControl } from './DesktopJobsControl';
@@ -93,6 +95,7 @@ export struct DesktopConversationPane {
   @Prop @Watch('onSnapshotChanged') snapshot: DesktopConversationSnapshot | undefined = undefined;
   @Prop sessionSummaries: SessionListItem[] = [];
   @Prop embedded: boolean = false;
+  @Prop @Watch('codingToolsChanged') developerTools: boolean = true;
   onTimelineReceipt: (session: string, tree: string, task: string) => void = (): void => {};
   onSubagent: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
   onSubagentAside: (entry: DesktopSubagentEntry, parents: DesktopSubagentEntry[]) => void = (): void => {};
@@ -291,6 +294,29 @@ export struct DesktopConversationPane {
     return this.sessionSummaries.find((row: SessionListItem): boolean => row.id === id)?.title || '父会话';
   }
 
+  private agentPresetSummary(): SessionListItem | undefined {
+    const id = this.snapshot?.sessionId;
+    return id === undefined ? undefined :
+      this.sessionSummaries.find((row: SessionListItem): boolean => row.id === id);
+  }
+
+  private agentPresetId(): string {
+    const projections = getRecord(this.agentPresetSummary()?.raw, 'projections');
+    return getString(getRecord(projections, 'values'), 'agentPreset') ?? '';
+  }
+
+  private canSelectAgentPreset(): boolean {
+    const snapshot = this.snapshot;
+    return !this.embedded && snapshot !== undefined && snapshot.subagent === undefined && !snapshot.loading &&
+      !snapshot.running && snapshot.submissionEchoes.length === 0 && snapshot.queue.length === 0 &&
+      this.agentPresetSummary()?.blank === true;
+  }
+
+  private showAgentPreset(): boolean {
+    return this.agentPresetId().length > 0 &&
+      (this.canSelectAgentPreset() || this.agentPresetSummary()?.blank === false);
+  }
+
   aboutToAppear(): void { this.onSnapshotChanged(); }
 
   aboutToDisappear(): void {
@@ -337,7 +363,7 @@ export struct DesktopConversationPane {
       this.historyPaging = false;
       this.historyProcessing = false;
       this.inspectTrajectoryCall = '';
-      this.showTrajectory = this.trajectorySessions.has(id);
+      this.showTrajectory = this.developerTools && this.preferredTrajectory(id);
       this.composerSelectionEnd = -1;
       this.scheduleComposerSync();
       this.following = true;
@@ -426,6 +452,38 @@ export struct DesktopConversationPane {
 
   private historyRowOffset(): number { return this.snapshot?.wasPartialHistory === true ? 1 : 0; }
 
+  private preferredTrajectory(session: string): boolean {
+    const context = this.getUIContext().getHostContext();
+    if (session && context !== undefined) {
+      try {
+        return preferences.getPreferencesSync(context, { name: 'dsh_desktop_conversation_view' }).getSync(session, false) === true;
+      } catch (_) {}
+    }
+    return this.trajectorySessions.has(session);
+  }
+
+  private rememberTrajectory(session: string, selected: boolean): void {
+    if (!session) { return; }
+    if (selected) { this.trajectorySessions.add(session); }
+    else { this.trajectorySessions.delete(session); }
+    const context = this.getUIContext().getHostContext();
+    if (context !== undefined) {
+      try {
+        const view = preferences.getPreferencesSync(context, { name: 'dsh_desktop_conversation_view' });
+        if (view.getSync(session, false) !== selected) { view.putSync(session, selected); view.flush().catch((): void => {}); }
+      } catch (_) {}
+    }
+  }
+
+  private codingToolsChanged(): void {
+    this.showTrajectory = this.developerTools && this.preferredTrajectory(this.sessionId);
+    if (!this.showTrajectory) { this.inspectTrajectoryCall = ''; }
+    this.refreshTranscript(true);
+    this.messageCount = this.transcriptRowCount();
+    this.refreshTurnOutline();
+    this.updateHistoryPaging();
+  }
+
   private refreshTranscript(force: boolean): void {
     const snapshot = this.snapshot;
     const pending = snapshot?.submissionEchoes.some((echo: DesktopSubmissionEcho): boolean =>
@@ -436,8 +494,10 @@ export struct DesktopConversationPane {
     this.transcriptTurns = snapshot?.transcriptTurns;
     this.transcriptPolicy = snapshot?.transcriptPolicy;
     this.pendingTranscriptInput = pending;
-    const rows = snapshot === undefined ? [] : desktopTranscriptRows(snapshot.transcript, snapshot.transcriptTurns,
+    const projected = snapshot === undefined ? [] : desktopTranscriptRows(snapshot.transcript, snapshot.transcriptTurns,
       snapshot.transcriptPolicy, this.transcriptOverrides, pending);
+    const rows = this.developerTools ? projected : projected.filter((row: DesktopTranscriptRow): boolean =>
+      row.item?.artifacts === undefined || row.item.artifacts.files.length > 0);
     const visible: DesktopTranscriptItem[] = [];
     const rowIndices: number[] = [];
     const itemIndices: number[] = [];
@@ -1374,22 +1434,22 @@ export struct DesktopConversationPane {
   }
 
   private selectView(trajectory: boolean): void {
+    if (!this.developerTools) { return; }
     this.showTrajectory = trajectory;
-    if (trajectory) { this.trajectorySessions.add(this.snapshot?.sessionId ?? ''); }
-    else {
-      this.trajectorySessions.delete(this.snapshot?.sessionId ?? '');
-      this.inspectTrajectoryCall = '';
-    }
+    this.rememberTrajectory(this.sessionId, trajectory);
+    if (!trajectory) { this.inspectTrajectoryCall = ''; }
     this.closePalette();
   }
 
   private inspectCordis(call: string): void {
+    if (!this.developerTools) { return; }
     this.inspectTrajectoryCall = call;
     this.selectView(true);
   }
 
   private trajectoryInMenu(): boolean {
-    return !this.embedded && this.onCreatePlugin !== undefined && this.paneWidth > 0 && this.paneWidth < 288;
+    return this.developerTools && !this.embedded && this.onCreatePlugin !== undefined &&
+      this.paneWidth > 0 && this.paneWidth < 288;
   }
 
   private viewMenu(): MenuElement[] {
@@ -1404,7 +1464,7 @@ export struct DesktopConversationPane {
   private ConversationTabs() {
     Row({ space: 13 }) {
       this.ViewTab($r('app.string.desktop_trace_chat'), false, 'desktopViewChat')
-      if (!this.trajectoryInMenu()) {
+      if (this.developerTools && !this.trajectoryInMenu()) {
         this.ViewTab($r('app.string.desktop_trace_tab'), true, 'desktopViewTrajectory')
       }
       if (!this.embedded && this.onCreatePlugin !== undefined) {
@@ -1508,12 +1568,14 @@ export struct DesktopConversationPane {
         row.showReasoning, row.previewReasoning, item.userCopyText ?? '', item.interrupted === true)
     } else if (item.artifacts !== undefined) {
       DesktopArtifactsPane({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
-        artifacts: item.artifacts, onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
+        artifacts: item.artifacts, showCodeDiff: this.developerTools,
+        onFile: this.onArtifactFile, onFileAction: this.onArtifactAction,
         onReview: this.onChanges })
     } else if (item.cordis !== undefined) {
       DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
         sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
-        codeFamily: this.typography.codeFamily, onInspect: (call: string): void => { this.inspectCordis(call); },
+        codeFamily: this.typography.codeFamily, inspectAvailable: this.developerTools,
+        onInspect: (call: string): void => { this.inspectCordis(call); },
         onWeb: this.onWeb })
     } else if (item.process !== undefined) {
       DesktopProcessPane({ group: item.process, grouped: row.groupProcess, liveProcessDetail: row.liveProcessDetail,
@@ -1829,6 +1891,11 @@ export struct DesktopConversationPane {
           }
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if (this.showAgentPreset()) {
+          DesktopAgentPresetPicker({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
+            presetId: this.agentPresetId(), editable: this.canSelectAgentPreset(), developerTools: this.developerTools })
+            .constraintSize({ maxWidth: this.compactHeader ? 85 : 180 })
+        }
         if ((this.snapshot?.subagents.length ?? 0) > 0 || this.snapshot?.subagent !== undefined ||
           desktopTeamBoardVisible(this.snapshot?.team)) {
           DesktopSubagentsControl({ host: this.host, sessionId: this.snapshot?.sessionId ?? '',
@@ -1889,7 +1956,9 @@ export struct DesktopConversationPane {
         this.paneWidth = Number(area.width);
         this.compactHeader = this.paneWidth < 500;
       })
-      if (this.snapshot?.sessionId) { this.ConversationTabs() }
+      if (this.snapshot?.sessionId && (this.developerTools || (!this.embedded && this.onCreatePlugin !== undefined))) {
+        this.ConversationTabs()
+      }
       if (this.snapshot?.loading) {
         LoadingProgress().width(22).height(22).color($r('sys.color.brand'))
       }

@@ -1,0 +1,14 @@
+{
+  "string": [
+    {"name":"desktop_agent_preset_standard","value":"Standard mode"},
+    {"name":"desktop_agent_preset_standard_description","value":"Work with code, files, and information. Suitable for most tasks, with search, editing, terminal commands, and other tools available as needed."},
+    {"name":"desktop_agent_preset_ptc","value":"PTC mode"},
+    {"name":"desktop_agent_preset_ptc_description","value":"Includes all Standard mode capabilities. Better suited to tasks that call tools in batches and then filter, organize, deduplicate, count, or summarize the results."},
+    {"name":"desktop_agent_preset_minimal","value":"Minimal mode"},
+    {"name":"desktop_agent_preset_minimal_description","value":"The agent uses a terminal and image reading, with context compaction. Useful for testing and comparing its basic performance."},
+    {"name":"desktop_agent_preset_cordis","value":"Creator mode"},
+    {"name":"desktop_agent_preset_cordis_description","value":"Customize DSH through conversation. Let the agent write plugins that add features or UI, or combine tools and prompts to create your own mode."},
+    {"name":"desktop_agent_preset_no_description","value":"No description."},
+    {"name":"desktop_agent_preset_selection_failed","value":"Could not switch the agent preset. Try again."}
+  ]
+}

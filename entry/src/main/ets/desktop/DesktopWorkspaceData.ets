@@ -20,6 +20,8 @@ import type { DesktopTheme } from './DesktopTheme';
 import { DesktopAccountNotices } from './DesktopAccountNotices';
 import { DESKTOP_ACCOUNT_ONBOARDING_NS, DesktopAccountOnboardingState } from './DesktopAccountOnboardingState';
 import type { DesktopOnboardingView } from './DesktopAccountOnboardingState';
+import { DESKTOP_CODING_TOOLS_NS, DesktopCodingTools } from './DesktopCodingTools';
+import type { DesktopCodingToolsSnapshot } from './DesktopCodingTools';
 import { desktopAccountLocale } from './DesktopAccountClient';
 import type { DesktopAccountNotice } from './DesktopAccountNotices';
 import { DesktopInteractions } from './DesktopInteractions';
@@ -105,6 +107,7 @@ export class DesktopWorkspaceData {
   readonly reading: DesktopSessionReading;
   readonly accountNotices: DesktopAccountNotices;
   readonly onboarding: DesktopAccountOnboardingState;
+  readonly codingTools: DesktopCodingTools;
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private readonly afterFrame: (run: () => void) => void;
   private readonly onTheme: (theme: DesktopTheme) => void;
@@ -149,7 +152,8 @@ export class DesktopWorkspaceData {
     openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void,
     onQuotaNotice: (notice?: DesktopQuotaNotice) => void,
     onTimelinePreferences: (value: DesktopTimelinePreferences) => void,
-    onOnboarding: (view: DesktopOnboardingView) => void, questionDrafts?: DesktopQuestionDrafts) {
+    onOnboarding: (view: DesktopOnboardingView) => void,
+    onCodingTools: (value: DesktopCodingToolsSnapshot) => void, questionDrafts?: DesktopQuestionDrafts) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
@@ -159,6 +163,8 @@ export class DesktopWorkspaceData {
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
     this.onboarding = new DesktopAccountOnboardingState(this.actions, onOnboarding,
       (): Promise<void> => this.readConversationPreferences());
+    this.codingTools = new DesktopCodingTools(this.actions, (): Promise<void> => this.readConversationPreferences(),
+      onCodingTools);
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices,
       (state?: Object, changed?: boolean): void => {
         this.onboarding.observeAccount(state, changed === true);
@@ -298,7 +304,7 @@ export class DesktopWorkspaceData {
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
           if (namespace === 'ui-conversation' || namespace === 'ui-chat' || namespace === 'locale' ||
-            namespace === DESKTOP_THEME_NS || namespace === DESKTOP_TIMELINE_NS || namespace === 'ui-settings' ||
+            namespace === DESKTOP_THEME_NS || namespace === DESKTOP_TIMELINE_NS || namespace === DESKTOP_CODING_TOOLS_NS ||
             namespace === DESKTOP_ACCOUNT_ONBOARDING_NS) {
             this.readConversationPreferences();
           }
@@ -325,6 +331,8 @@ export class DesktopWorkspaceData {
 
   private remoteEventsEnded(): void {
     this.interactions.resetEvents();
+    this.conversationPreferencesVersion++;
+    this.codingTools.connectionLost();
     if (this.unlistedRunning.size > 0) {
       this.unlistedRunning.clear();
       this.publish();
@@ -360,6 +368,7 @@ export class DesktopWorkspaceData {
     this.accountLocalePreference = language;
     this.onboarding.setLocale(language);
     this.onboarding.observeSettings(result.value);
+    this.codingTools.observeSettings(result.value);
     this.interactions.setLocale(desktopAccountLocale(language));
     this.accountNotices.setLocale(language);
     this.connectorAccounts.setLocale(language);
@@ -536,6 +545,7 @@ export class DesktopWorkspaceData {
     this.connectorAccounts.dispose();
     this.cordis.dispose();
     this.onboarding.stop();
+    this.codingTools.stop();
     this.accountNotices.stop();
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => binding.close());
     this.reading.close();

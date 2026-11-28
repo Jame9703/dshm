@@ -40,6 +40,8 @@ import { DesktopAccountPane } from '../desktop/DesktopAccountPane';
 import { DesktopAccountOnboardingLayer } from '../desktop/DesktopAccountOnboardingLayer';
 import { emptyDesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
 import type { DesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
+import { emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
+import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
 import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
@@ -337,6 +339,7 @@ struct DesktopWorkspace {
   @State private accountDismissRequest: number = 0;
   @State private accountNotices: DesktopAccountNotice[] = [];
   @State private accountOnboarding: DesktopOnboardingView = emptyDesktopOnboardingView();
+  @State private codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   private onboardingBrowser?: DesktopWorkspaceData;
   private onboardingBrowserLeft: boolean = false;
   private onboardingBrowserTimer: number = -1;
@@ -538,6 +541,7 @@ struct DesktopWorkspace {
     this.attachmentsBySession.clear();
     this.attachments = [];
     this.groups = [];
+    this.codingTools = emptyDesktopCodingToolsSnapshot();
     this.visibleGroups = [];
     this.selectedWorkspaceTitle = '';
     this.selectedTitle = '';
@@ -640,6 +644,7 @@ struct DesktopWorkspace {
       this.timelinePreferencesReady = true;
       this.openFirstTimelineTree();
     }, (view: DesktopOnboardingView): void => { this.showAccountOnboarding(view); },
+    (state: DesktopCodingToolsSnapshot): void => { if (this.pageActive) { this.codingTools = state; } },
     localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
     const data = this.data;
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
@@ -2380,6 +2385,8 @@ struct DesktopWorkspace {
     WithTheme({ colorMode: this.workspaceColorMode() }) {
       IndexContent({ desktopSection: this.settingsSection,
         desktopAccountNotices: this.data?.accountNotices, desktopAccountHost: this.data?.actions,
+        desktopCodingTools: this.codingTools,
+        onDesktopCodingToolsChange: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
         onCloseSettings: (): void => { this.closeSettings(); },
         onSettingsSection: (section: string): void => { this.settingsSection = section; },
         onOpenPlugins: (): void => { this.settingsOpeningPlugins = true; } })
@@ -3592,6 +3599,7 @@ struct DesktopWorkspace {
     Row() {
       if (this.sessionId.length > 0) {
         DesktopConversationPane({
+          developerTools: this.codingTools.enabled,
           host: this.data?.actions, replyMedia: this.replyMedia,
           cordis: this.data?.cordis,
           snapshot: this.chat,
@@ -4283,6 +4291,7 @@ struct DesktopWorkspace {
         typography: this.typography, onLink: (href: string): void => this.openConversationLink(href) })
     } else if (tab.kind === DesktopDockKind.CHAT) {
       DesktopDockChatPane({ data: this.data, actions: this.dockChatActions(this.data), replyMedia: this.replyMedia,
+        developerTools: this.codingTools.enabled,
         target: tab.chat,
         title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
         busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,

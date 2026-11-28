@@ -11,6 +11,7 @@ export struct DesktopCordisCardView {
   @Prop @Watch('updateReading') sessionId: string = '';
   @Prop codeSize: number = 12;
   @Prop codeFamily: string = 'monospace';
+  @Prop inspectAvailable: boolean = true;
   onInspect: (call: string) => void = (_call: string): void => {};
   onWeb: () => void = (): void => {};
   @State private expanded: boolean = false;
@@ -200,7 +201,7 @@ export struct DesktopCordisCardView {
           } else {
             Blank()
           }
-          this.Inspect()
+          if (this.inspectAvailable) { this.Inspect() }
         }.width('100%')
       }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 8, right: 8 })
     }
@@ -212,7 +213,7 @@ export struct DesktopCordisCardView {
       this.Title()
       this.Summary(false)
       this.Reading()
-      this.Inspect()
+      if (this.inspectAvailable) { this.Inspect() }
     }.height(32).width('100%').padding({ left: 6 })
     Column({ space: 4 }) {
       if (this.reading === 'removed' || this.reading === 'superseded') {

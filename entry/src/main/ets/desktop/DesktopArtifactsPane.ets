@@ -12,6 +12,7 @@ export struct DesktopArtifactsPane {
   host?: DesktopHostActions;
   @Prop sessionId: string = '';
   @Prop @Watch('reload') artifacts: DesktopTurnArtifacts | undefined = undefined;
+  @Prop @Watch('reload') showCodeDiff: boolean = true;
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onFileAction: (path: string, name: string, reveal: boolean) => void =
     (_path: string, _name: string, _reveal: boolean): void => {};
@@ -34,7 +35,7 @@ export struct DesktopArtifactsPane {
     const revision = ++this.revision;
     this.summary = undefined;
     const artifacts = this.artifacts;
-    if (artifacts === undefined) {
+    if (!this.showCodeDiff || artifacts === undefined) {
       return;
     }
     const summary = artifacts.changeSequence >= 0 ? await this.host?.changeSummary(this.sessionId, artifacts.changeSequence) : undefined;
@@ -46,7 +47,7 @@ export struct DesktopArtifactsPane {
   private openReview(index: number): void {
     const summary = this.summary;
     const sequence = this.artifacts?.changeSequence ?? -1;
-    if (summary !== undefined) {
+    if (this.showCodeDiff && summary !== undefined) {
       this.onReview({ sessionId: this.sessionId, sequence: sequence, summary: summary, index: index });
     }
   }
@@ -134,7 +135,7 @@ export struct DesktopArtifactsPane {
 
   build() {
     Column({ space: 6 }) {
-      if (this.summary !== undefined && this.summary.files.length > 0) {
+      if (this.showCodeDiff && this.summary !== undefined && this.summary.files.length > 0) {
         this.Changes(this.summary)
       }
       ForEach(this.expandedFiles ? this.artifacts?.files ?? [] : this.artifacts?.files.slice(0, COLLAPSED_FILES) ?? [],

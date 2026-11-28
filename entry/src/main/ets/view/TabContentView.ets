@@ -29,6 +29,7 @@ import { HubBanner } from './HubBanner';
 import { SettingsPane } from './SettingsPane';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
+import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import { WorkspacePane } from './WorkspacePane';
 import { WorkspaceBrowser } from './WorkspaceBrowser';
 import type { WorkspaceBrowserFacade } from './WorkspaceBrowser';
@@ -50,6 +51,8 @@ export interface TabContentFacade {
   desktopShortcuts: boolean;
   desktopAccountHost?: DesktopHostActions;
   desktopAccountIdentity?: DesktopAccountSettingsIdentity;
+  desktopCodingTools: DesktopCodingToolsSnapshot;
+  onDesktopCodingToolsChange: (enabled: boolean) => void;
   onOpenDesktopShortcuts: () => void;
   /** 设置域的可用分区清单（注册表给；顺序即呈现顺序） */
   settingsSections: PanelDescriptor[];
@@ -224,6 +227,7 @@ export struct TabContentView {
         section: this.f.settingsSection,
         desktopShortcuts: this.f.desktopShortcuts,
         desktopAccountHost: this.f.desktopAccountHost, desktopAccountIdentity: this.f.desktopAccountIdentity,
+        codingTools: this.f.desktopCodingTools, onCodingToolsChange: this.f.onDesktopCodingToolsChange,
         onOpenShortcuts: this.f.onOpenDesktopShortcuts,
         sections: this.f.settingsSections,
         onSelectSection: (sectionId: string) => {

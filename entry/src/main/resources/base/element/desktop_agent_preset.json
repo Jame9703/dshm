@@ -1,0 +1,14 @@
+{
+  "string": [
+    {"name":"desktop_agent_preset_standard","value":"标准模式"},
+    {"name":"desktop_agent_preset_standard_description","value":"处理代码、文件和资料，适合大多数任务。Agent 会按需使用检索、编辑和终端等工具。"},
+    {"name":"desktop_agent_preset_ptc","value":"PTC 模式"},
+    {"name":"desktop_agent_preset_ptc_description","value":"包含标准模式的所有能力，更适合批量调用工具，并对结果进行筛选、整理、去重、统计或汇总的任务。"},
+    {"name":"desktop_agent_preset_minimal","value":"极简模式"},
+    {"name":"desktop_agent_preset_minimal_description","value":"Agent 使用终端和图片读取工具，并支持上下文压缩，适合测试和对比其基础表现。"},
+    {"name":"desktop_agent_preset_cordis","value":"创造模式"},
+    {"name":"desktop_agent_preset_cordis_description","value":"用对话定制 DSH：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。"},
+    {"name":"desktop_agent_preset_no_description","value":"暂无描述。"},
+    {"name":"desktop_agent_preset_selection_failed","value":"未能切换 Agent 预设，请重试。"}
+  ]
+}
