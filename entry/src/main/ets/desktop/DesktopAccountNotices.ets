@@ -2,6 +2,7 @@ import { getArray, getNumber, getRecord, getString } from 'connection';
 import { desktopAccountLocale, desktopAccountMetadata } from './DesktopAccountClient';
 import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopAccountSettingsIdentity, emptyDesktopAccountSettingsIdentity } from './DesktopAccountSettingsModel';
+import { DesktopAccountDetails } from './DesktopAccountDetails';
 
 export interface DesktopAccountNoticeAction {
   label: string;
@@ -43,6 +44,7 @@ function liveNotice(notice: DesktopAccountNotice, at: number): boolean {
 }
 
 export class DesktopAccountNotices {
+  readonly details: DesktopAccountDetails;
   private readonly host: DesktopHostActions;
   private readonly publish: (notices: DesktopAccountNotice[]) => void;
   private readonly onAccountState: (state?: Object, credentialsChanged?: boolean) => void;
@@ -68,6 +70,7 @@ export class DesktopAccountNotices {
     this.host = host;
     this.publish = publish;
     this.onAccountState = onAccountState;
+    this.details = new DesktopAccountDetails(host);
   }
 
   observeAccount(listener: (identity: DesktopAccountSettingsIdentity) => void): () => void {
@@ -89,6 +92,7 @@ export class DesktopAccountNotices {
       previous.usageUrl === usageUrl && previous.topUpUrl === topUpUrl))) { return; }
     this.accountIdentity = { ready: true, signedIn: signedIn, revision: this.accountVersion,
       usageUrl: usageUrl, topUpUrl: topUpUrl };
+    this.details.setIdentity(this.accountIdentity);
     this.accountObservers?.forEach((listener: (identity: DesktopAccountSettingsIdentity) => void): void => {
       listener(this.accountIdentity);
     });
@@ -135,6 +139,7 @@ export class DesktopAccountNotices {
     this.stopWatch = undefined;
     this.clearAccount();
     this.publishAccount();
+    this.details.stop();
     this.accountObservers?.clear();
   }
 
@@ -156,6 +161,7 @@ export class DesktopAccountNotices {
     const locale = desktopAccountLocale(preference);
     if (locale === this.locale) { return; }
     this.locale = locale;
+    this.details.setLocale(locale);
     const language = ++this.localeVersion;
     if (!this.signedIn) { return; }
     for (const notice of this.current) { this.translate(notice.id, this.accountVersion, language); }

@@ -31,7 +31,7 @@
  */
 
 import { DESKTOP_WORKSPACE_PAGE, setDesktopWorkspaceEnabled } from '../desktop/DesktopWorkspacePreference';
-import { buildDesktopPluginDetailScript, buildDesktopPluginViewScript, buildDesktopWebContextScript,
+import { buildDesktopCordisPanelScript, buildDesktopPluginDetailScript, buildDesktopPluginViewScript, buildDesktopWebContextScript,
   buildDesktopWorkspaceSessionScript, readDesktopWebContext, readDesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import type { DesktopWebContext } from '../desktop/DesktopWorkspaceHandoff';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -5903,10 +5903,12 @@ struct WebApp {
     this.desktopWebHandoff = '';
     const openAction = (): void => {
       if (target.action !== 'new-session' && target.action !== 'plugins' &&
-        target.action !== 'schedule' && target.action !== 'add-workspace') { return; }
+        target.action !== 'schedule' && target.action !== 'add-workspace' && target.action !== 'cordis') { return; }
       const script = target.action === 'plugins' && target.plugin !== undefined ? buildDesktopPluginViewScript(target.plugin) :
         target.action === 'plugins' && target.bundle ? buildDesktopPluginDetailScript(target.bundle) :
-        buildDesktopWorkspaceActionScript(target.action);
+        target.action === 'cordis' && target.cordis !== undefined ?
+          buildDesktopCordisPanelScript(target.cordis, target.sessionId) :
+          buildDesktopWorkspaceActionScript(target.action);
       this.runDesktopWorkspaceScript(script, target.host, document, (opened: boolean): void => {
         if (!opened) {
           this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
@@ -5922,12 +5924,12 @@ struct WebApp {
         if (opened) {
           hilog.warn(DOMAIN, TAG, 'DSHM-TRACE WebUI 已打开 ArkUI 所选会话');
         }
-        if (opened || target.action) {
+        if (opened || (target.action && target.action !== 'cordis')) {
           openAction();
         } else {
           this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_experiment_open_failed') });
         }
-      }, target.action ? 24 : 60);
+      }, target.action && target.action !== 'cordis' ? 24 : 60);
   }
 
   private currentDesktopWebDocument(host: string, document: number): boolean {

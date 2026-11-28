@@ -1,13 +1,14 @@
 import { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import type { DesktopCordisPackage, DesktopCordisRow, DesktopCordisSnapshot } from './DesktopCordisRuntime';
 import { desktopMenuOptions } from './DesktopMenuOptions';
+import type { DesktopCordisWebLocation } from './DesktopWorkspaceHandoff';
 
 @Component
 export struct DesktopCordisControl {
   runtime?: DesktopCordisRuntime;
   @Prop sessionId: string = '';
   @Prop collapsed: boolean = false;
-  onWeb: (session: string) => void = (): void => {};
+  onWeb: (session: string, location: DesktopCordisWebLocation) => void = (): void => {};
   @State private rows: DesktopCordisRow[] = [];
   @State private problem: string = '';
   @State private opened: boolean = false;
@@ -92,13 +93,13 @@ export struct DesktopCordisControl {
 
   private run(row: DesktopCordisRow, pkg?: DesktopCordisPackage): void {
     if (pkg === undefined) { return; }
-    if (pkg.hasClient) { this.openWeb(row.session); }
+    if (pkg.hasClient) { this.openWeb(row, pkg.id); }
     else { this.act(row, (runtime: DesktopCordisRuntime): Promise<string> => runtime.run(row, pkg)); }
   }
 
-  private openWeb(session: string): void {
+  private openWeb(row: DesktopCordisRow, packageId: string): void {
     this.opened = false;
-    this.onWeb(session);
+    this.onWeb(row.session, { pluginId: row.id, packageId: packageId, requestId: row.approval });
   }
 
   @Builder
@@ -148,7 +149,7 @@ export struct DesktopCordisControl {
       Row({ space: 4 }) {
         if (row.approval) {
           this.Action($r('app.string.desktop_cordis_open_web'), 'desktopCordisWeb-' + row.id,
-            this.pending.has(row.id), (): void => this.openWeb(row.session))
+            this.pending.has(row.id), (): void => this.openWeb(row, row.target))
           this.Action($r('app.string.desktop_cordis_decline'), 'desktopCordisDecline-' + row.id,
             this.pending.has(row.id), (): void => {
               this.act(row, (runtime: DesktopCordisRuntime): Promise<string> => runtime.decline(row));

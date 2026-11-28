@@ -43,6 +43,7 @@ import { SettingsCore } from './SettingsCore';
 import { DesktopCloudSyncSettings } from '../desktop/DesktopCloudSyncSettings';
 import { DesktopAccountSettings } from '../desktop/DesktopAccountSettings';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 
@@ -138,6 +139,7 @@ export struct SettingsPane {
   @Prop desktopShortcuts: boolean = false;
   @Prop settingsCompact: boolean = false;
   desktopAccountHost?: DesktopHostActions;
+  desktopAccountDetails?: DesktopAccountDetailsAccess;
   @Prop desktopAccountIdentity?: DesktopAccountSettingsIdentity = undefined;
   @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -312,7 +314,7 @@ export struct SettingsPane {
               }
             })
           } else if (this.section === 'account' && this.desktopShortcuts && this.desktopAccountIdentity !== undefined) {
-            DesktopAccountSettings({ host: this.desktopAccountHost, identity: this.desktopAccountIdentity })
+            DesktopAccountSettings({ details: this.desktopAccountDetails, identity: this.desktopAccountIdentity })
           } else if (this.section === 'dshm-cloud-sync' && this.desktopShortcuts) {
             DesktopCloudSyncSettings()
           } else if (this.section === 'settings.plugins') {

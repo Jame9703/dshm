@@ -49,6 +49,7 @@ import type { DesktopTurnOutlineEntry, DesktopTurnOutlineItem } from './DesktopT
 import { DesktopCordisCardView } from './DesktopCordisCardView';
 import { desktopCordisAction, desktopCordisCardIcon, desktopCordisCardTitle } from './DesktopCordisCards';
 import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
+import type { DesktopCordisWebLocation } from './DesktopWorkspaceHandoff';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import { DesktopSkill, desktopMayHaveSkillReference, desktopSkillCandidates } from './DesktopSkills';
@@ -159,6 +160,7 @@ export struct DesktopConversationPane {
   onContinue: (sequence: number) => void = (_sequence: number): void => {};
   onEarlier: () => void = () => {};
   onWeb: () => void = () => {};
+  onCordisWeb: (location: DesktopCordisWebLocation) => void = (): void => {};
   onCopyTranscript: () => void = () => {};
   onExportLog: () => void = () => {};
   onSessionFeedback: (sessionId: string) => Promise<string> = (_sessionId: string): Promise<string> => Promise.resolve('');
@@ -1342,7 +1344,16 @@ export struct DesktopConversationPane {
     return this.snapshot?.readQuestionHistory?.(this.reviewedQuestionCall);
   }
 
-  private openQuestionReview(callId: string): boolean {
+  private openToolQuestion(callId: string): boolean {
+    const live = this.interactions.find((row: DesktopInteraction): boolean =>
+      !!callId && row.callId === callId && row.sessionId === this.snapshot?.sessionId && row.kind === 'question' &&
+      (row.timed || row.continued || row.questionHidden === true || row.reviewHidden === true));
+    if (live !== undefined) {
+      this.closePalette();
+      this.reviewedQuestionCall = '';
+      this.onQuestionResume(live.id);
+      return true;
+    }
     if (this.snapshot?.readQuestionHistory?.(callId) === undefined || this.visibleInteraction()[0]?.planReview !== undefined) {
       return false;
     }
@@ -1637,7 +1648,7 @@ export struct DesktopConversationPane {
         sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
         codeFamily: this.typography.codeFamily, inspectAvailable: this.developerTools,
         onInspect: (call: string): void => { this.inspectToolInTrajectory(call); },
-        onWeb: this.onWeb })
+        onWeb: this.onCordisWeb })
     } else if (item.process !== undefined) {
       DesktopProcessPane({ group: item.process, grouped: row.groupProcess, liveProcessDetail: row.liveProcessDetail,
         expanded: this.expandedProcesses.includes(item.id),
@@ -1653,8 +1664,7 @@ export struct DesktopConversationPane {
         onTimelineReceipt: (tree: string, task: string): void => {
           this.onTimelineReceipt(this.snapshot?.sessionId ?? '', tree, task);
         },
-        hiddenQuestions: this.hiddenQuestions(), onQuestionResume: this.onQuestionResume,
-        onQuestionReview: (id: string): boolean => this.openQuestionReview(id),
+        onOpenQuestion: (id: string): boolean => this.openToolQuestion(id),
         onToggle: (): void => {
           this.expandedProcesses = this.expandedProcesses.includes(item.id) ?
             this.expandedProcesses.filter((id: string): boolean => id !== item.id) : [...this.expandedProcesses, item.id];

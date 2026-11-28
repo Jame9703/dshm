@@ -22,6 +22,7 @@ import type { DesktopChangeTarget } from './DesktopArtifacts';
 import type { DesktopRating } from './DesktopFeedback';
 import { DEFAULT_DESKTOP_TYPOGRAPHY } from './DesktopTheme';
 import type { DesktopTypography } from './DesktopTheme';
+import type { DesktopCordisWebLocation } from './DesktopWorkspaceHandoff';
 
 export interface DesktopDockChatActions {
   run: (id: string, operation: (id: string) => Promise<string>) => Promise<string>;
@@ -47,7 +48,7 @@ export interface DesktopDockChatActions {
   openChanges: (target: DesktopChangeTarget) => void;
   openModels: () => void;
   openPlugin: (name: string, title: string, description: string) => void;
-  openWeb: (id: string, child?: DesktopSubagentEntry) => void;
+  openWeb: (id: string, child?: DesktopSubagentEntry, cordis?: DesktopCordisWebLocation) => void;
   copy: (id: string) => void;
   exportLog: (id: string) => Promise<string>;
   feedback: (id: string, conversation: DesktopConversation) => Promise<string>;
@@ -288,6 +289,9 @@ export struct DesktopDockChatPane {
           },
           onWeb: (): void => {
             if (this.target !== undefined) { this.actions?.openWeb(this.target.id, this.target.subagent); }
+          },
+          onCordisWeb: (location: DesktopCordisWebLocation): void => {
+            if (this.target !== undefined) { this.actions?.openWeb(this.target.id, this.target.subagent, location); }
           },
           onLoadCommands: (): void => { this.binding?.conversation.loadCommands(this.target?.id ?? ''); },
           onLoadSkills: (): void => { this.binding?.conversation.loadSkills(this.target?.id ?? ''); },

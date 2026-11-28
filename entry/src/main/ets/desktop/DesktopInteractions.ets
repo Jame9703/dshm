@@ -67,6 +67,7 @@ export interface DesktopInteraction {
   reason: string;
   displayReason?: Object;
   approvalSubmitting?: boolean;
+  presentationOrder?: number;
   kind: string;
   questions: DesktopQuestion[];
   continued: boolean;
@@ -158,6 +159,7 @@ export class DesktopInteractions {
   private draftOrigin: string = '';
   private eventClientId: string = '';
   private locale: string = 'zh';
+  private presentationSequence: number = 0;
   private selected: string = '';
   private stopClaim?: () => void;
   private claimEvent: string = '';
@@ -230,6 +232,11 @@ export class DesktopInteractions {
     this.eventClientId = clientId;
   }
 
+  private nextPresentationOrder(): number {
+    const source = this.owner ?? this;
+    return ++source.presentationSequence;
+  }
+
   resetEvents(): void {
     this.eventClientId = '';
     this.questionFocus = '';
@@ -300,6 +307,8 @@ export class DesktopInteractions {
     };
     const projection = this.questionProjections.get(sessionId);
     if (!approval && row.callId && (projection?.settled.has(row.callId) || projection?.queued.has(row.callId))) { return; }
+    row.presentationOrder = projection?.continued.find((other: DesktopInteraction): boolean =>
+      !approval && other.callId === row.callId)?.presentationOrder ?? this.nextPresentationOrder();
     this.events.set(id, row);
     this.publish();
   }
@@ -348,6 +357,9 @@ export class DesktopInteractions {
       const questions = questionsOf(item);
       if (questions.length > 0) {
         const receipt = this.questionReceipts.get(sessionId + '\u0000' + callId);
+        const previous = state.continued.find((row: DesktopInteraction): boolean => row.callId === callId) ??
+          receipt?.event ?? Array.from(this.events.values()).find((row: DesktopInteraction): boolean =>
+            row.kind === 'question' && row.sessionId === sessionId && row.callId === callId);
         if (receipt !== undefined && receipt.phase !== 'resubmit') {
           this.removeReceiptEvent(receipt);
           receipt.phase = 'resubmit';
@@ -355,7 +367,8 @@ export class DesktopInteractions {
         }
         rows.push({
           id: 'continued/' + callId, sessionId: sessionId, callId: callId, kind: 'question',
-          tool: '', reason: '', questions: questions, continued: true, timed: false
+          tool: '', reason: '', questions: questions, continued: true, timed: false,
+          presentationOrder: previous?.presentationOrder ?? this.nextPresentationOrder()
         });
       }
     }
@@ -435,8 +448,7 @@ export class DesktopInteractions {
   reopenPlanReview(id: string): void {
     const row = this.events.get(id);
     if (row?.planReview !== undefined && row.sessionId === this.selected && row.reviewHidden) {
-      row.reviewHidden = false;
-      this.publish();
+      this.reopenQuestion(id);
     }
   }
 
@@ -576,8 +588,13 @@ export class DesktopInteractions {
 
   reopenQuestion(id: string): void {
     const row = this.questionRow(id);
-    if (row === undefined || this.pendingReceipt(row) !== undefined || this.answeringContinued(row)) { return; }
-    this.questionState(row).hidden = false;
+    if (row === undefined) { return; }
+    if (this.pendingReceipt(row) === undefined && !this.answeringContinued(row)) {
+      this.questionState(row).hidden = false;
+      row.reviewHidden = false;
+    }
+    // Equal-ranked cards share the composer. A tool-row reveal republishes that card last.
+    row.presentationOrder = this.nextPresentationOrder();
     this.publish();
   }
 
@@ -762,7 +779,9 @@ export class DesktopInteractions {
     const active = all.filter((row: DesktopInteraction): boolean => row.sessionId === this.selected);
     const continued = this.answerableQuestions(this.questionProjections.get(this.selected)).filter((row: DesktopInteraction): boolean =>
       !active.some((event: DesktopInteraction): boolean => event.callId === row.callId));
-    this.onChange([...active, ...continued].map((row: DesktopInteraction): DesktopInteraction => {
+    const ordered = [...active, ...continued].sort((left: DesktopInteraction, right: DesktopInteraction): number =>
+      (left.presentationOrder ?? 0) - (right.presentationOrder ?? 0));
+    this.onChange(ordered.map((row: DesktopInteraction): DesktopInteraction => {
       if (row.kind === 'approval') {
         const locale = (this.owner ?? this).locale;
         const base = locale.split('-')[0].toLowerCase();

@@ -49,10 +49,9 @@ import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
-import { desktopAccountPlatformLink, desktopAccountSettingsProfile,
-  emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
+import { desktopAccountPlatformLink, emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
-import { desktopAccountLocale, desktopAccountMetadata } from '../desktop/DesktopAccountClient';
+import type { DesktopAccountDetailsAccess, DesktopAccountDetailsSnapshot } from '../desktop/DesktopAccountDetails';
 import { desktopAccountContactUrl } from '../desktop/DesktopAccountContact';
 import { DesktopAccountQuotaDialog, DesktopQuotaToast, DESKTOP_QUOTA_TOAST_HOLD_MS, DESKTOP_QUOTA_TOAST_FADE_MS }
   from '../desktop/DesktopQuotaNotice';
@@ -105,7 +104,7 @@ import { DesktopAccountSessionNotice, DesktopWorkspaceData } from '../desktop/De
 import { DesktopWorkspacePicker } from '../desktop/DesktopWorkspacePicker';
 import type { DesktopWorkspacePickerRow } from '../desktop/DesktopWorkspacePickerModel';
 import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
-import type { DesktopHandoffSubagent, DesktopNativeDestination, DesktopPluginLocation,
+import type { DesktopCordisWebLocation, DesktopHandoffSubagent, DesktopNativeDestination, DesktopPluginLocation,
   DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
 import { DesktopCordisControl } from '../desktop/DesktopCordisControl';
 import type { DesktopSessionCreation, DesktopWorkspaceRow, DesktopWorkspaceSnapshot } from '../desktop/DesktopWorkspaceData';
@@ -395,7 +394,7 @@ struct DesktopWorkspace {
   @State private accountLauncherName: string = '';
   @State private accountLauncherAvatar: string = '';
   private accountLauncherUid: string = '';
-  private accountLauncherRevision: number = -1;
+  private accountLauncherProfileRevision: number = -1;
   @State private accountNotices: DesktopAccountNotice[] = [];
   @State private accountSessionToasts: DesktopAccountSessionToast[] = [];
   private readonly accountSessionToastTimers = new Map<DesktopAccountSessionNotice, DesktopAccountSessionToastTimers>();
@@ -620,7 +619,7 @@ struct DesktopWorkspace {
     this.accountLauncherName = '';
     this.accountLauncherAvatar = '';
     this.accountLauncherUid = '';
-    this.accountLauncherRevision = -1;
+    this.accountLauncherProfileRevision = -1;
     this.subagentAddresses.clear();
     this.attachmentsBySession.clear();
     this.attachments = [];
@@ -735,8 +734,8 @@ struct DesktopWorkspace {
      },
     localDesktopQuestionDrafts(this.getUIContext().getHostContext()?.filesDir));
     const data = this.data;
-    data.accountNotices.observeAccount((identity: DesktopAccountSettingsIdentity): void => {
-      this.updateAccountLauncher(data, identity);
+    data.accountNotices.details.observe((snapshot: DesktopAccountDetailsSnapshot): void => {
+      this.updateAccountLauncher(data, snapshot);
     });
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
   }
@@ -2691,8 +2690,15 @@ struct DesktopWorkspace {
   }
 
   private settingsSurfaceParams(): DesktopSettingsSurfaceParams {
+    const details = this.data?.accountNotices.details;
+    // Keep the account subscription bound to the workbench owner across the settings sheet's state snapshots.
+    const accountDetails: DesktopAccountDetailsAccess | undefined = details === undefined ? undefined : {
+      observe: (listener: (snapshot: DesktopAccountDetailsSnapshot) => void): () => void => details.observe(listener),
+      refreshAfterCurrent: (): void => { details.refreshAfterCurrent(); }
+    };
     return { compact: this.settingsSurfaceSize?.compact ?? false, mode: this.workspaceColorMode(),
-      section: this.settingsSection, accountNotices: this.data?.accountNotices, host: this.data?.actions,
+      section: this.settingsSection, accountNotices: this.data?.accountNotices, accountDetails: accountDetails,
+      host: this.data?.actions,
       codingTools: this.codingTools, changeCodingTools: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
       close: (): void => { this.closeSettings(); },
       startCreator: (): void => { this.startPresetCreator(); },
@@ -2770,7 +2776,10 @@ struct DesktopWorkspace {
       if (this.settingsSurface !== content) { return; }
       this.settingsSurfaceReady = true;
       if (this.settingsClosing || !this.pageActive) { this.dismissSettingsSurface(content); }
-      else { this.resizeSettingsSurface(); }
+      else {
+        this.data?.accountNotices.details.refresh();
+        this.resizeSettingsSurface();
+      }
     } catch (_) {
       if (opening === undefined || this.settingsSurface === opening) {
         this.settingsDismissed();
@@ -2913,24 +2922,15 @@ struct DesktopWorkspace {
     }
   }
 
-  private async updateAccountLauncher(owner: DesktopWorkspaceData, identity: DesktopAccountSettingsIdentity): Promise<void> {
-    if (!identity.ready || !this.pageActive || this.data !== owner) { return; }
-    if (this.accountLauncherSignedIn === identity.signedIn && this.accountLauncherRevision === identity.revision) { return; }
-    this.accountLauncherSignedIn = identity.signedIn;
-    this.accountLauncherRevision = identity.revision;
-    this.accountLauncherName = '';
-    this.accountLauncherAvatar = '';
-    this.accountLauncherUid = '';
-    if (!identity.signedIn) { return; }
-    const metadata = desktopAccountMetadata(desktopAccountLocale(owner.accountLanguagePreference()));
-    const result = await owner.actions.call('account/getProfile', { 'client': metadata });
-    if (!this.pageActive || this.data !== owner || !this.accountLauncherSignedIn ||
-      this.accountLauncherRevision !== identity.revision) { return; }
-    const profile = result.ok ? desktopAccountSettingsProfile(result.value) : undefined;
-    this.accountLauncherName = profile?.name || profile?.contact ||
-      this.accessibilityLabel($r('app.string.desktop_account_settings_signed_in'));
-    this.accountLauncherAvatar = profile?.avatarUrl ?? '';
-    this.accountLauncherUid = profile === undefined ? '' : getString(getRecord(result.value, 'value'), 'id') ?? '';
+  private updateAccountLauncher(owner: DesktopWorkspaceData, snapshot: DesktopAccountDetailsSnapshot): void {
+    if (!snapshot.identity.ready || !this.pageActive || this.data !== owner) { return; }
+    this.accountLauncherSignedIn = snapshot.identity.signedIn;
+    if (this.accountLauncherProfileRevision === snapshot.profileRevision) { return; }
+    this.accountLauncherProfileRevision = snapshot.profileRevision;
+    this.accountLauncherName = snapshot.profileLoaded ? snapshot.profile?.name || snapshot.profile?.contact ||
+      this.accessibilityLabel($r('app.string.desktop_account_settings_signed_in')) : '';
+    this.accountLauncherAvatar = snapshot.profile?.avatarUrl ?? '';
+    this.accountLauncherUid = snapshot.profileId;
   }
 
   private async openAccountFeedback(): Promise<void> {
@@ -3259,7 +3259,7 @@ struct DesktopWorkspace {
   }
 
   private async openWeb(leaveExperiment: boolean, action: string = '', session: string = this.sessionId,
-    plugin?: DesktopPluginLocation, child?: DesktopSubagentEntry): Promise<void> {
+    plugin?: DesktopPluginLocation, child?: DesktopSubagentEntry, cordis?: DesktopCordisWebLocation): Promise<void> {
     if (this.switching) {
       return;
     }
@@ -3279,7 +3279,7 @@ struct DesktopWorkspace {
           group.sessions.some((row: SessionListItem): boolean => row.id === session))?.id ?? '';
       const target: DesktopWebDestination = {
         host: this.hostUrl, sessionId: sessionId, workspaceId: workspaceId, action: action,
-        bundle: plugin?.kind === 'package' ? plugin.name : '', plugin: plugin
+        bundle: plugin?.kind === 'package' ? plugin.name : '', plugin: plugin, cordis: cordis
       };
       const subagent = child ?? this.subagentAddresses.get(sessionId) ??
         (sessionId === this.sessionId ? this.selectedSubagent : undefined);
@@ -4066,7 +4066,9 @@ struct DesktopWorkspace {
       if (this.ready && this.data !== undefined) {
         DesktopCordisControl({
           runtime: this.data.cordis, sessionId: this.sessionId, collapsed: this.sidebarCollapsed,
-          onWeb: (session: string): void => { this.openWeb(false, '', session); }
+          onWeb: (session: string, location: DesktopCordisWebLocation): void => {
+            this.openWeb(false, 'cordis', session, undefined, undefined, location);
+          }
         })
       }
       this.SidebarMenu(true)
@@ -4215,6 +4217,9 @@ struct DesktopWorkspace {
           },
           onEarlier: (): void => this.data?.conversation.loadEarlier(),
           onWeb: (): void => { this.openWeb(false); },
+          onCordisWeb: (location: DesktopCordisWebLocation): void => {
+            this.openWeb(false, 'cordis', this.sessionId, undefined, undefined, location);
+          },
           copyingTranscript: this.copyingTranscript,
           exportingLog: this.exportingLog,
           choosingFeedback: this.choosingFeedback,
@@ -4748,7 +4753,9 @@ struct DesktopWorkspace {
       openPlugin: (name: string, title: string, description: string): void => {
         this.openPlugins(name, title, description);
       },
-      openWeb: (id: string, child?: DesktopSubagentEntry): void => { this.openWeb(false, '', id, undefined, child); },
+      openWeb: (id: string, child?: DesktopSubagentEntry, cordis?: DesktopCordisWebLocation): void => {
+        this.openWeb(false, cordis === undefined ? '' : 'cordis', id, undefined, child, cordis);
+      },
       copy: (id: string): void => { this.copyTranscript(id); },
       exportLog: (id: string): Promise<string> => this.exportLog(id),
       feedback: (id: string, conversation: DesktopConversation): Promise<string> => this.openSessionFeedback(id, conversation.feedback),

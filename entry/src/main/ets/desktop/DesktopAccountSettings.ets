@@ -1,18 +1,16 @@
 import { LengthMetrics } from '@kit.ArkUI';
 import { openExternalUrl } from 'platform';
-import { desktopAccountMetadata, desktopAccountLocale } from './DesktopAccountClient';
 import {
   DesktopAccountSettingsBalances, DesktopAccountSettingsIdentity, DesktopAccountSettingsProfile, DesktopAccountSettingsWallet,
-  desktopAccountPlatformHome, desktopAccountPlatformLink, desktopAccountSettingsBalances, desktopAccountSettingsProfile,
+  desktopAccountPlatformHome, desktopAccountPlatformLink,
   emptyDesktopAccountSettingsIdentity
 } from './DesktopAccountSettingsModel';
-import type { DesktopHostActions } from './DesktopHostActions';
+import type { DesktopAccountDetailsAccess, DesktopAccountDetailsSnapshot } from './DesktopAccountDetails';
 
 @Component
 export struct DesktopAccountSettings {
-  host?: DesktopHostActions;
+  details?: DesktopAccountDetailsAccess;
   @Prop @Watch('identityChanged') identity: DesktopAccountSettingsIdentity = emptyDesktopAccountSettingsIdentity();
-  @Prop @Watch('identityChanged') localePreference: string = 'system';
   @StorageProp('dshDesktopVoiceForeground') @Watch('foregroundChanged') private foreground: boolean = true;
   @State private profile?: DesktopAccountSettingsProfile = undefined;
   @State private balances?: DesktopAccountSettingsBalances = undefined;
@@ -26,19 +24,27 @@ export struct DesktopAccountSettings {
   @State private usageUrl: string = '';
   @State private topUpUrl: string = '';
   private active: boolean = false;
-  private readVersion: number = 0;
+  private stopDetails?: () => void;
+  private profileRevision: number = -1;
   private lastIdentity?: DesktopAccountSettingsIdentity;
-  private lastLocale: string = '';
   private refreshOnReturn: boolean = false;
 
   aboutToAppear(): void {
     this.active = true;
     this.identityChanged();
+    this.stopDetails = this.details?.observe((snapshot: DesktopAccountDetailsSnapshot): void => {
+      this.detailsChanged(snapshot);
+    });
+    if (this.stopDetails === undefined) {
+      this.profileLoaded = true;
+      this.balanceLoaded = true;
+    }
   }
 
   aboutToDisappear(): void {
     this.active = false;
-    this.readVersion++;
+    this.stopDetails?.();
+    this.stopDetails = undefined;
     this.lastIdentity = undefined;
     this.refreshOnReturn = false;
   }
@@ -46,66 +52,37 @@ export struct DesktopAccountSettings {
   private identityChanged(): void {
     if (!this.active) { return; }
     const identity = this.identity;
-    const locale = desktopAccountLocale(this.localePreference);
     const previous = this.lastIdentity;
     this.infoUrl = identity.signedIn ? desktopAccountPlatformHome(identity.usageUrl) : '';
     this.usageUrl = identity.signedIn ? desktopAccountPlatformLink(identity.usageUrl) : '';
     this.topUpUrl = identity.signedIn ? desktopAccountPlatformLink(identity.topUpUrl) : '';
-    if (previous !== undefined && previous.revision === identity.revision && previous.signedIn === identity.signedIn &&
-      this.lastLocale === locale) { return; }
+    if (previous !== undefined && previous.revision === identity.revision && previous.signedIn === identity.signedIn) { return; }
     this.lastIdentity = identity;
-    this.lastLocale = locale;
     this.refreshOnReturn = false;
     this.linkFailed = false;
-    this.profile = undefined;
-    this.balances = undefined;
-    this.profileLoaded = false;
-    this.balanceLoaded = false;
-    this.avatarImageEpoch++;
-    this.avatarReady = false;
-    this.avatarFailed = false;
-    this.refresh();
   }
 
   private foregroundChanged(): void {
     if (this.foreground && this.refreshOnReturn) {
       this.refreshOnReturn = false;
-      this.refresh();
+      this.details?.refreshAfterCurrent();
     }
   }
 
-  private refresh(): void {
-    const version = ++this.readVersion;
-    const host = this.host;
-    if (!this.active || !this.identity.signedIn) { return; }
-    if (host === undefined) {
-      this.profileLoaded = true;
-      this.balanceLoaded = true;
-      return;
+  private detailsChanged(snapshot: DesktopAccountDetailsSnapshot): void {
+    if (!this.active) { return; }
+    if (this.profileRevision !== snapshot.profileRevision) {
+      this.profileRevision = snapshot.profileRevision;
+      if (snapshot.profile?.avatarUrl !== this.profile?.avatarUrl || this.avatarFailed) {
+        this.avatarImageEpoch++;
+        this.avatarReady = false;
+        this.avatarFailed = false;
+      }
+      this.profile = snapshot.profile;
+      this.profileLoaded = snapshot.profileLoaded;
     }
-    const metadata = desktopAccountMetadata(this.lastLocale);
-    host.call('account/getProfile', { 'client': metadata }).then(result => {
-      if (this.active && version === this.readVersion) {
-        const next = result.ok ? desktopAccountSettingsProfile(result.value) : undefined;
-        if (next?.avatarUrl !== this.profile?.avatarUrl || this.avatarFailed) {
-          this.avatarImageEpoch++;
-          this.avatarReady = false;
-          this.avatarFailed = false;
-        }
-        this.profile = next;
-        this.profileLoaded = true;
-      }
-    }).catch((): void => {
-      if (this.active && version === this.readVersion) { this.profileLoaded = true; }
-    });
-    host.call('account/getBalance', { 'client': metadata }).then(result => {
-      if (this.active && version === this.readVersion) {
-        this.balances = result.ok ? desktopAccountSettingsBalances(result.value) : undefined;
-        this.balanceLoaded = true;
-      }
-    }).catch((): void => {
-      if (this.active && version === this.readVersion) { this.balanceLoaded = true; }
-    });
+    this.balances = snapshot.balances;
+    this.balanceLoaded = snapshot.balanceLoaded;
   }
 
   private async followLink(target: string, refreshBalance: boolean): Promise<void> {

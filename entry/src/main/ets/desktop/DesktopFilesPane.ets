@@ -1,8 +1,9 @@
 import { common } from '@kit.AbilityKit';
+import { taskpool } from '@kit.ArkTS';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { FilePreview, PreviewKind, previewKindOf, projectWorkspaceText } from 'appstate';
-import { getBoolean, getNumber, getString, parseJson } from 'connection';
+import { getArray, getBoolean, getField, getNumber, getRecord, getString, parseJson } from 'connection';
 import { isSystemPreviewableName, mimeTypeForName, openFileLocation, openSystemPreview, uriFromPath } from 'platform';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
@@ -17,6 +18,10 @@ import { DESKTOP_FILE_REVEAL_PENDING, DesktopFileNavigator, DesktopFileNavigator
   emptyDesktopFileNavigatorView } from './DesktopFileNavigator';
 import { DesktopFileSearchSettings } from './DesktopFileSearchSettings';
 import { desktopFileTypeIcon } from './DesktopFileType';
+import { DESKTOP_TABLE_MAX_BYTES, DESKTOP_TABLE_MAX_CELLS, DESKTOP_TABLE_TIMEOUT_MS,
+  DesktopDelimitedTable, desktopDelimitedFormat } from './DesktopDelimitedTable';
+import { parseDesktopDelimitedBytes } from './DesktopDelimitedWorker';
+import lazy { DesktopDelimitedPreview } from './DesktopDelimitedPreview';
 import { DesktopFileContextAction, DesktopFileContextItem, desktopFileContextCopyPath, desktopFileContextPathItems,
   desktopFileContextTransferItems } from './DesktopFileContextModel';
 import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
@@ -88,6 +93,8 @@ export struct DesktopFilesPane {
   @State private selected?: DesktopFileNavigatorRow = undefined;
   @State private preview?: FilePreview = undefined;
   @State private htmlFile?: DesktopHtmlFile = undefined;
+  @State private delimitedTable?: DesktopDelimitedTable = undefined;
+  @State private delimitedProblem: string = '';
   @State private sourceHtml: boolean = false;
   @State private previewUri: string = '';
   @State private previewPath: string = '';
@@ -118,6 +125,8 @@ export struct DesktopFilesPane {
   private draftChanged: boolean = false;
   private searchTriggerFocused: boolean = false;
   private previewRevision: number = 0;
+  private delimitedTask?: taskpool.Task;
+  private delimitedTimer: number = -1;
   private previewNeedsRefresh: boolean = false;
   private cancelPreviewWatch?: () => void;
 
@@ -364,6 +373,7 @@ export struct DesktopFilesPane {
   }
 
   private closePreview(): void {
+    this.stopDelimitedTask();
     if (this.fileMenu?.target.key === 'preview') { this.cancelFileMenu(); }
     this.cancelPreviewWatch?.();
     this.cancelPreviewWatch = undefined;
@@ -371,6 +381,8 @@ export struct DesktopFilesPane {
     this.selected = undefined;
     this.preview = undefined;
     this.htmlFile = undefined;
+    this.delimitedTable = undefined;
+    this.delimitedProblem = '';
     this.sourceHtml = false;
     this.previewUri = '';
     this.previewPath = '';
@@ -405,11 +417,20 @@ export struct DesktopFilesPane {
     if (host === undefined) {
       return;
     }
+    this.stopDelimitedTask();
     const revision = ++this.previewRevision;
     this.previewNeedsRefresh = false;
     const visualAsset = pdfName(row.name) || imageName(row.name);
     this.previewLoading = !visualAsset || !this.previewPath;
     this.previewError = '';
+    const format = desktopDelimitedFormat(row.name);
+    if (format) {
+      this.delimitedProblem = '';
+      this.delimitedTable = undefined;
+      this.preview = undefined;
+      await this.loadDelimited(host, row.path, format, revision);
+      return;
+    }
     if (desktopIsHtmlFile(row.name) && !this.sourceHtml) {
       this.preview = undefined;
       this.htmlFile = undefined;
@@ -443,6 +464,90 @@ export struct DesktopFilesPane {
         this.preview = undefined;
         this.previewError = desktopHostProblem(result);
       }
+    }
+  }
+
+  private stopDelimitedTask(): void {
+    clearTimeout(this.delimitedTimer);
+    this.delimitedTimer = -1;
+    const task = this.delimitedTask;
+    this.delimitedTask = undefined;
+    if (task !== undefined) {
+      try { taskpool.cancel(task); } catch (_) {}
+    }
+  }
+
+  private async loadDelimited(host: DesktopHostActions, path: string, format: string, revision: number): Promise<void> {
+    const response = await host.readWorkspaceBytes(this.sessionId, path, DESKTOP_TABLE_MAX_BYTES)
+      .catch((): undefined => undefined);
+    if (!this.active || revision !== this.previewRevision) { return; }
+    const metadata = getRecord(response?.value, 'metadata');
+    const bytes = getField(response?.value, 'data');
+    const length = getNumber(metadata, 'bytes');
+    if (response?.ok !== true || !(bytes instanceof ArrayBuffer) || getNumber(metadata, 'offset') !== 0 ||
+      getBoolean(metadata, 'eof') !== true || (length !== undefined && length !== bytes.byteLength)) {
+      const stat = response?.error?.code !== 'workspace-file/too-large' ?
+        await host.call('workspaceFiles/stat', this.args(path)).catch((): undefined => undefined) : undefined;
+      if (!this.active || revision !== this.previewRevision) { return; }
+      this.delimitedProblem = response?.error?.code === 'workspace-file/too-large' ||
+        (getNumber(stat?.value, 'bytes') ?? 0) > DESKTOP_TABLE_MAX_BYTES ? 'tooLarge' : 'invalid';
+      this.previewLoading = false;
+      return;
+    }
+    const task = new taskpool.Task(parseDesktopDelimitedBytes, bytes, format === 'CSV' ? ',' : '\t',
+      DESKTOP_TABLE_MAX_BYTES, DESKTOP_TABLE_MAX_CELLS);
+    this.delimitedTask = task;
+    this.delimitedTimer = setTimeout((): void => {
+      if (this.delimitedTask !== task) { return; }
+      this.stopDelimitedTask();
+      this.delimitedProblem = 'timeout';
+      this.previewLoading = false;
+    }, DESKTOP_TABLE_TIMEOUT_MS);
+    try {
+      const result = await taskpool.execute(task);
+      if (this.delimitedTask !== task || !this.active || revision !== this.previewRevision) { return; }
+      const table = this.deserializeTable(getRecord(result, 'table'));
+      this.delimitedTable = table;
+      this.delimitedProblem = table === undefined ? getString(result, 'problem') || 'invalid' : '';
+      this.previewAssetVersion++;
+    } catch (_) {
+      if (this.delimitedTask !== task || !this.active || revision !== this.previewRevision) { return; }
+      this.delimitedProblem = 'invalid';
+    } finally {
+      if (this.delimitedTask === task) {
+        this.delimitedTask = undefined;
+        clearTimeout(this.delimitedTimer);
+        this.delimitedTimer = -1;
+        this.previewLoading = false;
+      }
+    }
+  }
+
+  private deserializeTable(table: Object | undefined): DesktopDelimitedTable | undefined {
+    const rawRows = getArray(table, 'rows');
+    const columns = getNumber(table, 'columns') ?? 0;
+    if (rawRows === undefined || !Number.isSafeInteger(columns) || columns <= 0 || !rawRows.length ||
+      rawRows.length * columns > DESKTOP_TABLE_MAX_CELLS) { return undefined; }
+    const rows: string[][] = [];
+    for (const rawRow of rawRows) {
+      if (!Array.isArray(rawRow) || rawRow.length === 0 || rawRow.length > columns) { return undefined; }
+      const row: string[] = [];
+      for (let column = 0; column < rawRow.length; column++) {
+        const value: Object = rawRow[column];
+        if (typeof value !== 'string') { return undefined; }
+        row.push(value);
+      }
+      rows.push(row);
+    }
+    return { rows: rows, columns: columns };
+  }
+
+  private delimitedNotice(): ResourceStr {
+    switch (this.delimitedProblem) {
+      case 'tooLarge': return $r('app.string.desktop_table_too_large');
+      case 'timeout': return $r('app.string.desktop_table_timeout');
+      case 'encoding': return $r('app.string.desktop_table_encoding');
+      default: return $r('app.string.desktop_table_invalid');
     }
   }
 
@@ -911,9 +1016,32 @@ export struct DesktopFilesPane {
   @Builder
   private PreviewBody() {
     if (this.previewLoading) {
-      LoadingProgress().width(25).height(25).margin(15)
+      Row({ space: 8 }) {
+        LoadingProgress().width(25).height(25)
+        if (desktopDelimitedFormat(this.selected?.name ?? '')) {
+          Text($r('app.string.desktop_table_loading')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+        }
+      }.margin(15)
     } else if (this.previewError) {
       Text(this.previewError).fontSize(13).fontColor($r('sys.color.warning')).padding(12)
+    } else if (desktopDelimitedFormat(this.selected?.name ?? '')) {
+      if (this.delimitedTable !== undefined) {
+        Column() {
+          ForEach([this.previewAssetVersion], (_version: number): void => {
+            DesktopDelimitedPreview({ table: this.delimitedTable, format: desktopDelimitedFormat(this.selected?.name ?? ''),
+              focusScope: this.focusScope })
+          }, (version: number): string => String(version))
+        }.width('100%').layoutWeight(1)
+      } else {
+        Row({ space: 8 }) {
+          Text(this.delimitedNotice()).fontSize(13).fontColor($r('sys.color.warning')).layoutWeight(1)
+            .key('desktopDelimitedProblem')
+          Button($r('app.string.desktop_table_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopDelimitedRetry').onClick((): void => {
+              if (this.selected !== undefined) { this.loadPreview(this.selected); }
+            })
+        }.width('100%').padding(14)
+      }
     } else if (desktopIsHtmlFile(this.selected?.name ?? '') && !this.sourceHtml) {
       if (this.htmlFile === undefined) {
         Text($r('app.string.desktop_html_preview_failed')).key('desktopHtmlPreviewProblem')

@@ -1,0 +1,11 @@
+{
+  "string": [
+    { "name": "desktop_table_loading", "value": "Rendering document..." },
+    { "name": "desktop_table_invalid", "value": "This spreadsheet could not be opened. Check its format, contents, or password protection." },
+    { "name": "desktop_table_too_large", "value": "This workbook exceeds the preview size limit." },
+    { "name": "desktop_table_timeout", "value": "Opening this workbook timed out. Try a smaller file." },
+    { "name": "desktop_table_encoding", "value": "This text encoding could not be read. Save the file as UTF-8 or UTF-16 with a BOM and retry." },
+    { "name": "desktop_table_retry", "value": "Retry" },
+    { "name": "desktop_table_copy", "value": "Copy" }
+  ]
+}

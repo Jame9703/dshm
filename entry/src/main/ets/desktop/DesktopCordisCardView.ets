@@ -3,6 +3,7 @@ import { desktopCordisCardIcon, desktopCordisCardStatus, desktopCordisCardTitle,
   from './DesktopCordisCards';
 import type { DesktopCordisCard } from './DesktopCordisCards';
 import type { DesktopCordisPackage, DesktopCordisRuntime, DesktopCordisSnapshot } from './DesktopCordisRuntime';
+import type { DesktopCordisWebLocation } from './DesktopWorkspaceHandoff';
 
 @Component
 export struct DesktopCordisCardView {
@@ -13,7 +14,7 @@ export struct DesktopCordisCardView {
   @Prop codeFamily: string = 'monospace';
   @Prop inspectAvailable: boolean = true;
   onInspect: (call: string) => void = (_call: string): void => {};
-  onWeb: () => void = (): void => {};
+  onWeb: (location: DesktopCordisWebLocation) => void = (): void => {};
   @State private expanded: boolean = false;
   @State private clientSource: boolean = false;
   @State private wrap: boolean = true;
@@ -32,6 +33,15 @@ export struct DesktopCordisCardView {
   }
 
   aboutToDisappear(): void { this.unwatch?.(); }
+
+  private openWeb(): void {
+    const card = this.card;
+    if (card === undefined || !card.plugin) { return; }
+    const snapshot = this.snapshot;
+    const row = snapshot === undefined ? undefined : desktopCordisOwner(snapshot, this.sessionId, card.plugin);
+    this.onWeb({ pluginId: card.plugin, packageId: card.packageId,
+      requestId: row?.target === card.packageId ? row.approval : '' });
+  }
 
   private updateCard(): void {
     this.clientSource = !!this.card?.clientCode;
@@ -228,7 +238,7 @@ export struct DesktopCordisCardView {
       if (this.webRequired) {
         Button($r('app.string.desktop_cordis_open_web'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopCordisCardOpenWeb-' + this.card?.id).height(30).fontSize(12)
-          .onClick(this.onWeb)
+          .onClick((): void => { this.openWeb(); })
       }
     }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 8, right: 8 })
   }

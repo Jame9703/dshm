@@ -13,6 +13,12 @@ export interface DesktopPluginLocation {
   entryId?: string;
 }
 
+export interface DesktopCordisWebLocation {
+  pluginId: string;
+  packageId: string;
+  requestId: string;
+}
+
 export interface DesktopWebDestination {
   host: string;
   sessionId: string;
@@ -20,6 +26,7 @@ export interface DesktopWebDestination {
   action: string;
   bundle: string;
   plugin?: DesktopPluginLocation;
+  cordis?: DesktopCordisWebLocation;
   subagent?: DesktopHandoffSubagent;
 }
 
@@ -81,6 +88,13 @@ export function readDesktopWebDestination(value: string): DesktopWebDestination 
     bundle: getString(raw, 'bundle') ?? '' };
   const plugin = readPluginLocation(getRecord(raw, 'plugin'));
   if (plugin !== undefined) { destination.plugin = plugin; }
+  if (destination.action === 'cordis') {
+    const cordis = getRecord(raw, 'cordis');
+    const pluginId = getString(cordis, 'pluginId');
+    if (!pluginId || !destination.sessionId) { return undefined; }
+    destination.cordis = { pluginId: pluginId, packageId: getString(cordis, 'packageId') ?? '',
+      requestId: getString(cordis, 'requestId') ?? '' };
+  }
   if (getField(raw, 'subagent') !== undefined) {
     const child = readHandoffSubagent(getRecord(raw, 'subagent'), destination.sessionId);
     if (child === undefined) { return undefined; }
@@ -212,6 +226,47 @@ export function buildDesktopWorkspaceSessionScript(target: DesktopWebDestination
 
 export function buildDesktopPluginDetailScript(bundle: string): string {
   return buildDesktopPluginViewScript({ kind: 'package', name: bundle, rowId: '' });
+}
+
+/** Reveal the same stock Cordis row and version. Execution stays behind WebUI controls. */
+export function buildDesktopCordisPanelScript(location: DesktopCordisWebLocation, sessionId: string): string {
+  return `(function () {
+    var target = ${JSON.stringify(location)};
+    var session = ${JSON.stringify(sessionId)};
+    var selected;
+    try { selected = JSON.parse(localStorage.getItem('dsh.sessions.current')); } catch (_) {}
+    if (selected && selected.sessionId !== session) return false;
+    if (!selected && !document.querySelector('[data-row-key="' + CSS.escape('session:' + session) +
+      '"][aria-selected="true"]')) return false;
+    var visible = function (el) { return el && el.getClientRects().length > 0; };
+    var panel = document.querySelector('[data-cordis-panel]');
+    if (!visible(panel)) {
+      var trigger = document.querySelector('button[data-cordis-badge][aria-expanded="false"]');
+      if (visible(trigger) && !trigger.disabled) trigger.click();
+      return false;
+    }
+    var row = Array.from(panel.querySelectorAll('[data-cordis-row]')).find(function (el) {
+      return visible(el) && el.getAttribute('data-cordis-row') === target.pluginId;
+    });
+    if (!row) return false;
+    if (target.requestId) {
+      var approval = Array.from(row.querySelectorAll('[data-cordis-approve]')).find(function (el) {
+        return visible(el) && el.getAttribute('data-cordis-approve') === target.requestId;
+      });
+      if (!approval) return false;
+    }
+    var versions = row.querySelector('select');
+    if (target.packageId && versions && versions.value !== target.packageId) {
+      if (versions.disabled || !Array.from(versions.options).some(function (item) {
+        return item.value === target.packageId && !item.disabled;
+      })) return false;
+      versions.value = target.packageId;
+      versions.dispatchEvent(new Event('change', { bubbles: true }));
+      return false;
+    }
+    row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return true;
+  })()`;
 }
 
 export function buildDesktopPluginViewScript(location: DesktopPluginLocation): string {

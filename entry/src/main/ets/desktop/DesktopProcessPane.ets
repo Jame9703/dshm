@@ -3,7 +3,6 @@ import type { DiffLine } from 'appstate';
 import { getString, parseJson } from 'connection';
 import { DesktopProcessGroup, DesktopToolStep } from './DesktopToolLog';
 import { desktopFileName } from './DesktopArtifacts';
-import type { DesktopInteraction } from './DesktopInteractions';
 import { desktopTimelineStatus } from './DesktopTimelineModel';
 import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import type { DesktopTimelineReceipt, DesktopTimelineReceiptTask } from './DesktopTimelineReceipt';
@@ -25,15 +24,13 @@ export struct DesktopProcessPane {
   @Prop codeSize: number = 11;
   @Prop timelineDecimals: number = 2;
   @Prop codeFamily: string = 'monospace';
-  @Prop hiddenQuestions: DesktopInteraction[] = [];
   onToggle: () => void = (): void => {};
   onTimelineReceipt: (tree: string, task: string) => void = (): void => {};
   onInspect: (id: string) => void = (_id: string): void => {};
   onSkillToggle: (id: string) => void = (_id: string): void => {};
   onSkillInspect: (id: string) => void = (_id: string): void => {};
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
-  onQuestionResume: (id: string) => void = (_id: string): void => {};
-  onQuestionReview: (id: string) => boolean = (_id: string): boolean => false;
+  onOpenQuestion: (id: string) => boolean = (_id: string): boolean => false;
 
   private runningStep(): DesktopToolStep | undefined {
     return this.group?.steps.find((step: DesktopToolStep): boolean =>
@@ -71,14 +68,8 @@ export struct DesktopProcessPane {
     if (path) { this.onFile(path, desktopFileName(path)); }
   }
 
-  private questionId(callId: string): string {
-    return this.hiddenQuestions.find((row: DesktopInteraction): boolean => row.callId === callId)?.id ?? '';
-  }
-
   private inspect(id: string): void {
-    const question = this.questionId(id);
-    if (question) { this.onQuestionResume(question); }
-    else if (!this.onQuestionReview(id)) { this.onInspect(id); }
+    if (!this.onOpenQuestion(id)) { this.onInspect(id); }
   }
 
   private filePreviews(row: DesktopToolStep): DesktopProcessDiffPreview[] {

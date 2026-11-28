@@ -19,6 +19,7 @@
  */
 
 import type { DesktopAccountNotices } from '../desktop/DesktopAccountNotices';
+import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
@@ -364,6 +365,7 @@ export class IndexPageLifecycle {
 @Component
 export struct IndexContent {
   desktopAccountNotices?: DesktopAccountNotices;
+  desktopAccountDetails?: DesktopAccountDetailsAccess;
   desktopAccountHost?: DesktopHostActions;
   @Prop desktopCodingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   onDesktopCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -4568,6 +4570,7 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
     desktopShortcuts: this.desktopSettingsEntry,
     desktopSettingsCompact: this.desktopSettingsCompact,
     desktopAccountHost: this.desktopAccountHost, desktopAccountIdentity: this.desktopAccountIdentity,
+    desktopAccountDetails: this.desktopAccountDetails,
     desktopCodingTools: this.desktopCodingTools, onDesktopCodingToolsChange: this.onDesktopCodingToolsChange,
     onOpenDesktopShortcuts: (): void => { this.desktopShortcutOpen = true; },
     onStartPresetCreator: this.onStartPresetCreator === undefined ? undefined :
