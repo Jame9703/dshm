@@ -3629,7 +3629,7 @@ export class SessionHub {
    * 这与 `session/*` 那一族的 `request` 包裹**相反**——所以这里用 `argsFor` 的具名分支结果即可
    * （端点形态在兼容表里，`argsFor` 会按它处理）。
    */
-  async refreshAgentPresets(): Promise<void> {
+  async refreshAgentPresets(): Promise<AgentPresetRow[] | undefined> {
     if (!this.unaryReady) {
       this.presetNote = '尚未连接 Host，预设名单未读取。';
       this.notify();
@@ -3665,6 +3665,7 @@ export class SessionHub {
     this.presetNote = rows.length === 0 ? '宿主报告没有可用预设。' : '';
     this.record(`agentPresets/list ok ${rows.length} 项`);
     this.notify();
+    return rows;
   }
 
   /**
@@ -4506,6 +4507,7 @@ export interface AgentPresetRow {
   description: string;
   trust: string;
   isDefault: boolean;
+  broken?: string;
 }
 
 /** 是否随附（只读）预设 */
@@ -4537,7 +4539,8 @@ function presetsFromReply(value: Object): AgentPresetRow[] | undefined {
       name: getString(one, 'name') ?? '',
       description: getString(one, 'description') ?? '',
       trust: getString(one, 'trust') ?? '',
-      isDefault: getBoolean(one, 'isDefault') === true
+      isDefault: getBoolean(one, 'isDefault') === true,
+      broken: getString(one, 'broken')
     });
   }
   return out;

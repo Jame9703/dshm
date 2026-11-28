@@ -30,6 +30,7 @@ import { SettingsPane } from './SettingsPane';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
+import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 import { WorkspacePane } from './WorkspacePane';
 import { WorkspaceBrowser } from './WorkspaceBrowser';
 import type { WorkspaceBrowserFacade } from './WorkspaceBrowser';
@@ -56,6 +57,7 @@ export interface TabContentFacade {
   onDesktopCodingToolsChange: (enabled: boolean) => void;
   onOpenDesktopShortcuts: () => void;
   onStartPresetCreator?: () => void;
+  capturePresetDefaultSync?: () => DesktopPresetDefaultSync | undefined;
   /** 设置域的可用分区清单（注册表给；顺序即呈现顺序） */
   settingsSections: PanelDescriptor[];
   /** 切设置分区（宿主经注册表校验后写进 `settingsSection`） */
@@ -233,6 +235,7 @@ export struct TabContentView {
         codingTools: this.f.desktopCodingTools, onCodingToolsChange: this.f.onDesktopCodingToolsChange,
         onOpenShortcuts: this.f.onOpenDesktopShortcuts,
         onStartPresetCreator: this.f.onStartPresetCreator,
+        capturePresetDefaultSync: this.f.capturePresetDefaultSync,
         sections: this.f.settingsSections,
         onSelectSection: (sectionId: string) => {
           this.f.onSelectSettingsSection(sectionId);

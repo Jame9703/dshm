@@ -16,8 +16,13 @@ export interface TerminalPaintFrame {
   cursorColumn: number;
   cursorRow: number;
   cursorVisible: boolean;
+  cursorStyle: TerminalCursorStyle;
+  cursorBlink: boolean;
+  cursorColor: string;
   selection: TerminalSelectionBuffer;
 }
+
+export type TerminalCursorStyle = 'block' | 'underline' | 'bar';
 
 export interface TerminalSelectionMarker {
   readonly line: number;

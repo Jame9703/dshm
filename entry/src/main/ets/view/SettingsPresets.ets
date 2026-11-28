@@ -50,6 +50,8 @@ import { readDesktopPresetComposition } from '../desktop/DesktopPresetCompositio
 import { DesktopPresetViewer } from '../desktop/DesktopPresetViewer';
 import { DesktopPresetGuide, desktopPresetGuideCopy } from '../desktop/DesktopPresetGuide';
 import type { DesktopPresetGuideCopy } from '../desktop/DesktopPresetGuide';
+import { writeDesktopPresetDefault } from '../desktop/DesktopPresetDefaults';
+import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 
 interface DesktopPresetViewport {
   width: number;
@@ -68,6 +70,7 @@ export struct SettingsPresets {
   @Prop desktopViewer: boolean = false;
   compositionHost?: DesktopHostActions;
   startCreator?: () => void;
+  capturePresetDefaultSync?: () => DesktopPresetDefaultSync | undefined;
   /** 复制（官方唯一的创建入口；随附预设也能复制） */
   onCopy: (from: string, name: string) => void = () => {
   };
@@ -93,6 +96,8 @@ export struct SettingsPresets {
   /** 只读查看器当前展示的预设内容（E173） */
   @State viewedContent: string = '';
   @State private viewerProblem: string = '';
+  @State private savingDefault: boolean = false;
+  @State private defaultProblem: ResourceStr = '';
   private viewerActive: boolean = false;
   private viewerRequest: number = 0;
   private viewerOpening: boolean = false;
@@ -254,6 +259,25 @@ export struct SettingsPresets {
     return this.presets.filter((row: AgentPresetRow): boolean => this.desktopBuiltIn(row) === builtIn);
   }
 
+  private async makeDefault(row: AgentPresetRow): Promise<void> {
+    const host = this.compositionHost;
+    if (this.savingDefault || row.isDefault || row.broken !== undefined || host === undefined) { return; }
+    const sync = this.capturePresetDefaultSync?.();
+    this.savingDefault = true;
+    this.defaultProblem = '';
+    try {
+      const problem = await writeDesktopPresetDefault(host, row.id, async (): Promise<string | undefined> => {
+        const rows = await SessionHub.shared().refreshAgentPresets();
+        return rows?.find((preset: AgentPresetRow): boolean => preset.isDefault)?.id;
+      }, sync);
+      if (this.viewerActive) { this.defaultProblem = problem; }
+    } catch (_) {
+      if (this.viewerActive) { this.defaultProblem = $r('app.string.desktop_preset_default_save_failed'); }
+    } finally {
+      if (this.viewerActive) { this.savingDefault = false; }
+    }
+  }
+
   private guideActionId(id: string, usage: boolean): string {
     return (usage ? 'desktopPresetHowTo-' : 'desktopPresetExplanation-') + id;
   }
@@ -274,7 +298,7 @@ export struct SettingsPresets {
         Text(builtIn ? $r('app.string.desktop_preset_group_built_in') : $r('app.string.desktop_preset_group_custom'))
           .fontSize(14).fontWeight(FontWeight.Medium).width('100%')
         ForEach(this.desktopPresetRows(builtIn), (row: AgentPresetRow): void => { this.presetCard(row); },
-          (row: AgentPresetRow): string => row.id)
+          (row: AgentPresetRow): string => row.id + '|' + row.isDefault + '|' + (row.broken ?? ''))
         if (!builtIn && this.hasCreator()) {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Row({ space: 6 }) {
@@ -285,6 +309,7 @@ export struct SettingsPresets {
             }
           }.key('desktopPresetCreateInCreator').width('100%').height(44).borderRadius(16)
             .border({ width: 1, style: BorderStyle.Dashed, color: $r('app.color.workspace_border') })
+            .enabled(!this.savingDefault)
             .onClick((): void => { this.startCreator?.(); })
         }
       }.width('100%').alignItems(HorizontalAlign.Start)
@@ -295,6 +320,10 @@ export struct SettingsPresets {
     Column({ space: Sp.M }) {
       if (this.viewerProblem.length > 0) {
         Text(this.viewerProblem).key('desktopPresetViewerError').fontSize(12).width('100%')
+          .fontColor($r('app.color.workspace_status_error'))
+      }
+      if (this.defaultProblem !== '') {
+        Text(this.defaultProblem).key('desktopPresetDefaultError').fontSize(12).width('100%')
           .fontColor($r('app.color.workspace_status_error'))
       }
       if (this.note.length > 0) {
@@ -337,10 +366,12 @@ export struct SettingsPresets {
           this.agentGroup(group)
         }, (group: SettingGroup) => group.title)
       }
-      Text('预设**在会话创建时固定**（官方原话），所以这里设置的是**此后新建会话**用的默认值；已存在的会话不受影响。')
-        .fontSize(Fs.CAPTION)
-        .fontColor($r('sys.color.font_tertiary'))
-        .width('100%')
+      if (!this.desktopViewer) {
+        Text('预设**在会话创建时固定**（官方原话），所以这里设置的是**此后新建会话**用的默认值；已存在的会话不受影响。')
+          .fontSize(Fs.CAPTION)
+          .fontColor($r('sys.color.font_tertiary'))
+          .width('100%')
+      }
     }
     .width('100%')
   }
@@ -349,34 +380,22 @@ export struct SettingsPresets {
   @Builder
   presetCard(p: AgentPresetRow) {
     Column({ space: 2 }) {
-      Row({ space: Sp.S }) {
-        Text(this.desktopViewer ? desktopAgentPresetName(p.id, p.name || undefined) : p.name || p.id)
-          .fontSize(Fs.BODY)
-          .fontWeight(FontWeight.Medium)
-          .layoutWeight(1)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (p.isDefault) {
-          Text('默认')
-            .fontSize(Fs.CAPTION)
-            .fontColor($r('sys.color.brand'))
-        }
-        Text(this.desktopViewer ? (this.desktopBuiltIn(p) ? $r('app.string.desktop_preset_group_built_in') :
-          $r('app.string.desktop_preset_group_custom')) : (presetIsBundled(p) ? '随附' : '自定义'))
-          .fontSize(Fs.CAPTION)
-          .fontColor($r('sys.color.font_tertiary'))
+      if (this.desktopViewer) {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          this.PresetCardDetails(p)
+        }.key('desktopPresetMakeDefault-' + p.id).width('100%').height(LayoutPolicy.wrapContent)
+          .padding({ left: 2, right: 2, top: 6, bottom: 6 }).borderRadius(12)
+          .backgroundColor(Color.Transparent)
+          .enabled(!this.savingDefault || p.broken !== undefined)
+          .accessibilitySelected(p.isDefault)
+          .accessibilityDescription(p.broken ?? '')
+          .accessibilityText(p.broken !== undefined ? $r('app.string.desktop_preset_default_broken_action', this.presetLabel(p)) :
+            p.isDefault ? $r('app.string.desktop_preset_default_in_use_action', this.presetLabel(p)) :
+            $r('app.string.desktop_preset_default_action', this.presetLabel(p)))
+          .onClick((): void => { this.makeDefault(p); })
+      } else {
+        this.PresetCardDetails(p)
       }
-      .width('100%')
-      if (p.description.length > 0) {
-        Text(p.description)
-          .fontSize(Fs.CAPTION)
-          .fontColor($r('sys.color.font_secondary'))
-          .width('100%')
-      }
-      Text(p.id)
-        .fontSize(Fs.CAPTION)
-        .fontColor($r('sys.color.font_tertiary'))
-        .width('100%')
       Row({ space: Sp.M }) {
         if (!this.desktopViewer) {
           Text('复制')
@@ -446,8 +465,43 @@ export struct SettingsPresets {
     }
     .width('100%')
     .padding(Sp.M)
-    .borderRadius(Radius.M)
-    .backgroundColor($r('sys.color.background_secondary'))
+    .borderRadius(this.desktopViewer ? 20 : Radius.M)
+    .border(this.desktopViewer ? { width: 0.5, color: p.broken !== undefined ? $r('app.color.workspace_status_error') :
+      p.isDefault ? $r('sys.color.brand') : $r('app.color.workspace_border') } : { width: 0 })
+    .backgroundColor(this.desktopViewer && p.isDefault ? $r('app.color.workspace_selection') :
+      $r('sys.color.background_secondary'))
+  }
+
+  @Builder
+  private PresetCardDetails(p: AgentPresetRow) {
+    Column({ space: 2 }) {
+      Row({ space: Sp.S }) {
+        Text(this.desktopViewer ? desktopAgentPresetName(p.id, p.name || undefined) : p.name || p.id)
+          .fontSize(Fs.BODY).fontWeight(FontWeight.Medium).layoutWeight(1)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.desktopViewer && p.broken !== undefined) {
+          Text($r('app.string.desktop_preset_default_broken')).fontSize(Fs.CAPTION)
+            .fontColor($r('app.color.workspace_status_error'))
+        }
+        if (p.isDefault) {
+          Text(this.desktopViewer ? $r('app.string.desktop_preset_default_in_use') : '默认')
+            .fontSize(Fs.CAPTION).fontColor($r('sys.color.brand'))
+        }
+        if (!this.desktopViewer || !p.isDefault) {
+          Text(this.desktopViewer ? (this.desktopBuiltIn(p) ? $r('app.string.desktop_preset_group_built_in') :
+            $r('app.string.desktop_preset_group_custom')) : (presetIsBundled(p) ? '随附' : '自定义'))
+            .fontSize(Fs.CAPTION).fontColor($r('sys.color.font_tertiary'))
+        }
+      }.width('100%')
+      if (p.description.length > 0) {
+        Text(p.description).fontSize(Fs.CAPTION).fontColor($r('sys.color.font_secondary')).width('100%')
+      }
+      Text(p.id).fontSize(Fs.CAPTION).fontColor($r('sys.color.font_tertiary')).width('100%')
+      if (this.desktopViewer && p.broken) {
+        Text(p.broken).key('desktopPresetBrokenReason-' + p.id)
+          .fontSize(Fs.CAPTION).fontColor($r('app.color.workspace_status_error')).width('100%')
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
   /** 一个 `agent-*` 分区（组标题 + 组内设置项） */

@@ -26,6 +26,7 @@ import { DESKTOP_HTML_PACKAGE_BYTES, desktopIsHtmlFile, readDesktopHtmlFile } fr
 import type { DesktopHtmlFile } from './DesktopHtmlFile';
 import type { DesktopDocumentViewState } from './DesktopDocumentZoomModel';
 import { copyDesktopReferenceImage, openDesktopReferenceFile, saveDesktopReferenceFile } from './DesktopReferenceActions';
+import { DesktopReferenceSource } from './DesktopReferenceActions';
 
 export interface DesktopFileNavigation {
   path: string;
@@ -687,6 +688,9 @@ export struct DesktopFilesPane {
   private async runFileAction(menu: WorkspaceFileMenu, action: DesktopFileContextAction): Promise<void> {
     if (!this.active || !this.shown || menu.session !== this.sessionId) { return; }
     const ability = this.ability;
+    const host = this.host;
+    const source: DesktopReferenceSource | undefined = host === undefined || !menu.authorized ? undefined :
+      { host: host, sessionId: menu.session, path: menu.target.path, absolutePath: menu.authorized };
     const toast = this.getUIContext().getPromptAction();
     try {
       switch (action) {
@@ -715,13 +719,13 @@ export struct DesktopFilesPane {
           }
           break;
         case DesktopFileContextAction.COPY_IMAGE:
-          if (menu.authorized) {
-            await copyDesktopReferenceImage(menu.authorized);
+          if (source !== undefined) {
+            await copyDesktopReferenceImage(source);
             toast.showToast({ message: $r('app.string.desktop_file_context_copied') });
           }
           break;
         case DesktopFileContextAction.DOWNLOAD:
-          if (ability !== undefined && menu.authorized && await saveDesktopReferenceFile(ability, menu.authorized, menu.target.name)) {
+          if (ability !== undefined && source !== undefined && await saveDesktopReferenceFile(ability, source, menu.target.name)) {
             toast.showToast({ message: $r('app.string.desktop_file_context_downloaded') });
           }
           break;
@@ -746,7 +750,7 @@ export struct DesktopFilesPane {
 
   private fileTransferItems(): DesktopFileContextItem[] {
     const menu = this.fileMenu;
-    const native = !!menu?.authorized && this.ability !== undefined;
+    const native = !!menu?.authorized && this.ability !== undefined && this.host !== undefined;
     return desktopFileContextTransferItems(mimeTypeForName(menu?.target.name ?? '').startsWith('image/'), native, native);
   }
 

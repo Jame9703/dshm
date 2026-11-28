@@ -44,6 +44,7 @@ import { DesktopCloudSyncSettings } from '../desktop/DesktopCloudSyncSettings';
 import { DesktopAccountSettings } from '../desktop/DesktopAccountSettings';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
+import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 
 /** 设置面板（E108/E110/E114/E120） */
 @Component
@@ -143,6 +144,7 @@ export struct SettingsPane {
   private desktopNavScroller: Scroller = new Scroller();
   onOpenShortcuts: () => void = () => {};
   onStartPresetCreator?: () => void;
+  capturePresetDefaultSync?: () => DesktopPresetDefaultSync | undefined;
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
   @Prop sections: PanelDescriptor[] = [];
   /** 选一个分区（宿主经注册表校验后写进 `settingsSection`） */
@@ -196,6 +198,7 @@ export struct SettingsPane {
             SettingsPresets({
               desktopViewer: this.desktopShortcuts, compositionHost: this.desktopAccountHost,
               startCreator: this.onStartPresetCreator,
+              capturePresetDefaultSync: this.capturePresetDefaultSync,
               presets: this.desktopShortcuts ? this.presets.filter((row: AgentPresetRow): boolean =>
                 desktopPresetVisible(row.id, row.name || undefined, this.codingTools.enabled)) : this.presets,
               note: this.presetNote,

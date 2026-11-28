@@ -89,6 +89,8 @@ export const SESSION_FOLLOW_ENDPOINT: string = 'session/follow';
 export const SESSION_CONTROL_ENDPOINT: string = 'session/control';
 /** 设置描述（无参数） */
 export const SETTINGS_DESCRIBE_ENDPOINT: string = 'settings/describe';
+/** 合并顶层字段。Agent 预设默认值占用独立的顶层标量。 */
+export const SETTINGS_UPDATE_ENDPOINT: string = 'settings/update';
 
 /**
  * 设置写入（有序路径操作）。
@@ -187,6 +189,7 @@ export const AGENT_PRESETS_COPY_ENDPOINT: string = 'agentPresets/copy';
 export const AGENT_PRESETS_DELETE_ENDPOINT: string = 'agentPresets/deletePreset';
 /** 读取一个预设的内容（只读查看器用） */
 export const AGENT_PRESETS_READ_ENDPOINT: string = 'agentPresets/read';
+export const AGENT_PRESETS_SELECT_ENDPOINT: string = 'agentPresets/select';
 
 /*
  * ── 模型提供方（E178：官方 Models 页的数据源）─────────────────────────────

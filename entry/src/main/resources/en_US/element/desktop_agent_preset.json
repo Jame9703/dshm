@@ -18,6 +18,13 @@
     {"name":"desktop_preset_section_intro","value":"Choose the agent’s tools and how it works. Use Standard mode for everyday tasks, or Creator mode to add capabilities to DSH."},
     {"name":"desktop_preset_group_built_in","value":"Built-in"},
     {"name":"desktop_preset_group_custom","value":"Custom"},
-    {"name":"desktop_preset_create","value":"Let the agent help me create a preset"}
+    {"name":"desktop_preset_create","value":"Let the agent help me create a preset"},
+    {"name":"desktop_preset_default_action","value":"Set as new task default: %1$s"},
+    {"name":"desktop_preset_default_in_use","value":"New task default"},
+    {"name":"desktop_preset_default_in_use_action","value":"New task default: %1$s"},
+    {"name":"desktop_preset_default_broken","value":"Failed to load"},
+    {"name":"desktop_preset_default_broken_action","value":"Failed to load: %1$s"},
+    {"name":"desktop_preset_default_save_failed","value":"Could not save the default preset for new tasks."},
+    {"name":"desktop_preset_default_sync_failed","value":"The default was saved, but could not be applied to the current blank session."}
   ]
 }

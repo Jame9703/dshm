@@ -7,6 +7,7 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalShellPicker, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
+import { desktopTerminalCursorColors } from './DesktopTerminalCursor';
 import { desktopTerminalKeySequence, DesktopTerminalKey } from './DesktopTerminalKeys';
 import { DesktopTerminalSelection } from './DesktopTerminalSelection';
 import { DesktopTerminalShellPreference } from './DesktopTerminalShells';
@@ -14,12 +15,14 @@ import type { DesktopTerminalSelectionSpan } from './DesktopTerminalSelection';
 import type { DesktopTerminalReplacement, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
   DesktopTerminalState } from './DesktopTerminalClient';
 import type { DesktopTerminalLaunchRequest } from './DesktopTerminalShells';
-import type { TerminalCellPaint, TerminalMouseInput, TerminalMouseTracking, TerminalPaintFrame } from './terminal/TerminalEmulator';
+import type { TerminalCellPaint, TerminalCursorStyle, TerminalMouseInput, TerminalMouseTracking,
+  TerminalPaintFrame } from './terminal/TerminalEmulator';
 
 const INSET: number = 10;
 const INPUT_ID: string = 'desktopNativeTerminalInput';
 const MULTI_CLICK_MS: number = 400;
 const SCROLL_INTERVAL_MS: number = 70;
+const CURSOR_BLINK_HALF_MS: number = 500;
 const NO_BUTTON: number = -1;
 const MOUSE_LEFT: number = 0;
 const MOUSE_MIDDLE: number = 1;
@@ -44,6 +47,18 @@ interface TerminalPointer {
   ctrl: boolean;
   alt: boolean;
   shift: boolean;
+}
+
+interface TerminalCursorPaint {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  style: TerminalCursorStyle | 'outline';
+  blink: boolean;
+  fill: string;
+  accent: string;
+  cell?: TerminalCellPaint;
 }
 
 @Component
@@ -93,6 +108,12 @@ export struct DesktopTerminalPane {
   private lastClickColumn: number = -1;
   private clickCount: number = 0;
   private canvas: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
+  private readonly cursorCanvas: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
+  private cursorSurfaceReady: boolean = false;
+  private cursorPaint?: TerminalCursorPaint;
+  private paintedCursor?: TerminalCursorPaint;
+  private cursorBlinkTimer: number = -1;
+  private cursorBlinkVisible: boolean = true;
   private client?: DesktopTerminalClient;
   private frame?: TerminalPaintFrame;
   private active: boolean = false;
@@ -138,6 +159,7 @@ export struct DesktopTerminalPane {
     this.inputFocusChanged(false);
     clearTimeout(this.focusTimer);
     this.active = false;
+    this.setCursorPaint(undefined);
     this.clearSelection();
     this.dismissCloseDialog();
     this.client?.dispose();
@@ -197,6 +219,7 @@ export struct DesktopTerminalPane {
       this.clearSelection();
       this.inputFocusChanged(false);
       clearTimeout(this.focusTimer);
+      this.setCursorPaint(undefined);
     }
     if (this.shown && this.client === undefined) { this.reloadSession(); }
     else { this.client?.setShown(this.shown); }
@@ -772,6 +795,7 @@ export struct DesktopTerminalPane {
     const frame = this.frame;
     canvas.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
     if (frame === undefined) {
+      this.setCursorPaint(undefined);
       return;
     }
     const systemDark = this.getUIContext().getHostContext()?.resourceManager.getConfigurationSync().colorMode ===
@@ -838,15 +862,90 @@ export struct DesktopTerminalPane {
         }
       }
     }
-    if (frame.cursorVisible && this.state?.writable) {
-      canvas.fillStyle = ink;
-      const x = INSET + frame.cursorColumn * this.charWidth;
-      const y = INSET + frame.cursorRow * lineHeight;
-      if (this.inputFocused) {
-        canvas.fillRect(x, y + 2, 1.5, lineHeight - 4);
-      } else {
-        canvas.strokeStyle = ink;
-        canvas.strokeRect(x, y + 2, this.charWidth, lineHeight - 4);
+    this.updateCursorPaint(frame, ranges, ink, paper, highlight, lineHeight);
+  }
+
+  private updateCursorPaint(frame: TerminalPaintFrame, ranges: DesktopTerminalSelectionSpan[],
+    ink: string, paper: string, highlight: string, lineHeight: number): void {
+    if (!this.active || !this.shown || !frame.cursorVisible || this.state?.outcome !== undefined ||
+      frame.cursorRow < 0 || frame.cursorRow >= frame.rows.length) {
+      this.setCursorPaint(undefined);
+      return;
+    }
+    const cell = frame.rows[frame.cursorRow].find((item: TerminalCellPaint): boolean =>
+      frame.cursorColumn >= item.column && frame.cursorColumn < item.column + item.cells);
+    const column = cell?.column ?? frame.cursorColumn;
+    const selected = ranges.some((range: DesktopTerminalSelectionSpan): boolean =>
+      range.row === frame.cursorRow && frame.cursorColumn >= range.start && frame.cursorColumn < range.end);
+    const background = selected ? highlight : cell?.background === 'foreground' ? ink : (cell?.background || paper);
+    const colors = desktopTerminalCursorColors(background, frame.cursorColor || ink);
+    const focused = this.inputFocused && this.state?.writable === true;
+    this.setCursorPaint({
+      x: INSET + column * this.charWidth, y: INSET + frame.cursorRow * lineHeight,
+      width: (cell?.cells ?? 1) * this.charWidth, height: lineHeight,
+      style: focused ? frame.cursorStyle : 'outline', blink: focused && frame.cursorBlink,
+      fill: colors.fill, accent: colors.accent, cell: cell
+    });
+  }
+
+  private setCursorPaint(paint: TerminalCursorPaint | undefined): void {
+    const previous = this.cursorPaint;
+    this.cursorPaint = paint;
+    if (paint === undefined || !paint.blink || previous?.x !== paint.x || previous?.y !== paint.y ||
+      previous?.style !== paint.style || previous?.blink !== paint.blink) {
+      this.resetCursorBlink();
+    }
+    this.paintCursor();
+    this.scheduleCursorBlink();
+  }
+
+  private resetCursorBlink(): void {
+    if (this.cursorBlinkTimer !== -1) { clearTimeout(this.cursorBlinkTimer); }
+    this.cursorBlinkTimer = -1;
+    this.cursorBlinkVisible = true;
+  }
+
+  private scheduleCursorBlink(): void {
+    if (!this.cursorSurfaceReady || !this.active || !this.shown || this.cursorPaint?.blink !== true ||
+      this.cursorBlinkTimer !== -1) { return; }
+    this.cursorBlinkTimer = setTimeout((): void => {
+      this.cursorBlinkTimer = -1;
+      this.cursorBlinkVisible = !this.cursorBlinkVisible;
+      this.paintCursor();
+      this.scheduleCursorBlink();
+    }, CURSOR_BLINK_HALF_MS);
+  }
+
+  private paintCursor(): void {
+    if (!this.cursorSurfaceReady) { return; }
+    const canvas = this.cursorCanvas;
+    const previous = this.paintedCursor;
+    if (previous !== undefined) {
+      canvas.clearRect(previous.x - 1, previous.y - 1, previous.width + 2, previous.height + 2);
+    }
+    this.paintedCursor = undefined;
+    const paint = this.cursorPaint;
+    if (paint === undefined || !this.cursorBlinkVisible) { return; }
+    this.paintedCursor = paint;
+    canvas.fillStyle = paint.fill;
+    if (paint.style === 'bar') {
+      canvas.fillRect(paint.x, paint.y, 1, paint.height);
+    } else if (paint.style === 'underline') {
+      canvas.fillRect(paint.x, paint.y + paint.height - 1, paint.width, 1);
+    } else if (paint.style === 'outline') {
+      canvas.strokeStyle = paint.fill;
+      canvas.strokeRect(paint.x + 0.5, paint.y + 0.5, paint.width - 1, paint.height - 1);
+    } else {
+      canvas.fillRect(paint.x, paint.y, paint.width, paint.height);
+      const cell = paint.cell;
+      if (cell !== undefined) {
+        canvas.fillStyle = paint.accent;
+        canvas.textBaseline = 'top';
+        canvas.font = this.fontFor(cell, this.fontSpec());
+        if (cell.text) { canvas.fillText(cell.text, paint.x, paint.y + 2); }
+        if (cell.underline || cell.strike) {
+          canvas.fillRect(paint.x, paint.y + (cell.underline ? paint.height - 3 : paint.height / 2), paint.width, 1);
+        }
       }
     }
   }
@@ -904,6 +1003,19 @@ export struct DesktopTerminalPane {
               this.openSelectionMenu(point.localX, point.localY);
             }
           }))
+      // Cursor blink repaints the caret only, without invalidating the terminal grid.
+      Canvas(this.cursorCanvas).width('100%').height('100%')
+        .accessibilityLevel('no').hitTestBehavior(HitTestMode.None)
+        .onReady((): void => {
+          this.cursorSurfaceReady = true;
+          this.paintCursor();
+          this.scheduleCursorBlink();
+        })
+        .onDisAppear((): void => {
+          this.cursorSurfaceReady = false;
+          this.paintedCursor = undefined;
+          this.resetCursorBlink();
+        })
       TextInput({ text: this.input })
         .key(INPUT_ID)
         .id(this.inputFocusId)

@@ -5,8 +5,8 @@ import { projectSessionCreate, projectSessionList, projectSessionPrompt, PromptM
   sessionListEndpoint, sessionListPayload, textPart } from 'appstate';
 import type { SessionListItem } from 'appstate';
 import { Connection, ConnectionState, getArray, getBoolean, getRecord, getString, randomUuid, toStringArray } from 'connection';
-import type { EventSink, HostFacts, StreamSink } from 'connection';
-import { argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_PLUGIN_MANAGER_CHANGED, EVENT_SESSION_STATUS,
+import type { EventSink, HostFacts, RpcResult, StreamSink } from 'connection';
+import { AGENT_PRESETS_SELECT_ENDPOINT, argsFor, EVENT_COMMANDS_CHANGE, EVENT_CREDENTIALS_REFERENCE_UPDATED, EVENT_GOAL_ACTIVATION_CHANGED, EVENT_LLM_ADAPTERS_UPDATED, EVENT_PLUGIN_MANAGER_CHANGED, EVENT_SESSION_STATUS,
   EVENT_SETTINGS_DOCUMENT_UPDATED,
   PROJECTION_AGENT_PRESET, SESSION_CREATE_ENDPOINT, SESSION_FORK_ENDPOINT, SESSION_PROMPT_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT,
   WORKSPACE_FOLLOW_ENDPOINT } from 'dshcompat';
@@ -495,6 +495,12 @@ export class DesktopWorkspaceData {
 
   async createSession(workspaceId: string, preset: string = ''): Promise<DesktopSessionCreation> {
     return this.createInWorkspace(workspaceId, this.reusableBlank(workspaceId, preset), preset);
+  }
+
+  async selectBlankSessionPreset(sessionId: string, preset: string): Promise<RpcResult> {
+    const result = await this.actions.call(AGENT_PRESETS_SELECT_ENDPOINT, { 'agentId': sessionId, 'agentPreset': preset });
+    if (this.active && result.ok && result.value === preset) { await this.refreshSessions(); }
+    return result;
   }
 
   private canRestoreBlank(workspaceId: string, sessionId: string): boolean {

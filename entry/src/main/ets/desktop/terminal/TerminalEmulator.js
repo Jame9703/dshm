@@ -40,7 +40,7 @@ function colors(cell) {
 
 class TerminalEmulator {
   constructor(Terminal, cols, rows, scrollback, onReply, onMouseReport) {
-    this.terminal = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
+    this.terminal = new Terminal({ cols, rows, scrollback, cursorBlink: true, allowProposedApi: true });
     // Headless xterm uses the same mouse service as the browser but exposes no DOM event adapter.
     this.mouseService = this.terminal._core.coreMouseService;
     this.reportingMouse = undefined;
@@ -63,13 +63,18 @@ class TerminalEmulator {
     this.terminal.buffer.onBufferChange(() => {
       this.selectionEpoch = ++selectionEpoch;
     });
-    this.cursorVisible = true;
-    for (const final of ['h', 'l']) {
-      this.terminal.parser.registerCsiHandler({ prefix: '?', final }, params => {
-        if (params.includes(25)) this.cursorVisible = final === 'h';
-        return false;
-      });
-    }
+    this.cursorColor = '';
+    this.terminal._core._inputHandler.onColor(changes => {
+      for (const change of changes) {
+        if (change.index !== 258) continue;
+        if (change.type === 1) {
+          const [red, green, blue] = change.color;
+          this.cursorColor = rgb(red * 0x10000 + green * 0x100 + blue);
+        } else if (change.type === 2) {
+          this.cursorColor = '';
+        }
+      }
+    });
   }
 
   write(data, done) {
@@ -174,6 +179,7 @@ class TerminalEmulator {
 
   frame() {
     const terminal = this.terminal;
+    const cursor = terminal._core.coreService;
     const buffer = terminal.buffer.active;
     const cell = buffer.getNullCell();
     const rows = [];
@@ -199,7 +205,10 @@ class TerminalEmulator {
       rows,
       cursorColumn: Math.min(terminal.cols - 1, buffer.cursorX),
       cursorRow: buffer.baseY - buffer.viewportY + buffer.cursorY,
-      cursorVisible: this.cursorVisible && buffer.viewportY === buffer.baseY,
+      cursorVisible: !cursor.isCursorHidden && buffer.viewportY === buffer.baseY,
+      cursorStyle: cursor.decPrivateModes.cursorStyle ?? terminal.options.cursorStyle,
+      cursorBlink: cursor.decPrivateModes.cursorBlink ?? terminal.options.cursorBlink,
+      cursorColor: this.cursorColor,
       selection: this.selectionBuffer(buffer),
     };
   }

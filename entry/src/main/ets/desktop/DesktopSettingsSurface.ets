@@ -1,6 +1,7 @@
 import type { DesktopAccountNotices } from './DesktopAccountNotices';
 import type { DesktopCodingToolsSnapshot } from './DesktopCodingTools';
 import type { DesktopHostActions } from './DesktopHostActions';
+import type { DesktopPresetDefaultSync } from './DesktopPresetDefaults';
 import lazy { IndexContent } from '../pages/IndexContent';
 
 export interface DesktopSettingsSize {
@@ -25,6 +26,7 @@ export interface DesktopSettingsSurfaceParams {
   changeCodingTools: (enabled: boolean) => void;
   close: () => void;
   startCreator: () => void;
+  capturePresetDefaultSync: () => DesktopPresetDefaultSync | undefined;
   selectSection: (section: string) => void;
   openPlugins: () => void;
 }
@@ -35,6 +37,7 @@ export function buildDesktopSettingsSurface(params: DesktopSettingsSurfaceParams
     IndexContent({ desktopSection: params.section, desktopSettingsCompact: params.compact,
       desktopAccountNotices: params.accountNotices, desktopAccountHost: params.host, desktopCodingTools: params.codingTools,
       onDesktopCodingToolsChange: params.changeCodingTools, onCloseSettings: params.close, onStartPresetCreator: params.startCreator,
+      capturePresetDefaultSync: params.capturePresetDefaultSync,
       onSettingsSection: params.selectSection, onOpenPlugins: params.openPlugins })
   }
 }

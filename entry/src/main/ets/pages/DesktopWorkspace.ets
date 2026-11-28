@@ -5,6 +5,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture } from '../desktop/DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
+import { desktopDockTabRevealDelta } from '../desktop/DesktopDockTabScroll';
 import { getArray, getRecord, getString, parseTarget, randomUuid } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer } from '../desktop/DesktopInteractions';
@@ -45,6 +46,7 @@ import { emptyDesktopOnboardingView } from '../desktop/DesktopAccountOnboardingS
 import type { DesktopOnboardingView } from '../desktop/DesktopAccountOnboardingState';
 import { emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
+import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 import { DesktopAccountNoticeCard } from '../desktop/DesktopAccountNoticeCard';
 import type { DesktopAccountNotice } from '../desktop/DesktopAccountNotices';
 import { desktopAccountPlatformLink, desktopAccountSettingsProfile,
@@ -90,6 +92,7 @@ import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDo
 import type { DesktopDockChatTarget, DesktopDockFloat, DesktopDockLayout, DesktopDockPane, DesktopDockRect, DesktopDockTab } from '../desktop/DesktopRightDock';
 import { readDesktopDock, readDesktopDockTerminalIds, saveDesktopDock } from '../desktop/DesktopRightDockPreference';
 import { copyDesktopReferenceImage, DesktopReferenceAction, openDesktopReferenceFile, saveDesktopReferenceFile } from '../desktop/DesktopReferenceActions';
+import { DesktopReferenceSource } from '../desktop/DesktopReferenceActions';
 import type { DesktopFileReferenceOffer } from '../desktop/DesktopReferenceActions';
 import { desktopReferenceText } from '../desktop/DesktopReferences';
 import { DesktopAttachmentViewer, desktopDraftGif } from '../desktop/DesktopAttachments';
@@ -261,6 +264,10 @@ struct DesktopWorkspace {
   private dockDrop?: DesktopDockDrop;
   private dockPanActive: boolean = false;
   private readonly dockTabBounds = new Map<string, Area>();
+  private readonly dockTabScrollers: Scroller[] = [new Scroller(), new Scroller()];
+  private readonly dockTabViewports = new Map<number, Area>();
+  private readonly dockTabRevealPending = new Set<number>();
+  private dockTabRevealPosted: boolean = false;
   private browserTabCount: number = 0;
   private readonly dockPaneBounds = new Map<number, Area>();
   private dockSessionId: string = '';
@@ -2132,6 +2139,7 @@ struct DesktopWorkspace {
 
   private setDock(layout: DesktopDockLayout): void {
     if (!this.sessionId || layout === this.rightDock) { return; }
+    const previous = this.rightDock;
     this.dockMiddlePress = undefined;
     const edit = this.terminalRename;
     if (edit !== undefined && this.findTerminalRenameTab(layout, edit) === undefined) { this.terminalRename = undefined; }
@@ -2144,9 +2152,61 @@ struct DesktopWorkspace {
       this.retainFileNavigators(layout);
     }
     this.rightDock = layout;
+    if (layout.expanded) {
+      layout.panes.forEach((pane: DesktopDockPane, index: number): void => {
+        const oldPane = previous.panes[index];
+        if (!previous.expanded || oldPane?.id !== pane.id || oldPane.active !== pane.active ||
+          oldPane.tabs.findIndex((tab: DesktopDockTab): boolean => tab.id === pane.active) !==
+            pane.tabs.findIndex((tab: DesktopDockTab): boolean => tab.id === pane.active)) {
+          this.requestDockTabReveal(index);
+        }
+      });
+    } else {
+      this.dockTabRevealPending.clear();
+    }
     this.docks.set(this.sessionId, layout);
     this.data?.terminalRetentions.setTabs(this.sessionId, desktopDockTerminalIds(layout));
     saveDesktopDock(this.getUIContext().getHostContext(), this.sessionId, layout);
+  }
+
+  private observeDockTabArea(index: number, id: string, area: Area): void {
+    const previous = this.dockTabBounds.get(id);
+    this.dockTabBounds.set(id, area);
+    if (this.rightDock.panes[index]?.active === id &&
+      (this.dockTabRevealPending.has(index) || previous?.width !== area.width)) {
+      this.requestDockTabReveal(index);
+    }
+  }
+
+  private observeDockTabViewport(index: number, previous: Area, area: Area): void {
+    this.dockTabViewports.set(index, area);
+    if (previous.width !== area.width || this.dockTabRevealPending.has(index)) {
+      this.requestDockTabReveal(index);
+    }
+  }
+
+  private requestDockTabReveal(index: number): void {
+    this.dockTabRevealPending.add(index);
+    if (this.dockTabRevealPosted) { return; }
+    this.dockTabRevealPosted = true;
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      this.dockTabRevealPosted = false;
+      if (!this.pageActive || !this.rightDock.expanded || this.panel !== 'session') {
+        this.dockTabRevealPending.clear();
+        return;
+      }
+      this.dockTabRevealPending.forEach((paneIndex: number): void => {
+        const active = this.rightDock.panes[paneIndex]?.active;
+        if (!active) { this.dockTabRevealPending.delete(paneIndex); return; }
+        const tab = this.dockTabBounds.get(active);
+        const viewport = this.dockTabViewports.get(paneIndex);
+        if (tab === undefined || viewport === undefined || Number(viewport.width) <= 0) { return; }
+        this.dockTabRevealPending.delete(paneIndex);
+        const delta = desktopDockTabRevealDelta(Number(viewport.globalPosition.x), Number(viewport.width),
+          Number(tab.globalPosition.x), Number(tab.width));
+        if (Math.abs(delta) > 0.5) { this.dockTabScrollers[paneIndex]?.scrollBy(delta, 0); }
+      });
+    }));
   }
 
   private dockShows(kind: DesktopDockKind): boolean {
@@ -2237,6 +2297,8 @@ struct DesktopWorkspace {
     this.clearSessionDrag();
     this.endDockDrag(false);
     this.dockTabBounds.clear();
+    this.dockTabViewports.clear();
+    this.dockTabRevealPending.clear();
     this.dockGripHover = 0;
     this.finishDockResize(false);
     this.finishFloatResize(false);
@@ -2460,6 +2522,7 @@ struct DesktopWorkspace {
       toast.showToast({ message: '无法访问此文件' });
       return;
     }
+    const source: DesktopReferenceSource = { host: host, sessionId: sessionId, path: path, absolutePath: absolute };
     try {
       switch (action) {
         case DesktopReferenceAction.ADD_TO_CHAT:
@@ -2474,12 +2537,12 @@ struct DesktopWorkspace {
           toast.showToast({ message: await copyText(absolute) ? '已复制' : '无法复制路径' });
           break;
         case DesktopReferenceAction.COPY_IMAGE:
-          await copyDesktopReferenceImage(absolute);
+          await copyDesktopReferenceImage(source);
           toast.showToast({ message: '已复制' });
           break;
         case DesktopReferenceAction.DOWNLOAD:
           if (ability === undefined) { throw new Error('Missing context'); }
-          if (await saveDesktopReferenceFile(ability, absolute, name)) {
+          if (await saveDesktopReferenceFile(ability, source, name)) {
             toast.showToast({ message: '已下载' });
           }
           break;
@@ -2633,8 +2696,28 @@ struct DesktopWorkspace {
       codingTools: this.codingTools, changeCodingTools: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
       close: (): void => { this.closeSettings(); },
       startCreator: (): void => { this.startPresetCreator(); },
+      capturePresetDefaultSync: (): DesktopPresetDefaultSync | undefined => this.capturePresetDefaultSync(),
       selectSection: (section: string): void => { this.settingsSection = section; },
       openPlugins: (): void => { this.settingsOpeningPlugins = true; } };
+  }
+
+  private capturePresetDefaultSync(): DesktopPresetDefaultSync | undefined {
+    const owner = this.data;
+    const session = this.sessionId;
+    if (owner === undefined || !session || this.selectedSubagent !== undefined ||
+      !this.sessionSummaries.some((row: SessionListItem): boolean => row.id === session && row.blank)) {
+      return undefined;
+    }
+    const version = this.nativeSelectionVersion;
+    return async (id: string): Promise<string> => {
+      if (!this.pageActive || this.data !== owner || this.nativeSelectionVersion !== version || this.sessionId !== session ||
+        this.selectedSubagent !== undefined || this.busySessions.includes(session) ||
+        (this.chat?.sessionId === session && this.chat.running) ||
+        !this.sessionSummaries.some((row: SessionListItem): boolean => row.id === session && row.blank)) { return ''; }
+      const result = await owner.selectBlankSessionPreset(session, id);
+      return result.ok && result.value === id ? '' : result.error?.message ||
+        this.accessibilityLabel($r('app.string.desktop_preset_default_sync_failed'));
+    };
   }
 
   private refreshSettingsSurface(): void {
@@ -4949,7 +5032,7 @@ struct DesktopWorkspace {
     }.height(30).borderRadius(7)
       .border({ width: { left: 2 }, color: this.dockDropCue === tab.id ? $r('sys.color.ohos_id_color_activated') : Color.Transparent })
       .backgroundColor(this.rightDock.panes[index]?.active === tab.id ? $r('app.color.workspace_selection') : Color.Transparent)
-      .onAreaChange((_, area: Area): void => { this.dockTabBounds.set(tab.id, area); })
+      .onAreaChange((_, area: Area): void => { this.observeDockTabArea(index, tab.id, area); })
   }
 
   @Builder
@@ -4993,13 +5076,15 @@ struct DesktopWorkspace {
   private DockPane(index: number) {
     Column() {
       Row({ space: 4 }) {
-        Scroll() {
+        Scroll(this.dockTabScrollers[index]) {
           Row({ space: 4 }) {
             ForEach(this.rightDock.panes[index]?.tabs ?? [], (tab: DesktopDockTab): void => {
               this.DockTab(index, tab)
             }, (tab: DesktopDockTab): string => this.sessionId + ':' + tab.id + ':' + tab.title)
           }
-        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
+        }.key('desktopDockTabStrip-' + index).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+          .align(Alignment.Start)
+          .onAreaChange((previous: Area, area: Area): void => { this.observeDockTabViewport(index, previous, area); })
           .enableScrollInteraction(!this.dockDragTitle).layoutWeight(1)
         Button('＋', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopDockAdd-' + index)
           .height(30).width(28).padding(0).accessibilityText('新建标签页')
