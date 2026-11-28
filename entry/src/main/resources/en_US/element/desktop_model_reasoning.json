@@ -1,0 +1,64 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_reasoning_title",
+      "value": "Reasoning levels"
+    },
+    {
+      "name": "desktop_model_reasoning_level",
+      "value": "Level"
+    },
+    {
+      "name": "desktop_model_reasoning_wire",
+      "value": "API value"
+    },
+    {
+      "name": "desktop_model_reasoning_help",
+      "value": "About reasoning levels"
+    },
+    {
+      "name": "desktop_model_reasoning_help_text",
+      "value": "The API value is sent in the request's reasoning-effort field, such as OpenAI's reasoning_effort. It defaults to the level name; where the model provider's API documentation specifies a different value, follow it. Off turns reasoning off and needs no value; a value already written in the configuration is kept and sent."
+    },
+    {
+      "name": "desktop_model_reasoning_needs_level",
+      "value": "Add at least one level besides Off, or turn reasoning levels off."
+    },
+    {
+      "name": "desktop_model_reasoning_needs_value",
+      "value": "Every level besides Off needs an API value, and no value can be empty."
+    },
+    {
+      "name": "desktop_model_reasoning_levels_only",
+      "value": "This API protocol accepts only the minimal, low, medium, and high levels, each with its level name as the API value. Change or remove the other levels."
+    },
+    {
+      "name": "desktop_model_reasoning_add",
+      "value": "Add level"
+    },
+    {
+      "name": "desktop_model_reasoning_off",
+      "value": "Turns reasoning off"
+    },
+    {
+      "name": "desktop_model_reasoning_title_at",
+      "value": "Reasoning levels %1$s"
+    },
+    {
+      "name": "desktop_model_reasoning_level_at",
+      "value": "Level %1$s"
+    },
+    {
+      "name": "desktop_model_reasoning_wire_for",
+      "value": "%1$s API value"
+    },
+    {
+      "name": "desktop_model_reasoning_remove",
+      "value": "Delete level %1$s"
+    },
+    {
+      "name": "desktop_model_reasoning_row_error",
+      "value": "Model %1$s · %2$s"
+    }
+  ]
+}

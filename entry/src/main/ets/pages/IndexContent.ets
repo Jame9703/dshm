@@ -21,10 +21,12 @@
 import type { DesktopAccountNotices } from '../desktop/DesktopAccountNotices';
 import type { DesktopAccountDetailsAccess } from '../desktop/DesktopAccountDetails';
 import type { DesktopGeneralHostAccess } from '../desktop/DesktopGeneralHostPreferences';
+import { desktopPiAiAdoptedKeys, desktopPiAiModelInsertionIndex } from '../desktop/DesktopPiAiModelOrder';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
+import { desktopPiAiReasoningLabel } from '../desktop/DesktopPiAiReasoning';
 import { emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 
@@ -170,6 +172,8 @@ import {
   checkApiKeyDraft,
   checkBaseURL,
   checkModels,
+  checkPiAiModelReasoning,
+  piAiReasoningProtocol,
   checkProtocol,
   checkRoute,
   deriveKeyRef,
@@ -663,7 +667,8 @@ export struct IndexContent {
   @State piAiMode: string = '';
   /** 正在编辑的表单草稿（真值在此；浮层只渲染） */
   @State piAiDraft: PiAiProviderView = emptyProviderView('');
-  @State private piAiModelRowsVersion: number = 0;
+  @State private piAiModelKeys: number[] = [];
+  private piAiNextModelKey: number = 0;
   /** 进入编辑时的**原始值**：用来算"哪些字段真的变了"，避免无脑全量写回 */
   private piAiOriginal: PiAiProviderView | undefined = undefined;
   /** 密钥草稿（只写不读：每次打开都为空；空 = 保留 Host 上那把） */
@@ -695,6 +700,7 @@ export struct IndexContent {
   @State piAiProviders: PiAiProviderView[] = [];
   /** pi-ai 可声明的 API 协议（空=Host 没报告） */
   @State piAiProtocols: string[] = [];
+  @State private piAiReasoningLevels: string[] = [];
   /** 诊断是否在跑（驱动「重新检测」按钮的忙碌态） */
   @State diagRunning: boolean = false;
   @State diag: DiagReport = {
@@ -962,6 +968,7 @@ export struct IndexContent {
     this.settings = mergeSettingsGroups(this.hostSettings, this.localSettings);
     this.piAiProviders = s.piAiProviders;
     this.piAiProtocols = s.piAiProtocols;
+    this.piAiReasoningLevels = s.piAiReasoningLevels;
     this.commands = s.commands;
     this.planActive = s.planActive;
     this.planPending = s.planPending;
@@ -2433,8 +2440,9 @@ export struct IndexContent {
       PiAiProviderSheet({
         mode: this.piAiMode,
         draft: this.piAiDraft,
-        modelRowsVersion: this.piAiModelRowsVersion,
+        modelKeys: this.piAiModelKeys,
         protocols: this.piAiProtocols,
+        reasoningLevels: this.piAiReasoningLevels,
         baseURLPlaceholder: baseURLPlaceholder(this.piAiDraft.api),
         keyDraft: this.piAiKeyDraft,
         keyRef: this.piAiKeyRef,
@@ -2477,18 +2485,23 @@ export struct IndexContent {
         },
         onAddModel: () => {
           this.piAiDraft.models = [...this.piAiDraft.models, emptyModelRow()];
+          this.piAiModelKeys = [...this.piAiModelKeys, ++this.piAiNextModelKey];
         },
         onAdoptModels: (models: PiAiModelRow[]): void => {
+          this.piAiModelKeys = desktopPiAiAdoptedKeys(this.piAiDraft.models, this.piAiModelKeys, models,
+            (): number => ++this.piAiNextModelKey);
           this.piAiDraft.models = models;
-          this.piAiModelRowsVersion++;
           this.clearPiAiFieldError();
         },
         onRemoveModel: (index: number) => {
           // 守卫：官方要求 ≥1 个模型，删空会让表单永远不可提交
           if (this.piAiDraft.models.length > 1 && index >= 0 && index < this.piAiDraft.models.length) {
-            this.piAiDraft.models.splice(index, 1);
-            this.piAiModelRowsVersion++;
+            this.piAiDraft.models = this.piAiDraft.models.filter((_model: PiAiModelRow, at: number): boolean => at !== index);
+            this.piAiModelKeys = this.piAiModelKeys.filter((_key: number, at: number): boolean => at !== index);
           }
+        },
+        onMoveModel: (source: number, target: number, after: boolean): void => {
+          this.reorderPiAiModel(source, target, after);
         },
         onSubmit: () => {
           this.submitPiAiSheet();
@@ -3128,15 +3141,24 @@ export struct IndexContent {
     return apiKeyEnv.length > 0 ? apiKeyEnv : deriveKeyRef(route);
   }
 
-  /**
-   * 打开 pi-ai 浮层。
-   *
-   * @param mode `PiAiSheetMode.EDIT`（编辑已有路由）/ `PiAiSheetMode.CREATE`（新建）
-   * @param route 编辑时的路由 id；新建时忽略
-   *
-   * 【编辑模式为什么要把原值留一份】提交时用 `changedScalarFields` 比对，
-   * 只写真正变了的字段——既省往返，也避免把界面上的旧值覆盖回去（若别处同时改过）。
-   */
+  private reorderPiAiModel(source: number, target: number, after: boolean): void {
+    if (this.piAiBusy || this.piAiMode === '') { return; }
+    const from = this.piAiModelKeys.indexOf(source);
+    const to = desktopPiAiModelInsertionIndex(this.piAiModelKeys, source, target, after);
+    if (from < 0 || to < 0 || this.piAiModelKeys.length !== this.piAiDraft.models.length) { return; }
+    const models = this.piAiDraft.models.slice();
+    const keys = this.piAiModelKeys.slice();
+    const model = models[from];
+    models.splice(from, 1);
+    keys.splice(from, 1);
+    models.splice(to, 0, model);
+    keys.splice(to, 0, source);
+    this.piAiDraft.models = models;
+    this.piAiModelKeys = keys;
+    this.clearPiAiFieldError();
+  }
+
+  /** Keep the original provider so saving can submit only the fields edited in the draft. */
   private openPiAiSheet(mode: string, route: string): void {
     const hub: SessionHub = SessionHub.shared();
     this.sheetNoteOwner = 'piai';
@@ -3173,6 +3195,7 @@ export struct IndexContent {
       this.piAiOriginal = undefined;
       this.piAiKeyRef = '';
     }
+    this.piAiModelKeys = this.piAiDraft.models.map((_row: PiAiModelRow): number => ++this.piAiNextModelKey);
     // 密钥状态：界面要显示 Host 的**实际**状态，而不是"我们以为写过"
     this.piAiKeyConfigured = this.credentialConfiguredOf(this.piAiKeyRef);
   }
@@ -3244,6 +3267,17 @@ export struct IndexContent {
     const modelCheck: PiAiFieldCheck = checkModels(this.piAiDraft.models);
     if (!modelCheck.ok) {
       this.piAiFieldError = modelCheck.message;
+      return;
+    }
+    const reasoning = piAiReasoningProtocol(this.piAiDraft.api, hub.snapshot().piAiReasoningLevels);
+    for (let index = 0; index < this.piAiDraft.models.length; index++) {
+      const problem = checkPiAiModelReasoning(this.piAiDraft.models[index], reasoning);
+      if (problem === '') { continue; }
+      const label = desktopPiAiReasoningLabel(problem);
+      const resources = this.getUIContext().getHostContext()?.resourceManager;
+      const message = typeof label === 'string' ? label : resources?.getStringSync(label) ?? '';
+      this.piAiFieldError = resources?.getStringSync($r('app.string.desktop_model_reasoning_row_error',
+        (index + 1).toString(), message)) ?? message;
       return;
     }
     // ⑤ 密钥草稿（空 = 保留原密钥，不是失败）

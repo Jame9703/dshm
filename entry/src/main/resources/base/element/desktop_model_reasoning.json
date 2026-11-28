@@ -1,0 +1,64 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_reasoning_title",
+      "value": "推理等级"
+    },
+    {
+      "name": "desktop_model_reasoning_level",
+      "value": "档位"
+    },
+    {
+      "name": "desktop_model_reasoning_wire",
+      "value": "API 参数值"
+    },
+    {
+      "name": "desktop_model_reasoning_help",
+      "value": "推理等级说明"
+    },
+    {
+      "name": "desktop_model_reasoning_help_text",
+      "value": "API 参数值会写入请求的推理强度字段（如 OpenAI 的 reasoning_effort），默认与档位名相同；如有不同，以模型提供商的 API 文档为准。Off 表示关闭思考，不需要填写参数值；配置中已写入的值会保留并发送。"
+    },
+    {
+      "name": "desktop_model_reasoning_needs_level",
+      "value": "至少添加一个 Off 以外的档位；不需要思考请关闭推理等级。"
+    },
+    {
+      "name": "desktop_model_reasoning_needs_value",
+      "value": "Off 以外的档位都需要填写 API 参数值，且参数值不能为空字符串。"
+    },
+    {
+      "name": "desktop_model_reasoning_levels_only",
+      "value": "此 API 协议仅接受 minimal、low、medium 和 high 档位，且每个档位的 API 参数值须与档位名称相同。请修改或删除其他档位。"
+    },
+    {
+      "name": "desktop_model_reasoning_add",
+      "value": "添加档位"
+    },
+    {
+      "name": "desktop_model_reasoning_off",
+      "value": "关闭思考"
+    },
+    {
+      "name": "desktop_model_reasoning_title_at",
+      "value": "推理等级 %1$s"
+    },
+    {
+      "name": "desktop_model_reasoning_level_at",
+      "value": "档位 %1$s"
+    },
+    {
+      "name": "desktop_model_reasoning_wire_for",
+      "value": "%1$s API 参数值"
+    },
+    {
+      "name": "desktop_model_reasoning_remove",
+      "value": "删除档位 %1$s"
+    },
+    {
+      "name": "desktop_model_reasoning_row_error",
+      "value": "模型 %1$s · %2$s"
+    }
+  ]
+}

@@ -43,6 +43,14 @@
     {
       "name": "desktop_model_option_name",
       "value": "Display name"
+    },
+    {
+      "name": "desktop_model_option_reorder",
+      "value": "Reorder model %1$s"
+    },
+    {
+      "name": "desktop_model_option_reorder_help",
+      "value": "Drag to reorder the model."
     }
   ]
 }

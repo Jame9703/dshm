@@ -27,15 +27,18 @@
  * （校验结论由宿主演算后随 `fieldError` 传入）。
  */
 
-import { Fs, invalidPiAiCapacity, Radius, Sp, Sz } from 'appstate';
+import { checkPiAiModelReasoning, emptyModelRow, Fs, invalidPiAiCapacity, piAiReasoningProtocol, Radius, Sp, Sz } from 'appstate';
+import { image } from '@kit.ImageKit';
 import { HarmonySpacing } from 'appstate';
 import { protocolLabel } from 'appstate';
-import type { PiAiModelRow, PiAiProviderView } from 'appstate';
+import type { PiAiModelRow, PiAiProviderView, PiAiReasoningProtocol } from 'appstate';
 import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
 import { DesktopPiAiModelDiscovery } from '../desktop/DesktopPiAiModelDiscovery';
 import { PiAiModelSettingsRow } from './PiAiModelSettingsRow';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import type { DesktopNewRetryPolicy } from '../desktop/DesktopRetryPolicyModel';
+import { desktopPiAiModelDrop, desktopPiAiModelInsertionIndex } from '../desktop/DesktopPiAiModelOrder';
+import type { DesktopPiAiModelBand, DesktopPiAiModelInsertion } from '../desktop/DesktopPiAiModelOrder';
 
 /** 表单模式：编辑已有路由 / 新建路由 */
 export enum PiAiSheetMode {
@@ -50,9 +53,10 @@ export struct PiAiProviderSheet {
   @Prop mode: string = PiAiSheetMode.CREATE;
   /** 正在编辑的表单值（真值在宿主） */
   @Prop draft: PiAiProviderView;
-  @Prop modelRowsVersion: number = 0;
+  @Prop modelKeys: number[] = [];
   /** 可声明的 API 协议（来自 Host schema；空 ⇒ 禁用选择并如实说明） */
   @Prop protocols: string[];
+  @Prop reasoningLevels: string[] = [];
   /** 端点占位（随协议变化；宿主算好传入） */
   @Prop baseURLPlaceholder: string = '';
   /** 密钥草稿（只写不读：打开时恒为空） */
@@ -90,6 +94,7 @@ export struct PiAiProviderSheet {
   onAdoptModels: (models: PiAiModelRow[]) => void = (_models: PiAiModelRow[]): void => {};
   onRemoveModel: (index: number) => void = () => {
   };
+  onMoveModel: (source: number, target: number, after: boolean) => void = (): void => {};
   onSubmit: () => void = () => {
   };
   onDelete: () => void = () => {
@@ -97,10 +102,44 @@ export struct PiAiProviderSheet {
   onClose: () => void = () => {
   };
   @State private discovering: boolean = false;
+  @State private heldModel: number = -1;
+  @State private draggedModel: number = -1;
+  @State private insertion?: DesktopPiAiModelInsertion = undefined;
+  @State private dragPicture?: image.PixelMap = undefined;
+  @State private dragLeft: number = 0;
+  @State private dragTop: number = 0;
+  private dragWidth: number = 0;
+  private dragHeight: number = 0;
+  private dragOffsetX: number = 0;
+  private dragOffsetY: number = 0;
+  private dragWindowX: number = 0;
+  private dragWindowY: number = 0;
+  private dragVersion: number = 0;
+  private sheetArea?: Area;
+  private formArea?: Area;
+  private readonly formScroller = new Scroller();
+  private readonly modelBands = new Map<number, DesktopPiAiModelBand>();
+
+  aboutToDisappear(): void {
+    this.cancelModelDrag();
+  }
 
   build() {
     Column() {
-      Scroll() {
+      Stack({ alignContent: Alignment.TopStart }) {
+        this.Form()
+        if (this.dragPicture !== undefined) {
+          Image(this.dragPicture).width(this.dragWidth).height(this.dragHeight).objectFit(ImageFit.Fill)
+            .position({ x: this.dragLeft, y: this.dragTop }).zIndex(2).draggable(false)
+            .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+        }
+      }.width('100%').onAreaChange((_before: Area, area: Area): void => { this.sheetArea = area; })
+    }.width('100%').padding(HarmonySpacing.CONTAINER)
+  }
+
+  @Builder
+  private Form() {
+      Scroll(this.formScroller) {
         Column({ space: Sp.S }) {
           Text(this.isCreate() ? '添加自定义模型 API' : `编辑提供方「${this.draft.route}」`)
             .fontSize(Fs.BODY)
@@ -146,7 +185,7 @@ export struct PiAiProviderSheet {
             Button(this.isCreate() ? '添加' : '保存')
               .key('desktopPiAiProviderSubmit')
               .layoutWeight(1)
-              .enabled(!this.busy && !this.discovering && this.retryValid && this.capacitiesValid())
+              .enabled(!this.busy && !this.discovering && this.retryValid && this.capacitiesValid() && this.reasoningValid())
               .onClick(() => {
                 this.onSubmit();
               })
@@ -176,9 +215,132 @@ export struct PiAiProviderSheet {
       }
       .width('100%')
       .constraintSize({ maxHeight: '78%' })   // token-exempt: 浮层最大高度
+      .enableScrollInteraction(this.heldModel < 0 && this.draggedModel < 0)
+      .onAreaChange((_before: Area, area: Area): void => { this.formArea = area; })
+  }
+
+  private modelIndex(key: number): number { return this.modelKeys.indexOf(key); }
+
+  private modelFor(key: number): PiAiModelRow { return this.draft.models[this.modelIndex(key)] ?? emptyModelRow(); }
+
+  private modelHandle(key: number): string { return 'desktopPiAiModelReorder-' + key; }
+
+  private modelBody(key: number): string { return 'desktopPiAiModelReorderBody-' + key; }
+
+  private rememberModelBand(key: number, area: Area): void {
+    this.modelBands.set(key, { key: key, left: Number(area.globalPosition.x), top: Number(area.globalPosition.y),
+      width: Number(area.width), height: Number(area.height) });
+  }
+
+  private modelDragPoint(event: GestureEvent): FingerInfo | undefined {
+    return event.fingerInfos?.[0] ?? event.fingerList[0];
+  }
+
+  private holdModel(key: number, pressed: boolean): void {
+    if (pressed && !this.busy && this.modelKeys.length > 1) { this.heldModel = key; }
+    else if (!pressed && this.heldModel === key) { this.heldModel = -1; }
+  }
+
+  private beginModelDrag(key: number, event: GestureEvent, handle: Area): void {
+    if (this.busy || this.draggedModel >= 0 || this.modelKeys.length < 2) { return; }
+    const band = this.modelBands.get(key);
+    const point = this.modelDragPoint(event);
+    if (band === undefined || point === undefined) { return; }
+    this.dragWidth = band.width;
+    this.dragHeight = band.height;
+    const x = Number(handle.globalPosition.x) + point.localX;
+    const y = Number(handle.globalPosition.y) + point.localY;
+    // Gesture coordinates use the app window even when the sheet opens in a subwindow.
+    this.dragWindowX = point.globalX - x;
+    this.dragWindowY = point.globalY - y;
+    this.dragOffsetX = x - event.offsetX - band.left;
+    this.dragOffsetY = y - event.offsetY - band.top;
+    const revision = ++this.dragVersion;
+    this.getUIContext().getComponentSnapshot().get(this.modelBody(key)).then((preview: image.PixelMap): void => {
+      if (revision === this.dragVersion && this.draggedModel === key) { this.dragPicture = preview; }
+      else { preview.release().catch((): void => {}); }
+    }).catch((): void => {});
+    this.draggedModel = key;
+    this.updateModelDrag(event);
+  }
+
+  private updateModelDrag(event: GestureEvent, canScroll: boolean = true): void {
+    const frame = this.formArea;
+    const root = this.sheetArea;
+    const point = this.modelDragPoint(event);
+    if (this.draggedModel < 0 || point === undefined || frame === undefined || root === undefined) { return; }
+    const pointerX = point.globalX - this.dragWindowX;
+    const pointerY = point.globalY - this.dragWindowY;
+    this.dragLeft = pointerX - Number(root.globalPosition.x) - this.dragOffsetX;
+    this.dragTop = pointerY - Number(root.globalPosition.y) - this.dragOffsetY;
+    const x = pointerX - Number(frame.globalPosition.x);
+    const y = pointerY - Number(frame.globalPosition.y);
+    const inside = x >= 0 && x < Number(frame.width) && y >= 0 && y < Number(frame.height);
+    if (!inside) { this.insertion = undefined; return; }
+    if (canScroll) {
+      const height = Number(frame.height);
+      if (y < 26) { this.formScroller.scrollBy(0, (y - 26) * 0.45); }
+      else if (y > height - 26) { this.formScroller.scrollBy(0, (y - height + 26) * 0.45); }
     }
-    .width('100%')
-    .padding(HarmonySpacing.CONTAINER)
+    const visible: DesktopPiAiModelBand[] = [];
+    for (const key of this.modelKeys) {
+      const band = this.modelBands.get(key);
+      if (band !== undefined) { visible.push(band); }
+    }
+    this.insertion = desktopPiAiModelDrop(visible, pointerX, pointerY, this.draggedModel);
+  }
+
+  private endModelDrag(event: GestureEvent): void {
+    this.updateModelDrag(event, false);
+    const from = this.draggedModel;
+    const target = this.insertion;
+    this.cancelModelDrag();
+    if (!this.busy && target !== undefined &&
+      desktopPiAiModelInsertionIndex(this.modelKeys, from, target.key, target.after) >= 0) {
+      this.onMoveModel(from, target.key, target.after);
+    }
+  }
+
+  private cancelModelDrag(): void {
+    this.dragVersion++;
+    this.draggedModel = -1;
+    this.heldModel = -1;
+    this.insertion = undefined;
+    const preview = this.dragPicture;
+    this.dragPicture = undefined;
+    preview?.release().catch((): void => {});
+  }
+
+  @Builder
+  private InsertionLine() {
+    Row({ space: 0 }) {
+      Image($r('app.media.dsh_model_drop_wedge')).width(6).height(8).supportSvg2(true).draggable(false)
+      Column().height(2).layoutWeight(1).backgroundColor('#4084DB')
+    }.width('100%').height(8).hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
+  }
+
+  @Builder
+  private ModelRow(key: number) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column() {
+        PiAiModelSettingsRow({ initialModel: this.modelFor(key), rowIndex: this.modelIndex(key),
+          reorderHandleId: this.modelHandle(key), defaultInput: this.draft.defaultInput, reasoning: this.reasoningProtocol(),
+          removable: this.modelKeys.length > 1, editingEnabled: !this.busy,
+          onChange: (value: PiAiModelRow): void => { this.onModelChange(this.modelIndex(key), value); },
+          onRemove: (): void => { this.onRemoveModel(this.modelIndex(key)); },
+          onOrderHold: (pressed: boolean): void => { this.holdModel(key, pressed); },
+          onOrderBegin: (event: GestureEvent, handle: Area): void => { this.beginModelDrag(key, event, handle); },
+          onOrderUpdate: (event: GestureEvent): void => { this.updateModelDrag(event); },
+          onOrderEnd: (event: GestureEvent): void => { this.endModelDrag(event); },
+          onOrderCancel: (): void => { this.cancelModelDrag(); } })
+      }.width('100%').id(this.modelBody(key)).opacity(this.draggedModel === key ? 0.5 : 1)
+      if (this.insertion?.key === key) {
+        Column() { this.InsertionLine() }.width('100%').height(8)
+          .align(this.insertion?.after ? Alignment.BottomStart : Alignment.TopStart)
+          .position({ x: 0, y: this.insertion?.after ? (this.modelBands.get(key)?.height ?? 0) : -8 })
+          .zIndex(1).hitTestBehavior(HitTestMode.None)
+      }
+    }.width('100%').onAreaChange((_before: Area, area: Area): void => { this.rememberModelBand(key, area); })
   }
 
   /** 是否新建模式（`mode` 以 string 传入，集中一处判定） */
@@ -189,6 +351,13 @@ export struct PiAiProviderSheet {
   private capacitiesValid(): boolean {
     return this.draft.models.every((row: PiAiModelRow): boolean =>
       !invalidPiAiCapacity(row.contextWindow) && !invalidPiAiCapacity(row.maxTokens));
+  }
+
+  private reasoningProtocol(): PiAiReasoningProtocol { return piAiReasoningProtocol(this.draft.api, this.reasoningLevels); }
+
+  private reasoningValid(): boolean {
+    const protocol = this.reasoningProtocol();
+    return this.draft.models.every((row: PiAiModelRow): boolean => checkPiAiModelReasoning(row, protocol) === '');
   }
 
   /** Provider ID / 显示名 */
@@ -308,12 +477,9 @@ export struct PiAiProviderSheet {
       .fontSize(Fs.CAPTION)
       .fontColor($r('sys.color.font_tertiary'))
       .width('100%')
-    ForEach(this.draft.models, (row: PiAiModelRow, index: number) => {
-      PiAiModelSettingsRow({ initialModel: row, rowIndex: index, defaultInput: this.draft.defaultInput,
-        removable: this.draft.models.length > 1, editingEnabled: !this.busy,
-        onChange: (value: PiAiModelRow): void => { this.onModelChange(index, value); },
-        onRemove: (): void => { this.onRemoveModel(index); } })
-    }, (_row: PiAiModelRow, index: number): string => this.modelRowsVersion + ':' + index)
+    Column({ space: 12 }) {
+      ForEach(this.modelKeys, (key: number): void => { this.ModelRow(key); }, (key: number): string => String(key))
+    }.width('100%')
     Button('加一个模型')
       .width('100%')
       .backgroundColor($r('sys.color.background_secondary'))

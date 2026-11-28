@@ -141,6 +141,7 @@ import {
 import {
   PIAI_SETTINGS_NS,
   piAiProtocolChoices,
+  piAiReasoningLevelChoices,
   projectPiAiProviders
 } from '../model/PiAiProviders';
 import type { PiAiProviderView } from '../model/PiAiProviders';
@@ -379,6 +380,7 @@ export interface HubSnapshot {
   piAiProviders: PiAiProviderView[];
   /** pi-ai 可声明的 API 协议（来自该命名空间 schema 的 `api` union；空=没读到，界面禁用选择） */
   piAiProtocols: string[];
+  piAiReasoningLevels: string[];
   /**
    * 每个设置命名空间的**写状态**（`revision` 是并发令牌）。
    *
@@ -565,6 +567,7 @@ export class SessionHub {
   private piAiViews: PiAiProviderView[] = [];
   /** pi-ai 可声明协议（同上命名空间 schema 的 `api` union） */
   private piAiProtocolList: string[] = [];
+  private piAiReasoningLevelList: string[] = [];
   /** `settings/describe` 的顶层 `writable`（Host 是否整体接受写） */
   private describeWritable: boolean = false;
   /** 从 `settings/describe` 取到的凭据引用（`credentials/describe` 的入参） */
@@ -1078,6 +1081,7 @@ export class SessionHub {
       settingsStates: this.namespaceStates,
       piAiProviders: this.piAiViews,
       piAiProtocols: this.piAiProtocolList,
+      piAiReasoningLevels: this.piAiReasoningLevelList,
       commands: this.commands,
       goalText: this.goalText,
       goalNote: this.goalNote,
@@ -2042,6 +2046,7 @@ export class SessionHub {
     if (ns === undefined) {
       this.piAiViews = [];
       this.piAiProtocolList = [];
+      this.piAiReasoningLevelList = [];
       return;
     }
     const providers: Object | undefined = fieldOf(fieldOf(ns, 'value'), 'providers');
@@ -2049,6 +2054,8 @@ export class SessionHub {
     const schema: Object | undefined = fieldOf(ns, 'schema');
     this.piAiProtocolList = schema === undefined
       ? [] : piAiProtocolChoices(fieldOf(schema, 'refs'), getNumber(schema, 'uid') ?? 0);
+    this.piAiReasoningLevelList = schema === undefined
+      ? [] : piAiReasoningLevelChoices(fieldOf(schema, 'refs'), getNumber(schema, 'uid') ?? 0);
   }
 
   /**

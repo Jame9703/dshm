@@ -1,22 +1,33 @@
 import { emptyModelRow, Fs, invalidPiAiCapacity, Radius, Sp, Sz } from 'appstate';
-import type { PiAiModelRow } from 'appstate';
+import type { PiAiModelRow, PiAiReasoningProtocol } from 'appstate';
+import { PiAiModelReasoning } from './PiAiModelReasoning';
+import { DesktopPiAiReorderHandle } from '../desktop/DesktopPiAiReorderHandle';
 import { cloneDesktopPiAiModel, desktopPiAiCapacityText, desktopPiAiEditedCapacity, desktopPiAiEditedInput,
   desktopPiAiInputModes } from '../desktop/DesktopPiAiModelFields';
 import type { DesktopPiAiCapacityField } from '../desktop/DesktopPiAiModelFields';
 
 @Component
 export struct PiAiModelSettingsRow {
-  @Prop initialModel: PiAiModelRow = emptyModelRow();
+  @Prop @Watch('modelChanged') initialModel: PiAiModelRow = emptyModelRow();
   @Prop rowIndex: number = 0;
+  @Prop reorderHandleId: string = '';
   @Prop removable: boolean = false;
   @Prop editingEnabled: boolean = true;
   @Prop defaultInput?: string[] = undefined;
+  @Prop reasoning: PiAiReasoningProtocol = { levels: [], levelsOnly: false };
   onChange: (row: PiAiModelRow) => void = (_row: PiAiModelRow): void => {};
   onRemove: () => void = (): void => {};
+  onOrderHold: (pressed: boolean) => void = (): void => {};
+  onOrderBegin: (event: GestureEvent, handle: Area) => void = (): void => {};
+  onOrderUpdate: (event: GestureEvent) => void = (): void => {};
+  onOrderEnd: (event: GestureEvent) => void = (): void => {};
+  onOrderCancel: () => void = (): void => {};
   @State private model: PiAiModelRow = emptyModelRow();
   @State private expanded: boolean = false;
 
   aboutToAppear(): void { this.model = this.initialModel; }
+
+  private modelChanged(): void { this.model = this.initialModel; }
 
   private update(next: PiAiModelRow): void {
     if (!this.editingEnabled) { return; }
@@ -78,6 +89,10 @@ export struct PiAiModelSettingsRow {
   build() {
     Column({ space: Sp.XS }) {
       Row({ space: Sp.XS }) {
+        DesktopPiAiReorderHandle({ handleId: this.reorderHandleId, rowPosition: this.rowIndex + 1,
+          enabledForEdit: this.editingEnabled, onDragBegin: this.onOrderBegin,
+          onPointerHold: this.onOrderHold,
+          onDragUpdate: this.onOrderUpdate, onPanFinished: this.onOrderEnd, onDragCancel: this.onOrderCancel })
         TextInput({ text: this.model.id, placeholder: $r('app.string.desktop_model_option_id') })
           .key('desktopPiAiProviderModel-' + this.rowIndex).fontSize(Fs.SECONDARY).height(Sz.TOUCH_MIN).layoutWeight(1)
           .enabled(this.editingEnabled).onChange((value: string): void => {
@@ -117,6 +132,10 @@ export struct PiAiModelSettingsRow {
           this.InputChoice('text', $r('app.string.desktop_model_option_text'))
           this.InputChoice('image', $r('app.string.desktop_model_option_image'))
         }.width('100%')
+        if (this.reasoning.levels.length > 0) {
+          PiAiModelReasoning({ model: this.model, rowIndex: this.rowIndex, protocol: this.reasoning,
+            editingEnabled: this.editingEnabled, onChange: (model: PiAiModelRow): void => { this.update(model); } })
+        }
       }
     }.width('100%').padding(Sp.S).borderRadius(Radius.S).backgroundColor($r('sys.color.background_primary'))
   }

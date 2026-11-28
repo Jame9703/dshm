@@ -205,6 +205,76 @@ export function piAiProtocolChoices(refs: Object | undefined, rootUid: number): 
   return out;
 }
 
+function piAiSchemaNode(refs: Object | undefined, source?: Object): Object | undefined {
+  return typeof source === 'number' ? recOf(refs, source.toString()) : source;
+}
+
+/** Read `reasoningEfforts` dict keys from the serialized provider-model schema. */
+export function piAiReasoningLevelChoices(refs: Object | undefined, rootUid: number): string[] {
+  const root = piAiSchemaNode(refs, rootUid);
+  const providers = piAiSchemaNode(refs, recOf(recOf(root, 'dict'), 'providers'));
+  const profile = piAiSchemaNode(refs, recOf(providers, 'inner'));
+  const models = piAiSchemaNode(refs, recOf(recOf(profile, 'dict'), 'models'));
+  const model = piAiSchemaNode(refs, recOf(models, 'inner'));
+  const effort = piAiSchemaNode(refs, recOf(recOf(model, 'dict'), 'reasoningEfforts'));
+  const branches = recOf(effort, 'list');
+  if (!Array.isArray(branches)) { return []; }
+  for (let i = 0; i < branches.length; i++) {
+    const entry: Object = branches[i];
+    const branch = piAiSchemaNode(refs, entry);
+    if (recOf(branch, 'type') !== 'dict') { continue; }
+    const keySchema = piAiSchemaNode(refs, recOf(branch, 'sKey'));
+    const values = recOf(keySchema, 'list');
+    if (!Array.isArray(values)) { return []; }
+    const levels: string[] = [];
+    for (let index = 0; index < values.length; index++) {
+      const item: Object = values[index];
+      const value = recOf(piAiSchemaNode(refs, item), 'value');
+      if (typeof value === 'string' && value && !levels.includes(value)) { levels.push(value); }
+    }
+    return levels;
+  }
+  return [];
+}
+
+export interface PiAiReasoningProtocol {
+  levels: string[];
+  levelsOnly: boolean;
+}
+
+export interface PiAiReasoningEntry {
+  level: string;
+  wire: Object | null | undefined;
+}
+
+export type PiAiReasoningProblem = '' | 'levels-only' | 'missing-value' | 'missing-level';
+
+export function piAiReasoningProtocol(api: string, schemaLevels: string[]): PiAiReasoningProtocol {
+  if (api !== 'google-generative-ai') { return { levels: schemaLevels, levelsOnly: false }; }
+  return { levels: schemaLevels.filter((level: string): boolean =>
+    level === 'minimal' || level === 'low' || level === 'medium' || level === 'high'), levelsOnly: true };
+}
+
+export function readPiAiReasoningEntries(model: PiAiModelRow): PiAiReasoningEntry[] | undefined {
+  const efforts = recOf(model.extraFields, 'reasoningEfforts');
+  if (efforts === null) { return []; }
+  if (efforts === undefined || !isRec(efforts)) { return undefined; }
+  return Object.keys(efforts).map((level: string): PiAiReasoningEntry => ({ level: level, wire: recOf(efforts, level) }));
+}
+
+export function piAiReasoningWireValid(entry: PiAiReasoningEntry): boolean {
+  return typeof entry.wire === 'string' ? entry.wire.length > 0 : entry.wire === null && entry.level === 'off';
+}
+
+export function checkPiAiModelReasoning(model: PiAiModelRow, protocol: PiAiReasoningProtocol): PiAiReasoningProblem {
+  const entries = readPiAiReasoningEntries(model);
+  if (entries === undefined || protocol.levels.length === 0) { return ''; }
+  if (protocol.levelsOnly && entries.some((entry: PiAiReasoningEntry): boolean =>
+      !protocol.levels.includes(entry.level) || entry.wire !== entry.level)) { return 'levels-only'; }
+  if (entries.some((entry: PiAiReasoningEntry): boolean => !piAiReasoningWireValid(entry))) { return 'missing-value'; }
+  return entries.some((entry: PiAiReasoningEntry): boolean => entry.level !== 'off') ? '' : 'missing-level';
+}
+
 // ── 投影：providers 值 → 可编辑视图 ────────────────────────────────────────
 
 /**

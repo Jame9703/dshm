@@ -147,6 +147,11 @@ export {
   piAiFieldPath,
   piAiModelsPath,
   piAiProtocolChoices,
+  piAiReasoningLevelChoices,
+  piAiReasoningProtocol,
+  readPiAiReasoningEntries,
+  piAiReasoningWireValid,
+  checkPiAiModelReasoning,
   piAiRoutePath,
   projectPiAiModels,
   projectPiAiProviders,
@@ -154,6 +159,7 @@ export {
   scalarFieldValue
 } from './model/PiAiProviders';
 export type { PiAiFieldCheck, PiAiModelRow, PiAiProviderView } from './model/PiAiProviders';
+export type { PiAiReasoningEntry, PiAiReasoningProblem, PiAiReasoningProtocol } from './model/PiAiProviders';
 export type {
   AboutInfo,
   ConnectionBanner,
