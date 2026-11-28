@@ -16,7 +16,11 @@ export interface DesktopQueuedPrompt {
 
 export function desktopQueuedPromptPreview(text: string): string {
   // Match the non-interactive WebUI user-text seat: mask on the original text before collapsing runs.
-  return desktopUserMessageClipboardText(text).replace(new RegExp('\\s+', 'gu'), ' ').trim();
+  return desktopQueueCollapseWhitespace(desktopUserMessageClipboardText(text)).trim();
+}
+
+export function desktopQueueCollapseWhitespace(text: string): string {
+  return text.replace(new RegExp('\\s+', 'gu'), ' ');
 }
 
 export function desktopVisiblePromptQueue(rows: DesktopQueuedPrompt[], echoes: DesktopSubmissionEcho[],

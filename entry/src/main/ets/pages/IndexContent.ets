@@ -372,6 +372,7 @@ export struct IndexContent {
   desktopSection: string = '';
   @Prop desktopSettingsCompact: boolean = false;
   onCloseSettings: () => void = (): void => {};
+  onStartPresetCreator?: () => void;
   onSettingsSection: (section: string) => void = (_section: string): void => {};
   onOpenPlugins: () => void = (): void => {};
   // ── 形态 ──
@@ -1250,6 +1251,12 @@ export struct IndexContent {
     if (!this.desktopSettingsVisible) { return; }
     this.desktopSettingsVisible = false;
     this.onCloseSettings();
+  }
+
+  private startDesktopPresetCreator(): void {
+    if (!this.desktopSettingsVisible || this.onStartPresetCreator === undefined) { return; }
+    this.onStartPresetCreator();
+    this.closeDesktopSettings();
   }
 
   private reloadDesktopShortcutKeys(): void {
@@ -4561,6 +4568,8 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
     desktopAccountHost: this.desktopAccountHost, desktopAccountIdentity: this.desktopAccountIdentity,
     desktopCodingTools: this.desktopCodingTools, onDesktopCodingToolsChange: this.onDesktopCodingToolsChange,
     onOpenDesktopShortcuts: (): void => { this.desktopShortcutOpen = true; },
+    onStartPresetCreator: this.onStartPresetCreator === undefined ? undefined :
+      (): void => { this.startDesktopPresetCreator(); },
     settingsSections: this.panelRegistry.descriptors(PanelLocation.SETTINGS),
     onSelectSettingsSection: (sectionId: string) => this.selectSettingsSection(sectionId),
     browser: this.buildBrowserFacade(),

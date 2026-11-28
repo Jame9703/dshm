@@ -4,10 +4,12 @@ import type { QueueActionBody } from 'appstate';
 import { controlMaterial } from 'platform';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { DesktopHostActions } from './DesktopHostActions';
-import { DesktopQueuedPrompt, desktopQueueFileSize } from './DesktopPromptQueue';
+import { DesktopQueuedPrompt, desktopQueueCollapseWhitespace, desktopQueueFileSize } from './DesktopPromptQueue';
 import { DesktopAttachmentThumbnail } from './DesktopAttachments';
 import type { DesktopMediaAttachment } from './DesktopAttachments';
 import { desktopFileTypeIcon } from './DesktopFileType';
+import { DesktopReferenceMessage } from './DesktopReferenceMessage';
+import { DesktopSkill, desktopMayHaveSkillReference } from './DesktopSkills';
 
 @Component
 export struct DesktopQueueDock {
@@ -15,9 +17,12 @@ export struct DesktopQueueDock {
   @Prop @Watch('rowsChanged') rows: DesktopQueuedPrompt[] = [];
   @Prop @Watch('rowsChanged') mutable: boolean = true;
   @Prop running: boolean = false;
-  @Prop busy: boolean = false;
   @Prop attached: boolean = false;
+  @Prop skills: DesktopSkill[] | undefined = undefined;
+  @Prop skillLookupEnabled: boolean = false;
+  @Prop codeFamily: string = 'monospace';
   host?: DesktopHostActions;
+  onSkillsNeeded: () => void = (): void => {};
   onAction: (session: string, id: string, action: QueueActionBody) => Promise<string> =
     (_session: string, _id: string, _action: QueueActionBody): Promise<string> => Promise.resolve('');
   @State private expanded: boolean = false;
@@ -64,7 +69,7 @@ export struct DesktopQueueDock {
 
   private edit(id: string): void {
     const row = this.rows.find((item: DesktopQueuedPrompt): boolean => item.id === id);
-    if (row === undefined || !row.editable || row.sending || !this.mutable || this.busy || this.working) { return; }
+    if (row === undefined || !row.editable || row.sending || !this.mutable || this.working) { return; }
     this.composing = false;
     this.draft = row.text;
     this.editing = id;
@@ -77,7 +82,7 @@ export struct DesktopQueueDock {
   }
 
   private async apply(id: string, action: QueueActionBody, failure: Resource): Promise<void> {
-    if (this.working || this.busy || !this.mutable || (action.kind === 'steer' && !this.running) ||
+    if (this.working || !this.mutable || (action.kind === 'steer' && !this.running) ||
       !this.rows.some((row: DesktopQueuedPrompt): boolean => row.id === id && !row.sending)) { return; }
     const generation = this.generation;
     this.working = true;
@@ -123,7 +128,7 @@ export struct DesktopQueueDock {
     Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
       this.Icon(icon)
     }.key(key).width(28).height(28).padding(0).focusOnTouch(false)
-      .accessibilityText(label).enabled(enabled && !this.busy && !this.working).onClick(action)
+      .accessibilityText(label).enabled(enabled && !this.working).onClick(action)
   }
 
   @Builder
@@ -166,6 +171,21 @@ export struct DesktopQueueDock {
   }
 
   @Builder
+  private Preview(row: DesktopQueuedPrompt) {
+    if (row.text.includes('@') || desktopMayHaveSkillReference(row.text) ||
+      desktopQueueCollapseWhitespace(row.text).trim() !== row.preview) {
+      Row() {
+        DesktopReferenceMessage({ text: row.text, sessionId: this.sessionId, host: this.host,
+          skills: this.skills, skillLookupEnabled: this.skillLookupEnabled, onSkillsNeeded: this.onSkillsNeeded,
+          passivePreview: true, bodySize: 13, codeFamily: this.codeFamily, nodeKey: 'desktopQueuePreview-' + row.id })
+      }.layoutWeight(1)
+    } else {
+      Text(row.preview).fontSize(13).maxLines(1).layoutWeight(1).fontColor($r('sys.color.font_secondary'))
+        .key('desktopQueuePreview-' + row.id).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+  }
+
+  @Builder
   private QueueRow(row: DesktopQueuedPrompt, index: number) {
     Row({ space: 10 }) {
       if (this.rows.length === 1) { this.Icon($r('app.media.dsh_queue_queue_outline'), 16) }
@@ -184,8 +204,7 @@ export struct DesktopQueueDock {
             }, (file: DesktopMediaAttachment, at: number): string => file.id + ':' + at)
           }.constraintSize({ maxWidth: '55%' }).clip(true)
         }
-        Text(row.preview).fontSize(13).maxLines(1).layoutWeight(1).fontColor($r('sys.color.font_secondary'))
-          .key('desktopQueuePreview-' + row.id).textOverflow({ overflow: TextOverflow.Ellipsis })
+        this.Preview(row)
         if (row.sending) { this.Sending() }
         if (this.mutable) {
           Row({ space: 8 }) {

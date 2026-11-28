@@ -48,6 +48,13 @@ import { desktopAgentPresetName } from '../desktop/DesktopAgentPresetPicker';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 import { readDesktopPresetComposition } from '../desktop/DesktopPresetComposition';
 import { DesktopPresetViewer } from '../desktop/DesktopPresetViewer';
+import { DesktopPresetGuide, desktopPresetGuideCopy } from '../desktop/DesktopPresetGuide';
+import type { DesktopPresetGuideCopy } from '../desktop/DesktopPresetGuide';
+
+interface DesktopPresetViewport {
+  width: number;
+  height: number;
+}
 
 /** 设置页「预设」分区 */
 @Component
@@ -60,6 +67,7 @@ export struct SettingsPresets {
   @Prop allGroups: SettingGroup[] = [];
   @Prop desktopViewer: boolean = false;
   compositionHost?: DesktopHostActions;
+  startCreator?: () => void;
   /** 复制（官方唯一的创建入口；随附预设也能复制） */
   onCopy: (from: string, name: string) => void = () => {
   };
@@ -121,35 +129,67 @@ export struct SettingsPresets {
       onClose: (): void => { this.closePresetViewer(); } })
   }
 
+  @Builder
+  private PresetGuide(name: string, guide: DesktopPresetGuideCopy, usage: boolean) {
+    DesktopPresetGuide({ presetName: name, copy: guide, initialUsage: usage,
+      onClose: (): void => { this.closePresetViewer(); } })
+  }
+
+  private presetViewport(): DesktopPresetViewport {
+    const ui = this.getUIContext();
+    const name = ui.getWindowName();
+    if (name) {
+      try {
+        const rect = window.findWindow(name).getWindowProperties().windowRect;
+        return { width: Math.max(1, ui.px2vp(rect.width) - 32), height: ui.px2vp(rect.height) };
+      } catch (_) {}
+    }
+    return { width: 720, height: 1000 };
+  }
+
   private async viewPresetComposition(row: AgentPresetRow): Promise<void> {
     if (!this.viewerActive || this.viewerOpening || this.viewerDialog >= 0) { return; }
     this.viewerProblem = '';
     const host = this.compositionHost;
     if (host === undefined) { this.viewerFailed(); return; }
     const request = ++this.viewerRequest;
-    const ui = this.getUIContext();
-    const prompt = ui.getPromptAction();
     try {
       const composition = await readDesktopPresetComposition(host, row.id);
       if (!this.viewerActive || request !== this.viewerRequest) { return; }
       const yaml = composition.yaml;
       if (yaml === undefined) { this.viewerFailed(composition.problem); return; }
       const label = this.presetLabel(row);
+      const viewport = this.presetViewport();
+      await this.openPresetReader(request, 'desktopPresetView-' + row.id, Math.min(720, viewport.width), undefined,
+        (): void => { this.PresetViewer(label, yaml, Math.min(560, viewport.height * 0.6)); });
+    } catch (_) {
+      if (this.viewerActive && request === this.viewerRequest) { this.viewerFailed(); }
+    }
+  }
+
+  private viewPresetGuide(row: AgentPresetRow, usage: boolean): void {
+    if (!this.viewerActive || this.viewerOpening || this.viewerDialog >= 0 || !this.desktopBuiltIn(row)) { return; }
+    const guide = desktopPresetGuideCopy(row.id);
+    if (guide === undefined) { return; }
+    this.viewerProblem = '';
+    const request = ++this.viewerRequest;
+    const label = this.presetLabel(row);
+    const viewport = this.presetViewport();
+    this.openPresetReader(request, this.guideActionId(row.id, usage), Math.min(640, viewport.width),
+      Math.min(600, Math.max(1, viewport.height - 32)), (): void => { this.PresetGuide(label, guide, usage); });
+  }
+
+  private async openPresetReader(request: number, trigger: string, readerWidth: number, readerHeight: number | undefined,
+    content: CustomBuilder): Promise<void> {
+    const ui = this.getUIContext();
+    const prompt = ui.getPromptAction();
+    try {
       const material = dialogMaterial();
-      let viewerWidth = 720;
-      let codeHeight = 560;
-      const windowName = ui.getWindowName();
-      if (windowName) {
-        try {
-          const size = window.findWindow(windowName).getWindowProperties().windowRect;
-          viewerWidth = Math.min(viewerWidth, Math.max(1, ui.px2vp(size.width) - 32));
-          codeHeight = Math.min(codeHeight, ui.px2vp(size.height) * 0.6);
-        } catch (_) {}
-      }
       this.viewerOpening = true;
       const id = await prompt.openCustomDialog({
-        builder: (): void => { this.PresetViewer(label, yaml, codeHeight); }, alignment: DialogAlignment.Center,
-        width: viewerWidth, autoCancel: true, isModal: true, cornerRadius: 28, systemMaterial: material,
+        builder: content, alignment: DialogAlignment.Center,
+        width: readerWidth, height: readerHeight, autoCancel: true, isModal: true, cornerRadius: 28,
+        systemMaterial: material,
         maskColor: $r('app.color.desktop_settings_mask'),
         backgroundColor: material === undefined ? $r('app.color.desktop_settings_surface') : undefined,
         onDidDisappear: (): void => {
@@ -158,7 +198,7 @@ export struct SettingsPresets {
           this.viewerOpening = false;
           setTimeout((): void => {
             if (this.viewerActive && request === this.viewerRequest) {
-              ui.getFocusController().requestFocus('desktopPresetView-' + row.id);
+              ui.getFocusController().requestFocus(trigger);
             }
           }, 0);
         }
@@ -202,6 +242,55 @@ export struct SettingsPresets {
     });
   }
 
+  private hasCreator(): boolean {
+    return this.startCreator !== undefined && this.presets.some((row: AgentPresetRow): boolean => row.id === 'cordis');
+  }
+
+  private desktopBuiltIn(row: AgentPresetRow): boolean {
+    return !row.name && (row.id === 'standard' || row.id === 'ptc' || row.id === 'minimal' || row.id === 'cordis');
+  }
+
+  private desktopPresetRows(builtIn: boolean): AgentPresetRow[] {
+    return this.presets.filter((row: AgentPresetRow): boolean => this.desktopBuiltIn(row) === builtIn);
+  }
+
+  private guideActionId(id: string, usage: boolean): string {
+    return (usage ? 'desktopPresetHowTo-' : 'desktopPresetExplanation-') + id;
+  }
+
+  @Builder
+  private GuideAction(row: AgentPresetRow, usage: boolean) {
+    Button(usage ? $r('app.string.desktop_preset_guide_usage') : $r('app.string.desktop_preset_guide_explanation'),
+      { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+      .key(this.guideActionId(row.id, usage)).id(this.guideActionId(row.id, usage)).fontSize(13)
+      .padding({ left: 8, right: 8 }).height(28).borderRadius(8).fontColor($r('sys.color.font_secondary'))
+      .onClick((): void => { this.viewPresetGuide(row, usage); })
+  }
+
+  @Builder
+  private DesktopPresetGroup(builtIn: boolean) {
+    if (this.desktopPresetRows(builtIn).length > 0 || (!builtIn && this.hasCreator())) {
+      Column({ space: 8 }) {
+        Text(builtIn ? $r('app.string.desktop_preset_group_built_in') : $r('app.string.desktop_preset_group_custom'))
+          .fontSize(14).fontWeight(FontWeight.Medium).width('100%')
+        ForEach(this.desktopPresetRows(builtIn), (row: AgentPresetRow): void => { this.presetCard(row); },
+          (row: AgentPresetRow): string => row.id)
+        if (!builtIn && this.hasCreator()) {
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Row({ space: 6 }) {
+              Image($r('app.media.dsh_reference_menu_plus')).width(14).height(14).supportSvg2(true)
+                .draggable(false).accessibilityLevel('no')
+              Text($r('app.string.desktop_preset_create')).fontSize(14).lineHeight(22)
+                .fontColor($r('sys.color.font_primary')).flexShrink(1)
+            }
+          }.key('desktopPresetCreateInCreator').width('100%').height(44).borderRadius(16)
+            .border({ width: 1, style: BorderStyle.Dashed, color: $r('app.color.workspace_border') })
+            .onClick((): void => { this.startCreator?.(); })
+        }
+      }.width('100%').alignItems(HorizontalAlign.Start)
+    }
+  }
+
   build() {
     Column({ space: Sp.M }) {
       if (this.viewerProblem.length > 0) {
@@ -217,7 +306,15 @@ export struct SettingsPresets {
           .borderRadius(Radius.M)
           .backgroundColor($r('sys.color.background_secondary'))
       }
-      if (this.presets.length > 0) {
+      if (this.desktopViewer) {
+        Column({ space: 4 }) {
+          Text($r('app.string.desktop_preset_section_title')).fontSize(20).fontWeight(FontWeight.Medium)
+          Text($r('app.string.desktop_preset_section_intro')).fontSize(14).lineHeight(22)
+            .fontColor($r('sys.color.font_secondary'))
+        }.width('100%').alignItems(HorizontalAlign.Start)
+        this.DesktopPresetGroup(true)
+        this.DesktopPresetGroup(false)
+      } else if (this.presets.length > 0) {
         Text('Agent 预设')
           .fontSize(Fs.CAPTION)
           .fontColor($r('sys.color.font_tertiary'))
@@ -264,7 +361,8 @@ export struct SettingsPresets {
             .fontSize(Fs.CAPTION)
             .fontColor($r('sys.color.brand'))
         }
-        Text(presetIsBundled(p) ? '随附' : '自定义')
+        Text(this.desktopViewer ? (this.desktopBuiltIn(p) ? $r('app.string.desktop_preset_group_built_in') :
+          $r('app.string.desktop_preset_group_custom')) : (presetIsBundled(p) ? '随附' : '自定义'))
           .fontSize(Fs.CAPTION)
           .fontColor($r('sys.color.font_tertiary'))
       }
@@ -280,13 +378,13 @@ export struct SettingsPresets {
         .fontColor($r('sys.color.font_tertiary'))
         .width('100%')
       Row({ space: Sp.M }) {
-        Text('复制')
-          .fontSize(Fs.CAPTION)
-          .fontColor($r('sys.color.brand'))
-          .onClick(() => {
-            this.onCopy(p.id, p.name);
-          })
         if (!this.desktopViewer) {
+          Text('复制')
+            .fontSize(Fs.CAPTION)
+            .fontColor($r('sys.color.brand'))
+            .onClick(() => {
+              this.onCopy(p.id, p.name);
+            })
           Text(this.viewedId === p.id ? '收起内容' : '查看')
             .fontSize(Fs.CAPTION)
             .fontColor($r('sys.color.brand'))
@@ -299,7 +397,7 @@ export struct SettingsPresets {
               this.readPreset(p.id);
             })
         }
-        if (!presetIsBundled(p)) {
+        if (!this.desktopViewer && !presetIsBundled(p)) {
           Text(this.confirmingId === p.id ? '确认删除' : '删除')
             .fontSize(Fs.CAPTION)
             .fontColor($r('sys.color.alert'))
@@ -321,6 +419,10 @@ export struct SettingsPresets {
           }
         }
         if (this.desktopViewer) {
+          if (this.desktopBuiltIn(p)) {
+            this.GuideAction(p, false)
+            this.GuideAction(p, true)
+          }
           Blank()
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Image($r('app.media.dsh_preset_browse')).width(16).height(16).supportSvg2(true)

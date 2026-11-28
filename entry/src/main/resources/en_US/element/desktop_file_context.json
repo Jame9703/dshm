@@ -1,0 +1,18 @@
+{
+  "string": [
+    { "name": "desktop_file_context_sidebar", "value": "Open in sidebar" },
+    { "name": "desktop_file_context_float", "value": "Open in floating panel" },
+    { "name": "desktop_file_context_reveal", "value": "Show in folder" },
+    { "name": "desktop_file_context_open", "value": "Open in default application" },
+    { "name": "desktop_file_context_copy_file", "value": "Copy file path" },
+    { "name": "desktop_file_context_copy_folder", "value": "Copy folder path" },
+    { "name": "desktop_file_context_download", "value": "Download" },
+    { "name": "desktop_file_context_reference", "value": "Add to chat" },
+    { "name": "desktop_file_context_copied", "value": "Copied" },
+    { "name": "desktop_file_context_downloaded", "value": "Download complete" },
+    { "name": "desktop_file_context_reveal_failed", "value": "Could not show the file location. Try again." },
+    { "name": "desktop_file_context_open_failed", "value": "Could not open. Try again." },
+    { "name": "desktop_file_context_copy_failed", "value": "Could not copy. Check that the content is available, then retry." },
+    { "name": "desktop_file_context_download_failed", "value": "Could not save. Check the source and destination, then retry." }
+  ]
+}

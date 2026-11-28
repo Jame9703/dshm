@@ -13,6 +13,11 @@
     {"name":"desktop_preset_view_action","value":"View configuration: %1$s"},
     {"name":"desktop_preset_view_title","value":"View configuration · %1$s"},
     {"name":"desktop_preset_view_close","value":"Close"},
-    {"name":"desktop_preset_view_failed","value":"Could not read the preset configuration."}
+    {"name":"desktop_preset_view_failed","value":"Could not read the preset configuration."},
+    {"name":"desktop_preset_section_title","value":"Agent presets"},
+    {"name":"desktop_preset_section_intro","value":"Choose the agent’s tools and how it works. Use Standard mode for everyday tasks, or Creator mode to add capabilities to DSH."},
+    {"name":"desktop_preset_group_built_in","value":"Built-in"},
+    {"name":"desktop_preset_group_custom","value":"Custom"},
+    {"name":"desktop_preset_create","value":"Let the agent help me create a preset"}
   ]
 }

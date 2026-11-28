@@ -1,5 +1,6 @@
 import type { DesktopChangeLocation, DesktopChangeTarget } from './DesktopArtifacts';
 import type { DesktopFileNavigation } from './DesktopFilesPane';
+import { desktopFileNavigatorRelativePath } from './DesktopFileNavigatorModel';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import type { DesktopSubagentEntry } from './DesktopSubagents';
 import type { DesktopAgentTerminalBinding } from './DesktopTerminalRosters';
@@ -284,6 +285,35 @@ export function desktopDockNavigatePreview(layout: DesktopDockLayout, path: stri
   const index = next.floats.findIndex((panel: DesktopDockFloat): boolean => panel.tab.id === id);
   if (index >= 0) { next.floats[index] = { tab: preview, rect: next.floats[index].rect }; }
   return next;
+}
+
+export function desktopDockOpenPreviewIn(layout: DesktopDockLayout, path: string, name: string,
+  sourceSessionId: string | undefined, floating: boolean, rect: DesktopDockRect, root: string = ''): DesktopDockLayout {
+  if (!path) { return layout; }
+  const relative = desktopFileNavigatorRelativePath(path, root);
+  const same = (tab: DesktopDockTab): boolean => {
+    const existing = tab.file?.path ?? '';
+    return tab.kind === DesktopDockKind.PREVIEW && tab.sourceSessionId === sourceSessionId &&
+      (existing === path || (!!relative && desktopFileNavigatorRelativePath(existing, root) === relative));
+  };
+  const owner = layout.panes.findIndex((pane: DesktopDockPane): boolean => pane.tabs.some(same));
+  const docked = layout.panes[owner]?.tabs.find(same);
+  const detached = layout.floats.find((panel: DesktopDockFloat): boolean => same(panel.tab));
+  if (floating) {
+    if (detached !== undefined) { return desktopDockFocusFloat(layout, detached.tab.id); }
+    if (docked !== undefined) { return desktopDockFloat(layout, owner, docked.id, rect); }
+  } else {
+    if (docked !== undefined) { return desktopDockOpen(layout, docked, false); }
+    if (detached !== undefined) { return desktopDockSeatFloat(layout, detached.tab.id); }
+  }
+  const opened = desktopDockNavigatePreview(layout, path, name, sourceSessionId);
+  if (!floating || opened === layout) { return opened; }
+  const floated = desktopDockFloat(opened, opened.focus, opened.panes[opened.focus].active, rect);
+  // Match the previous active tab even when the fresh resource was appended after an inactive one.
+  const previous = layout.panes[layout.focus];
+  const pane = floated.panes.find((candidate: DesktopDockPane): boolean => candidate.id === previous.id);
+  if (pane !== undefined) { pane.active = previous.active; }
+  return desktopDockPresentation(floated, floated.focus, layout.expanded, layout.fullscreen);
 }
 
 function removeTab(pane: DesktopDockPane, index: number): DesktopDockTab {

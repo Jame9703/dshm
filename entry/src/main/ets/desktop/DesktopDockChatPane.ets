@@ -279,7 +279,7 @@ export struct DesktopDockChatPane {
           onGoalAction: (action: DesktopGoalAction, ref: DesktopGoalRef, objective: string): Promise<string> =>
             this.run((binding, id): Promise<string> => binding.conversation.mutateGoal(id, action, ref, objective)),
           onQueueAction: (session: string, row: string, action: QueueActionBody): Promise<string> =>
-            this.run((binding): Promise<string> => binding.conversation.updateQueue(session, row, action)),
+            this.binding?.conversation.updateQueue(session, row, action) ?? Promise.resolve('当前会话暂不可操作'),
           onSteerQueue: (): void => { this.run((binding, id): Promise<string> => binding.conversation.steerQueue(id)); },
           onLoadModels: (refresh: boolean): void => { this.binding?.conversation.loadModels(refresh); },
           onModelsSettings: (): void => { this.actions?.openModels(); },

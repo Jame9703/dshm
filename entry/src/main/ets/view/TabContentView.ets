@@ -55,6 +55,7 @@ export interface TabContentFacade {
   desktopCodingTools: DesktopCodingToolsSnapshot;
   onDesktopCodingToolsChange: (enabled: boolean) => void;
   onOpenDesktopShortcuts: () => void;
+  onStartPresetCreator?: () => void;
   /** 设置域的可用分区清单（注册表给；顺序即呈现顺序） */
   settingsSections: PanelDescriptor[];
   /** 切设置分区（宿主经注册表校验后写进 `settingsSection`） */
@@ -231,6 +232,7 @@ export struct TabContentView {
         desktopAccountHost: this.f.desktopAccountHost, desktopAccountIdentity: this.f.desktopAccountIdentity,
         codingTools: this.f.desktopCodingTools, onCodingToolsChange: this.f.onDesktopCodingToolsChange,
         onOpenShortcuts: this.f.onOpenDesktopShortcuts,
+        onStartPresetCreator: this.f.onStartPresetCreator,
         sections: this.f.settingsSections,
         onSelectSection: (sectionId: string) => {
           this.f.onSelectSettingsSection(sectionId);

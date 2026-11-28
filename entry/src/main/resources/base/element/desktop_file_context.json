@@ -1,0 +1,18 @@
+{
+  "string": [
+    { "name": "desktop_file_context_sidebar", "value": "在侧边栏打开" },
+    { "name": "desktop_file_context_float", "value": "在浮窗中打开" },
+    { "name": "desktop_file_context_reveal", "value": "在文件夹显示" },
+    { "name": "desktop_file_context_open", "value": "使用默认应用打开" },
+    { "name": "desktop_file_context_copy_file", "value": "复制文件路径" },
+    { "name": "desktop_file_context_copy_folder", "value": "复制文件夹路径" },
+    { "name": "desktop_file_context_download", "value": "下载" },
+    { "name": "desktop_file_context_reference", "value": "添加到对话" },
+    { "name": "desktop_file_context_copied", "value": "已复制" },
+    { "name": "desktop_file_context_downloaded", "value": "下载完成" },
+    { "name": "desktop_file_context_reveal_failed", "value": "无法显示文件位置，请重试" },
+    { "name": "desktop_file_context_open_failed", "value": "打开失败，请重试" },
+    { "name": "desktop_file_context_copy_failed", "value": "无法复制，请检查内容是否可用后重试" },
+    { "name": "desktop_file_context_download_failed", "value": "无法保存文件，请检查源文件和目标位置后重试" }
+  ]
+}

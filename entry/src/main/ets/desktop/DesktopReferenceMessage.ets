@@ -5,6 +5,7 @@ import { DesktopReferenceAction } from './DesktopReferenceActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopSecretRange, desktopSecretRanges } from './DesktopSecretMask';
 import { DesktopSkill, desktopMayHaveSkillReference, desktopSkillReferences } from './DesktopSkills';
+import { desktopQueueCollapseWhitespace } from './DesktopPromptQueue';
 
 export interface DesktopReferenceRun {
   kind: string;
@@ -102,6 +103,7 @@ export struct DesktopReferenceMessage {
   @Prop skillLookupEnabled: boolean = false;
   @Prop @Watch('resetMessage') sessionId: string = '';
   @Prop nodeKey: string = '';
+  @Prop passivePreview: boolean = false;
   @Prop bodySize: number = 14;
   @Prop bodyFamily: string = '';
   @Prop codeFamily: string = 'monospace';
@@ -181,6 +183,21 @@ export struct DesktopReferenceMessage {
   private icon(kind: string): Resource {
     if (kind === 'session') { return $r('app.media.dsh_inline_reference_session'); }
     return kind === 'folder' ? $r('app.media.dsh_inline_reference_folder') : $r('app.media.dsh_inline_reference_file');
+  }
+
+  private visibleChanged(visible: boolean): void {
+    this.visible = visible;
+    if (visible) {
+      this.resolvePaths();
+      if (this.skillLookupEnabled && desktopMayHaveSkillReference(this.text)) { this.onSkillsNeeded(); }
+    }
+  }
+
+  private passiveText(run: DesktopReferenceRun): string {
+    let value = desktopQueueCollapseWhitespace(run.kind === 'secret' ? run.masked ?? '' : run.raw);
+    if (run.start === 0) { value = value.trimStart(); }
+    if (run.start + run.raw.length === this.text.length) { value = value.trimEnd(); }
+    return value;
   }
 
   private open(run: DesktopReferenceRun): void {
@@ -314,7 +331,33 @@ export struct DesktopReferenceMessage {
     }
   }
 
-  build() {
+  @Builder
+  private PassivePreview() {
+    Text() {
+      ForEach(this.runs, (run: DesktopReferenceRun): void => {
+        if (run.kind === 'secret') {
+          Span(this.passiveText(run)).fontSize(this.bodySize * 0.875).fontFamily(this.codeFamily)
+        } else if (this.showsChip(run)) {
+          if (run.kind === 'skill') {
+            Span(run.label).fontColor($r('app.color.desktop_reference_text'))
+              .fontWeight(FontWeight.Medium).fontFamily(this.codeFamily)
+          } else {
+            ImageSpan(this.icon(run.kind)).size({ width: this.bodySize, height: this.bodySize })
+              .verticalAlign(ImageSpanAlignment.CENTER)
+            Span('\u00a0' + desktopQueueCollapseWhitespace(run.label))
+              .fontColor($r('app.color.desktop_reference_text')).fontWeight(FontWeight.Medium)
+          }
+        } else {
+          Span(this.passiveText(run))
+        }
+      }, (run: DesktopReferenceRun): string => this.runKey(run))
+    }.key(this.nodeKey).width('100%').fontSize(this.bodySize).fontFamily(this.bodyFamily)
+      .fontColor($r('sys.color.font_secondary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      .onVisibleAreaChange([0.01], (visible: boolean): void => { this.visibleChanged(visible); })
+  }
+
+  @Builder
+  private InteractiveMessage() {
     Column({ space: 4 }) {
       Stack({ alignContent: Alignment.TopStart }) {
         Text(undefined, { controller: this.controller }) {
@@ -355,13 +398,7 @@ export struct DesktopReferenceMessage {
             return point !== undefined && this.fileAt(point.localX, point.localY) !== undefined ?
               GestureJudgeResult.CONTINUE : GestureJudgeResult.REJECT;
           })
-          .onVisibleAreaChange([0.01], (visible: boolean): void => {
-            this.visible = visible;
-            if (visible) {
-              this.resolvePaths();
-              if (this.skillLookupEnabled && desktopMayHaveSkillReference(this.text)) { this.onSkillsNeeded(); }
-            }
-          })
+          .onVisibleAreaChange([0.01], (visible: boolean): void => { this.visibleChanged(visible); })
         Row().width(1).height(1).position(this.menuAnchor).hitTestBehavior(HitTestMode.None)
           .bindContextMenu(this.menuShown, this.FileMenu(), {
             placement: Placement.BottomLeft,
@@ -375,5 +412,10 @@ export struct DesktopReferenceMessage {
           .padding({ left: 4, right: 4 })
       }
     }.constraintSize({ maxWidth: '82%' }).alignItems(HorizontalAlign.End)
+  }
+
+  build() {
+    if (this.passivePreview) { this.PassivePreview() }
+    else { this.InteractiveMessage() }
   }
 }

@@ -2,7 +2,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { FilePreview, PreviewKind, previewKindOf, projectWorkspaceText } from 'appstate';
-import { getBoolean, getNumber, getString } from 'connection';
+import { getBoolean, getNumber, getString, parseJson } from 'connection';
 import { isSystemPreviewableName, mimeTypeForName, openFileLocation, openSystemPreview, uriFromPath } from 'platform';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
@@ -17,20 +17,40 @@ import { DESKTOP_FILE_REVEAL_PENDING, DesktopFileNavigator, DesktopFileNavigator
   emptyDesktopFileNavigatorView } from './DesktopFileNavigator';
 import { DesktopFileSearchSettings } from './DesktopFileSearchSettings';
 import { desktopFileTypeIcon } from './DesktopFileType';
+import { DesktopFileContextAction, DesktopFileContextItem, desktopFileContextCopyPath, desktopFileContextPathItems,
+  desktopFileContextTransferItems } from './DesktopFileContextModel';
 import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
 import lazy { DesktopImageFilePreview } from './DesktopImageFilePreview';
 import lazy { DesktopHtmlPreview } from './DesktopHtmlPreview';
 import { DESKTOP_HTML_PACKAGE_BYTES, desktopIsHtmlFile, readDesktopHtmlFile } from './DesktopHtmlFile';
 import type { DesktopHtmlFile } from './DesktopHtmlFile';
 import type { DesktopDocumentViewState } from './DesktopDocumentZoomModel';
-import { copyDesktopReferenceImage, saveDesktopReferenceFile } from './DesktopReferenceActions';
+import { copyDesktopReferenceImage, openDesktopReferenceFile, saveDesktopReferenceFile } from './DesktopReferenceActions';
 
 export interface DesktopFileNavigation {
   path: string;
   name: string;
 }
 
+interface WorkspaceFileMenuTarget {
+  key: string;
+  path: string;
+  name: string;
+  directory: boolean;
+}
+
+interface WorkspaceFileMenu {
+  target: WorkspaceFileMenuTarget;
+  session: string;
+  serial: number;
+  authorized: string;
+  copyPath: string;
+  offset: Position;
+}
+
 const PREVIEW_LINES: number = 400;
+const FILE_ROW_HEIGHT: number = 34;
+const FILE_HEADER_HEIGHT: number = 42;
 
 function imageName(name: string): boolean {
   return previewKindOf(name, 0) === PreviewKind.IMAGE || name.toLowerCase().endsWith('.bmp');
@@ -54,10 +74,11 @@ export struct DesktopFilesPane {
   @Prop focusScope: string = '';
   onHide: () => void = (): void => {};
   onOpenFile?: (path: string, name: string) => void;
+  onOpenFileIn?: (path: string, name: string, floating: boolean) => void;
+  @Prop canReferenceWorkspaceFile: boolean = false;
   readDocumentView?: () => DesktopDocumentViewState | undefined;
   onDocumentView?: (view: DesktopDocumentViewState) => void;
-  onReferenceWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
-  onAttachWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
+  onReferenceWorkspaceFile: (absolutePath: string) => void = (_absolutePath: string): void => {};
 
   @State private navigatorView: DesktopFileNavigatorView = emptyDesktopFileNavigatorView();
   @State private searchSettingsOpen: boolean = false;
@@ -79,6 +100,10 @@ export struct DesktopFilesPane {
   @State private previewLines: number = 0;
   @State private navigatorRowWidth: number = 0;
   @State private navigatorCurrent: string = '';
+  @State private fileMenu?: WorkspaceFileMenu = undefined;
+  private fileMenuSerial: number = 0;
+  private fileMenuRequestKey: string = '';
+  private pendingFileAction?: DesktopFileContextAction;
   private readonly navigatorScroller: Scroller = new Scroller();
   private navigatorDragWidth: number = 0;
   private revealNavigatorPath: string = '';
@@ -158,6 +183,7 @@ export struct DesktopFilesPane {
   }
 
   private stopNavigator(): void {
+    this.cancelFileMenu();
     this.closeSearchSettings(false);
     this.navigatorListening?.();
     this.navigatorListening = undefined;
@@ -248,6 +274,7 @@ export struct DesktopFilesPane {
   }
 
   private queueSearch(value: string, force: boolean = false): void {
+    if (value !== this.navigatorView.query) { this.cancelFileMenu(); }
     this.navigatorBinding?.queueSearch(value, force);
   }
 
@@ -263,6 +290,7 @@ export struct DesktopFilesPane {
   private fileFocusId(key: string): string { return key + this.focusScope; }
 
   private togglePreviewNavigator(): void {
+    this.cancelFileMenu();
     const open = !this.navigatorView.open;
     if (!open) { this.closeSearchSettings(false); }
     this.navigatorBinding?.setOpen(open);
@@ -335,6 +363,7 @@ export struct DesktopFilesPane {
   }
 
   private closePreview(): void {
+    if (this.fileMenu?.target.key === 'preview') { this.cancelFileMenu(); }
     this.cancelPreviewWatch?.();
     this.cancelPreviewWatch = undefined;
     this.previewRevision++;
@@ -452,27 +481,6 @@ export struct DesktopFilesPane {
     }
   }
 
-  private async previewFileAction(row: DesktopFileNavigatorRow, copyImage: boolean): Promise<void> {
-    const session = this.sessionId;
-    const ability = this.ability;
-    if (ability === undefined || !this.active) { return; }
-    const stat = await this.host?.call('workspaceFiles/stat', this.args(row.path));
-    if (!this.active || this.sessionId !== session) { return; }
-    const path = stat?.ok ? getString(stat.value, 'absolutePath') ?? '' : '';
-    if (!path.startsWith('/') || path.includes('\0')) {
-      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_file_preview_action_failed') });
-      return;
-    }
-    try {
-      if (copyImage) { await copyDesktopReferenceImage(path); }
-      else { await saveDesktopReferenceFile(ability, path, row.name); }
-    } catch (_) {
-      if (this.active && this.sessionId === session) {
-        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_file_preview_action_failed') });
-      }
-    }
-  }
-
   private searchEmptyHint(): ResourceStr {
     const hidden = !this.navigatorView.preferences.showHidden;
     const excluded = this.navigatorView.preferences.rules.some((rule: DesktopFileSearchRule): boolean => rule.enabled);
@@ -585,81 +593,283 @@ export struct DesktopFilesPane {
     }
   }
 
-  private fileOptions(row: DesktopFileNavigatorRow): MenuElement[] {
-    const items: MenuElement[] = [
-      { value: '复制相对路径', action: (): void => {
-        pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, row.path))
-          .catch((): void => { this.getUIContext().getPromptAction().showToast({ message: '无法复制路径' }); });
-      } }
-    ];
-    if (!row.directory) {
-      items.push({ value: '添加到对话', action: (): void => { this.onReferenceWorkspaceFile(row.path, row.name); } });
-      items.push({ value: '添加为附件', action: (): void => { this.onAttachWorkspaceFile(row.path, row.name); } });
-    }
-    if (!row.directory && this.ability !== undefined) {
-      items.push({ value: '在文件夹中显示', action: (): void => { this.revealFile(row); } });
-      if (this.selected?.path === row.path && this.previewUri) {
-        items.push({ value: $r('app.string.desktop_file_preview_system'), action: (): void => { this.openSystem(row); } });
-        items.push({ value: $r('app.string.desktop_file_preview_save'), action: (): void => { this.previewFileAction(row, false); } });
-        if (imageName(row.name)) {
-          items.push({ value: $r('app.string.desktop_file_preview_copy_image'), action: (): void => {
-            this.previewFileAction(row, true);
-          } });
-        }
-      }
-    }
-    return items;
+  private fileTarget(row: DesktopFileNavigatorRow): WorkspaceFileMenuTarget {
+    return { key: (row.spans === undefined ? 'tree:' : 'result:') + row.path,
+      path: row.path, name: row.name, directory: row.directory };
   }
 
-  private async revealFile(row: DesktopFileNavigatorRow): Promise<void> {
-    const result = await this.host?.call('workspaceFiles/stat', this.args(row.path));
-    const path = getString(result?.value, 'absolutePath') ?? '';
-    if (!path.startsWith('/') || !this.active || this.ability === undefined ||
-      openFileLocation(this.ability, path) !== 'ok') {
-      this.getUIContext().getPromptAction().showToast({ message: '无法在系统文件中定位' });
+  private headerFileTarget(): WorkspaceFileMenuTarget {
+    const file = this.selected;
+    const root = this.fileRoot().replace(new RegExp('/+$'), '');
+    return file === undefined ?
+      { key: 'root', path: '.', name: root.slice(root.lastIndexOf('/') + 1) || this.fileRoot(), directory: true } :
+      { key: 'preview', path: file.path, name: file.name, directory: false };
+  }
+
+  private async showFileMenu(target: WorkspaceFileMenuTarget, offset: Position): Promise<void> {
+    if (!this.active || !this.shown || !this.sessionId || this.fileMenuRequestKey === target.key ||
+      (target.key === 'root' && !this.fileRoot())) { return; }
+    this.cancelFileMenu();
+    this.fileMenuRequestKey = target.key;
+    const serial = this.fileMenuSerial;
+    const session = this.sessionId;
+    const root = this.fileRoot();
+    const metadata = await this.host?.call('workspaceFiles/stat', this.args(target.path)).catch((): undefined => undefined);
+    if (serial !== this.fileMenuSerial || !this.active || !this.shown || session !== this.sessionId ||
+      root !== this.fileRoot() || (target.key === 'preview' && target.path !== this.selected?.path)) {
+      if (serial === this.fileMenuSerial) { this.cancelFileMenu(); }
+      return;
+    }
+    const absolutePath = getString(metadata?.value, 'absolutePath') ?? '';
+    const fallback = desktopFileContextCopyPath(root, target.path);
+    let authorized = metadata?.ok && absolutePath.startsWith('/') && !absolutePath.includes('\0') ? absolutePath : '';
+    if (target.directory && metadata?.error?.code === 'workspace-file/not-regular-file' &&
+      getString(parseJson(metadata.error.details), 'kind') === 'directory') { authorized = fallback; }
+    this.fileMenu = { target: target, session: session, serial: serial, authorized: authorized,
+      copyPath: authorized || fallback, offset: offset };
+  }
+
+  private fileMenuMouse(event: MouseEvent, target: WorkspaceFileMenuTarget, height: number): void {
+    if (event.button !== MouseButton.Right) { return; }
+    if (event.action === MouseAction.Press) { event.stopPropagation(); }
+    else if (event.action === MouseAction.Release) {
+      event.stopPropagation();
+      this.showFileMenu(target, { x: event.x, y: event.y - height });
+    }
+  }
+
+  private fileMenuKey(event: KeyEvent, target: WorkspaceFileMenuTarget): boolean {
+    if (event.type !== KeyType.Down || event.metaKey === 1 || event.getModifierKeyState?.(['Alt']) === true ||
+      event.getModifierKeyState?.(['Ctrl']) === true || !(event.keyCode === KeyCode.KEYCODE_MENU ||
+        (event.keyCode === KeyCode.KEYCODE_F10 && event.getModifierKeyState?.(['Shift']) === true))) {
+      return false;
+    }
+    event.stopPropagation();
+    this.showFileMenu(target, { x: 0, y: 0 });
+    return true;
+  }
+
+  private fileMenuTouch(event: GestureEvent, target: WorkspaceFileMenuTarget, height: number): void {
+    const point = event.fingerList[0];
+    if (point !== undefined) { this.showFileMenu(target, { x: point.localX, y: point.localY - height }); }
+  }
+
+  private fileContextOptions(key: string): ContextMenuOptions {
+    const options: MenuOptions = desktopMenuOptions(Placement.BottomLeft);
+    const visible = this.fileMenu;
+    if (visible?.target.key !== key) {
+      return { placement: Placement.BottomLeft, systemMaterial: options.systemMaterial };
+    }
+    const serial = visible.serial;
+    return { placement: Placement.BottomLeft, systemMaterial: options.systemMaterial,
+      offset: visible.offset, onDisappear: (): void => { this.finishFileMenu(serial); } };
+  }
+
+  private cancelFileMenu(): void {
+    this.fileMenuSerial++;
+    this.fileMenuRequestKey = '';
+    this.pendingFileAction = undefined;
+    this.fileMenu = undefined;
+  }
+
+  private chooseFileAction(action: DesktopFileContextAction): void {
+    if (this.fileMenu !== undefined) { this.pendingFileAction = action; }
+  }
+
+  private finishFileMenu(serial: number): void {
+    const menu = this.fileMenu;
+    if (menu === undefined || menu.serial !== serial) { return; }
+    const action = this.pendingFileAction;
+    this.cancelFileMenu();
+    if (action !== undefined) { this.runFileAction(menu, action); }
+  }
+
+  private async runFileAction(menu: WorkspaceFileMenu, action: DesktopFileContextAction): Promise<void> {
+    if (!this.active || !this.shown || menu.session !== this.sessionId) { return; }
+    const ability = this.ability;
+    const toast = this.getUIContext().getPromptAction();
+    try {
+      switch (action) {
+        case DesktopFileContextAction.SIDEBAR:
+        case DesktopFileContextAction.FLOAT:
+          if (menu.authorized) {
+            this.onOpenFileIn?.(menu.target.path, menu.target.name, action === DesktopFileContextAction.FLOAT);
+          }
+          break;
+        case DesktopFileContextAction.REVEAL:
+          if (!menu.authorized || ability === undefined || openFileLocation(ability, menu.authorized) !== 'ok') {
+            toast.showToast({ message: $r('app.string.desktop_file_context_reveal_failed') });
+          }
+          break;
+        case DesktopFileContextAction.OPEN:
+          if (ability === undefined || !menu.authorized ||
+            !await openDesktopReferenceFile(ability, menu.authorized, menu.target.name)) {
+            toast.showToast({ message: $r('app.string.desktop_file_context_open_failed') });
+          }
+          break;
+        case DesktopFileContextAction.COPY_PATH:
+          if (menu.copyPath) {
+            const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, menu.copyPath);
+            await pasteboard.getSystemPasteboard().setData(data);
+            toast.showToast({ message: $r('app.string.desktop_file_context_copied') });
+          }
+          break;
+        case DesktopFileContextAction.COPY_IMAGE:
+          if (menu.authorized) {
+            await copyDesktopReferenceImage(menu.authorized);
+            toast.showToast({ message: $r('app.string.desktop_file_context_copied') });
+          }
+          break;
+        case DesktopFileContextAction.DOWNLOAD:
+          if (ability !== undefined && menu.authorized && await saveDesktopReferenceFile(ability, menu.authorized, menu.target.name)) {
+            toast.showToast({ message: $r('app.string.desktop_file_context_downloaded') });
+          }
+          break;
+        case DesktopFileContextAction.ADD_TO_CHAT:
+          if (this.canReferenceWorkspaceFile && menu.copyPath) { this.onReferenceWorkspaceFile(menu.copyPath); }
+          break;
+      }
+    } catch (_) {
+      if (this.active && menu.session === this.sessionId) {
+        toast.showToast({ message: action === DesktopFileContextAction.DOWNLOAD ?
+          $r('app.string.desktop_file_context_download_failed') : $r('app.string.desktop_file_context_copy_failed') });
+      }
+    }
+  }
+
+  private pathFileItems(): DesktopFileContextItem[] {
+    const menu = this.fileMenu;
+    const verified = !!menu?.authorized;
+    return desktopFileContextPathItems(menu?.target.directory === true, verified && this.ability !== undefined,
+      verified && this.onOpenFileIn !== undefined, !!menu?.copyPath);
+  }
+
+  private fileTransferItems(): DesktopFileContextItem[] {
+    const menu = this.fileMenu;
+    const native = !!menu?.authorized && this.ability !== undefined;
+    return desktopFileContextTransferItems(mimeTypeForName(menu?.target.name ?? '').startsWith('image/'), native, native);
+  }
+
+  private fileContextTitle(action: DesktopFileContextAction): ResourceStr {
+    switch (action) {
+      case DesktopFileContextAction.SIDEBAR: return $r('app.string.desktop_file_context_sidebar');
+      case DesktopFileContextAction.FLOAT: return $r('app.string.desktop_file_context_float');
+      case DesktopFileContextAction.REVEAL: return $r('app.string.desktop_file_context_reveal');
+      case DesktopFileContextAction.OPEN: return $r('app.string.desktop_file_context_open');
+      case DesktopFileContextAction.COPY_PATH:
+        return this.fileMenu?.target.directory ? $r('app.string.desktop_file_context_copy_folder') :
+          $r('app.string.desktop_file_context_copy_file');
+      case DesktopFileContextAction.COPY_IMAGE: return $r('app.string.desktop_file_preview_copy_image');
+      case DesktopFileContextAction.DOWNLOAD: return $r('app.string.desktop_file_context_download');
+      case DesktopFileContextAction.ADD_TO_CHAT: return $r('app.string.desktop_file_context_reference');
+    }
+  }
+
+  private fileContextIcon(action: DesktopFileContextAction): Resource {
+    switch (action) {
+      case DesktopFileContextAction.SIDEBAR: return $r('app.media.dsh_file_context_sidebar');
+      case DesktopFileContextAction.FLOAT:
+      case DesktopFileContextAction.OPEN: return $r('app.media.dsh_reference_menu_right_up');
+      case DesktopFileContextAction.REVEAL: return $r('app.media.dsh_reference_menu_folder_open');
+      case DesktopFileContextAction.DOWNLOAD: return $r('app.media.dsh_session_download');
+      case DesktopFileContextAction.ADD_TO_CHAT: return $r('app.media.dsh_reference_menu_plus');
+      default: return $r('app.media.dsh_session_copy');
     }
   }
 
   @Builder
-  private FileLine(row: DesktopFileNavigatorRow) {
-    Row({ space: 5 }) {
-      if (row.directory) {
-        Image(row.expanded ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
-          .width(16).height(16).supportSvg2(true).draggable(false).accessibilityLevel('no')
-      } else {
-        Image(desktopFileTypeIcon(row.name)).width(16).height(16).supportSvg2(true)
-          .draggable(false).accessibilityLevel('no')
+  private FileContextItem(action: DesktopFileContextAction, enabled: boolean) {
+    MenuItem({ content: this.fileContextTitle(action), startIcon: this.fileContextIcon(action) })
+      .key('desktopFileContext-' + action).enabled(enabled)
+      .onChange((_selected: boolean): void => { this.chooseFileAction(action); })
+  }
+
+  @Builder
+  private FileContextMenu() {
+    Menu() {
+      MenuItemGroup() {
+        ForEach(this.pathFileItems(), (item: DesktopFileContextItem): void => {
+          this.FileContextItem(item.action, item.enabled)
+        }, (item: DesktopFileContextItem): string => item.action)
       }
-      Column({ space: 2 }) {
-        if (row.spans !== undefined) {
-          Text() {
-            ForEach(row.spans, (span: DesktopFileNameSpan): void => {
-              if (span.highlight) {
-                Span(span.text).textBackgroundStyle({ color: $r('app.color.workspace_selection'), radius: 3 })
-              } else {
-                Span(span.text)
-              }
-            }, (_span: DesktopFileNameSpan, index: number): string => String(index))
-          }.fontSize(14).fontColor($r('sys.color.font_primary'))
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-        } else {
-          Text(row.name).fontSize(14).fontColor($r('sys.color.font_primary'))
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+      if (this.fileMenu?.target.directory !== true) {
+        MenuItemGroup() {
+          ForEach(this.fileTransferItems(), (item: DesktopFileContextItem): void => {
+            this.FileContextItem(item.action, item.enabled)
+          }, (item: DesktopFileContextItem): string => item.action)
+        }
+        MenuItemGroup() {
+          this.FileContextItem(DesktopFileContextAction.ADD_TO_CHAT, this.canReferenceWorkspaceFile && !!this.fileMenu?.copyPath)
         }
       }
-      .layoutWeight(1).alignItems(HorizontalAlign.Start)
-      if (row.loading) {
-        LoadingProgress().width(14).height(14)
-      }
-      Button('⋯', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(30).height(30).padding(0)
-        .accessibilityText(row.name + '操作').bindMenu(this.fileOptions(row), desktopMenuOptions(Placement.BottomRight))
+    }.width(216)
+  }
+
+  @Builder
+  private FileContextHeading() {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Row() {
+        Text(this.selected?.name || this.headerFileTarget().name || $r('app.string.desktop_dock_file_tab'))
+          .fontSize(14).fontWeight(FontWeight.Medium).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%')
+    }.layoutWeight(1).height(FILE_HEADER_HEIGHT).padding(0).borderRadius(8)
+      .focusable(true).tabIndex(0).focusOnTouch(false)
+      .key('desktopFileContextHeading-' + this.headerFileTarget().key)
+      .onClick((): void => { this.showFileMenu(this.headerFileTarget(), { x: 0, y: 0 }); })
+      .onMouse((event: MouseEvent): void => { this.fileMenuMouse(event, this.headerFileTarget(), FILE_HEADER_HEIGHT); })
+      .onKeyEvent((event: KeyEvent): boolean => this.fileMenuKey(event, this.headerFileTarget()))
+      .priorityGesture(LongPressGesture({ duration: 420 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+        .onAction((event: GestureEvent): void => { this.fileMenuTouch(event, this.headerFileTarget(), FILE_HEADER_HEIGHT); }))
+      .bindContextMenu(this.fileMenu !== undefined && this.fileMenu.target.key === this.headerFileTarget().key,
+        this.FileContextMenu(), this.fileContextOptions(this.headerFileTarget().key))
+  }
+
+  @Builder
+  private FileLine(row: DesktopFileNavigatorRow) {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Row({ space: 5 }) {
+        if (row.directory) {
+          Image(row.expanded ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
+            .width(16).height(16).supportSvg2(true).draggable(false).accessibilityLevel('no')
+        } else {
+          Image(desktopFileTypeIcon(row.name)).width(16).height(16).supportSvg2(true)
+            .draggable(false).accessibilityLevel('no')
+        }
+        Column({ space: 2 }) {
+          if (row.spans !== undefined) {
+            Text() {
+              ForEach(row.spans, (span: DesktopFileNameSpan): void => {
+                if (span.highlight) {
+                  Span(span.text).textBackgroundStyle({ color: $r('app.color.workspace_selection'), radius: 3 })
+                } else {
+                  Span(span.text)
+                }
+              }, (_span: DesktopFileNameSpan, index: number): string => String(index))
+            }.fontSize(14).fontColor($r('sys.color.font_primary'))
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          } else {
+            Text(row.name).fontSize(14).fontColor($r('sys.color.font_primary'))
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          }
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        if (row.loading) {
+          LoadingProgress().width(14).height(14)
+        }
+      }.width('100%')
     }
     .key((row.spans === undefined ? 'desktopWorkspaceFile-' : 'desktopFileSearchResult-') + row.path)
-    .width('100%').constraintSize({ minHeight: 34 }).padding({ left: 10 + Math.min(row.depth, 12) * 12, right: 8 })
+    .width('100%').constraintSize({ minHeight: FILE_ROW_HEIGHT }).padding({ left: 10 + Math.min(row.depth, 12) * 12, right: 8 })
     .borderRadius(8).backgroundColor(this.navigatorCurrent === row.path ?
       $r('app.color.workspace_selection') : Color.Transparent)
-    .accessibilitySelected(this.navigatorCurrent === row.path)
+    .accessibilitySelected(this.navigatorCurrent === row.path).focusable(true).tabIndex(0).focusOnTouch(false)
+    .onMouse((event: MouseEvent): void => { this.fileMenuMouse(event, this.fileTarget(row), FILE_ROW_HEIGHT); })
+    .onKeyEvent((event: KeyEvent): boolean => this.fileMenuKey(event, this.fileTarget(row)))
+    .priorityGesture(LongPressGesture({ duration: 420 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
+      .onAction((event: GestureEvent): void => { this.fileMenuTouch(event, this.fileTarget(row), FILE_ROW_HEIGHT); }))
+    .bindContextMenu(this.fileMenu?.target.key === this.fileTarget(row).key,
+      this.FileContextMenu(), this.fileContextOptions(this.fileTarget(row).key))
     .onClick((): void => {
+      this.cancelFileMenu();
       if (row.directory || this.onOpenFile === undefined) { this.select(row); }
       else { this.onOpenFile(row.path, row.name); }
     })
@@ -850,8 +1060,7 @@ export struct DesktopFilesPane {
           Button('‹', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(32).padding(0)
             .accessibilityText('返回文件列表').onClick((): void => { this.closePreview(); })
         }
-        Text(this.selected?.name ?? '工作区文件').fontSize(14).fontWeight(FontWeight.Medium)
-          .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        this.FileContextHeading()
         if (this.selected !== undefined) {
           if (desktopIsHtmlFile(this.selected.name)) {
             Button(this.sourceHtml ? $r('app.string.desktop_html_preview_rendered') :
@@ -876,8 +1085,6 @@ export struct DesktopFilesPane {
             .accessibilityText($r('app.string.desktop_file_preview_reload')).onClick((): void => {
               if (this.selected !== undefined) { this.loadPreview(this.selected, this.previewOffset); }
             })
-          Button('⋯', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(36).padding(0)
-            .bindMenu(this.fileOptions(this.selected), desktopMenuOptions(Placement.BottomRight))
           if (this.previewOnly && this.fileRoot()) {
             Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
               Image(this.navigatorView.open ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
@@ -896,6 +1103,7 @@ export struct DesktopFilesPane {
       }
       .height(42).padding({ left: 9, right: 4 }).width('100%')
       .border({ width: { bottom: 1 }, color: $r('app.color.workspace_border') })
+      .onKeyEvent((event: KeyEvent): boolean => this.fileMenuKey(event, this.headerFileTarget()))
       if (this.selected !== undefined) {
         if (this.previewOnly) { this.PreviewWithNavigator() }
         else { this.PreviewBody() }

@@ -13,6 +13,11 @@
     {"name":"desktop_preset_view_action","value":"查看配置: %1$s"},
     {"name":"desktop_preset_view_title","value":"查看配置 · %1$s"},
     {"name":"desktop_preset_view_close","value":"关闭"},
-    {"name":"desktop_preset_view_failed","value":"无法读取预设配置。"}
+    {"name":"desktop_preset_view_failed","value":"无法读取预设配置。"},
+    {"name":"desktop_preset_section_title","value":"Agent 预设"},
+    {"name":"desktop_preset_section_intro","value":"选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展 DSH 的能力用「创造模式」。"},
+    {"name":"desktop_preset_group_built_in","value":"内置"},
+    {"name":"desktop_preset_group_custom","value":"自定义"},
+    {"name":"desktop_preset_create","value":"让 Agent 帮我创建预设模式"}
   ]
 }

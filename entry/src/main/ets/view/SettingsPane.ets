@@ -142,6 +142,7 @@ export struct SettingsPane {
   onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
   private desktopNavScroller: Scroller = new Scroller();
   onOpenShortcuts: () => void = () => {};
+  onStartPresetCreator?: () => void;
   /** 可用分区清单（注册表给；切换器按它画，顺序也由它定） */
   @Prop sections: PanelDescriptor[] = [];
   /** 选一个分区（宿主经注册表校验后写进 `settingsSection`） */
@@ -150,14 +151,11 @@ export struct SettingsPane {
 
   build() {
     Column() {
-      if (this.desktopShortcuts && !this.settingsCompact) {
-        Row() {
+      if (this.desktopShortcuts) {
+        Flex({ direction: this.settingsCompact ? FlexDirection.Column : FlexDirection.Row, alignItems: ItemAlign.Stretch }) {
           this.desktopNavigation()
-          Column() { this.options() }.layoutWeight(1).height('100%')
+          this.options()
         }.layoutWeight(1).width('100%')
-      } else if (this.desktopShortcuts) {
-        this.desktopNavigation()
-        this.options()
       } else {
         this.tabBar()
         Divider().color($r('sys.color.comp_divider'))
@@ -197,6 +195,7 @@ export struct SettingsPane {
             // 三个组件内临时态（两步确认 / 只读查看）与「查看」的中枢直读都随之搬走。
             SettingsPresets({
               desktopViewer: this.desktopShortcuts, compositionHost: this.desktopAccountHost,
+              startCreator: this.onStartPresetCreator,
               presets: this.desktopShortcuts ? this.presets.filter((row: AgentPresetRow): boolean =>
                 desktopPresetVisible(row.id, row.name || undefined, this.codingTools.enabled)) : this.presets,
               note: this.presetNote,

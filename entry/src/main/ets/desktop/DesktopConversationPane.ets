@@ -2221,9 +2221,10 @@ export struct DesktopConversationPane {
         }
         if ((this.snapshot?.queue.length ?? 0) > 0) {
           DesktopQueueDock({ sessionId: this.sessionId, rows: this.snapshot?.queue ?? [],
-            running: this.snapshot?.running === true, busy: this.busy, mutable: this.subagentCanSend(), host: this.host,
+            running: this.snapshot?.running === true, mutable: this.subagentCanSend(), host: this.host,
             attached: this.subagentCanSend() && this.visibleInteraction().length === 0 && this.questionReview() === undefined,
-            onAction: this.onQueueAction })
+            skills: this.snapshot?.skills, skillLookupEnabled: this.snapshot?.subagent === undefined,
+            codeFamily: this.typography.codeFamily, onSkillsNeeded: this.onLoadSkills, onAction: this.onQueueAction })
         }
         if (this.subagentCanSend()) {
           this.Composer()

@@ -1,6 +1,6 @@
 import { KeyCode } from '@kit.InputKit';
 import { common } from '@kit.AbilityKit';
-import { window } from '@kit.ArkUI';
+import { ComponentContent, LengthMetrics, window } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture } from '../desktop/DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
@@ -82,7 +82,8 @@ import type { DesktopShortcutRow } from '../desktop/DesktopShortcuts';
 import { desktopDockCloseFloat, desktopDockCloseTab, desktopDockFloat, desktopDockFloatPosition, desktopDockFloatRect,
   desktopDockFocusFloat, desktopDockMerge, desktopDockMoveTab, desktopDockOpen, desktopDockSeatFloat, desktopDockSelect,
   desktopDockPresentation, desktopDockResize, desktopDockSplit, desktopDockSplitFraction, desktopDockTab,
-  desktopDockBindTerminal, desktopDockBrowserAddress, desktopDockChatTab, desktopDockNavigatePreview, desktopDockResourceId,
+  desktopDockBindTerminal, desktopDockBrowserAddress, desktopDockChatTab, desktopDockNavigatePreview, desktopDockOpenPreviewIn,
+  desktopDockResourceId,
   desktopDockTerminalIds,
   desktopDockTerminalTab, desktopDockProjectTerminals,
   DesktopDockKind, emptyDesktopDock } from '../desktop/DesktopRightDock';
@@ -111,7 +112,9 @@ import { desktopWorkspaceAppearance, saveDesktopWorkspaceAppearance, setDesktopW
 import type { DesktopSavedChildSelection } from '../desktop/DesktopWorkspacePreference';
 import { DEFAULT_DESKTOP_TYPOGRAPHY, sameDesktopTypography } from '../desktop/DesktopTheme';
 import type { DesktopTheme, DesktopTypography } from '../desktop/DesktopTheme';
-import lazy { IndexContent } from './IndexContent';
+import lazy { buildDesktopSettingsSurface, desktopSettingsSize } from '../desktop/DesktopSettingsSurface';
+import type { DesktopSettingsSize, DesktopSettingsSurfaceParams } from '../desktop/DesktopSettingsSurface';
+import lazy { disposeOverlayContent } from '../common/DesktopWebPicker';
 import { DesktopSessionGrouping, DesktopSessionOrdering, desktopReorderSessions, desktopSessionAccount,
   desktopSessionOrder, desktopSessionOrdersEqual, desktopSessionRows, desktopSidebarSections,
   desktopWorkspaceMove, desktopWorkspaceParents } from '../desktop/DesktopSessionOrder';
@@ -268,7 +271,7 @@ struct DesktopWorkspace {
   @State private searchOpen: boolean = false;
   @State private query: string = '';
   @State private selectedWorkspaceTitle: ResourceStr = '';
-  @State private appearance: string = 'system';
+  @State @Watch('refreshSettingsSurface') private appearance: string = 'system';
   @State private typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
   @State private shortcutsOpen: boolean = false;
   @State private shortcutBindings: DesktopShortcutRow[] = desktopShortcutRows([]);
@@ -280,7 +283,11 @@ struct DesktopWorkspace {
   @State private error: string = '';
   @State private switching: boolean = false;
   @State private settingsOpen: boolean = false;
-  private settingsDialog: number = -1;
+  private settingsSurface?: ComponentContent<DesktopSettingsSurfaceParams>;
+  private settingsSurfaceSize?: DesktopSettingsSize;
+  private settingsSizing: boolean = false;
+  private settingsSurfaceReady: boolean = false;
+  private settingsClosing: boolean = false;
   private settingsSection: string = 'settings.general';
   private settingsOpeningPlugins: boolean = false;
   @State @Watch('onPanelChanged') private panel: string = 'session';
@@ -338,6 +345,7 @@ struct DesktopWorkspace {
   private imageDialogVersion: number = 0;
   private imageDialogOpening: boolean = false;
   @State private creating: boolean = false;
+  @State private landingPreset: string = '';
   @State private busySessions: string[] = [];
   @State private stoppingSessions: string[] = [];
   @State private copyingTranscript: boolean = false;
@@ -386,7 +394,7 @@ struct DesktopWorkspace {
   private readonly accountSessionToastTimers = new Map<DesktopAccountSessionNotice, DesktopAccountSessionToastTimers>();
   private accountSessionToastToken: number = 0;
   @State private accountOnboarding: DesktopOnboardingView = emptyDesktopOnboardingView();
-  @State private codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
+  @State @Watch('refreshSettingsSurface') private codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   private onboardingBrowser?: DesktopWorkspaceData;
   private onboardingBrowserLeft: boolean = false;
   private onboardingBrowserTimer: number = -1;
@@ -1531,6 +1539,7 @@ struct DesktopWorkspace {
 
   private selectSession(group: DesktopWorkspaceGroup, session: SessionListItem,
     subagent: DesktopSubagentEntry | undefined = desktopSubagentFromSummary(session)): void {
+    this.landingPreset = '';
     if (this.dockSessionId !== session.id) {
       this.dockSessionId = session.id;
       this.dockTabContext = undefined;
@@ -1667,7 +1676,8 @@ struct DesktopWorkspace {
     const previousSession = this.sessionId;
     const previousPanel = this.panel;
     const version = ++this.nativeSelectionVersion;
-    const created = await data.createSession(workspace.id, preset)
+    const wantedPreset = preset || (previousSession || prompt ? '' : this.landingPreset);
+    const created = await data.createSession(workspace.id, wantedPreset)
       .catch((): DesktopSessionCreation => ({ id: '', problem: '' }));
     if (!this.pageActive || this.data !== data) {
       return;
@@ -1709,6 +1719,19 @@ struct DesktopWorkspace {
 
   private createPluginDraft(prompt: Resource): void {
     this.newSession(undefined, this.accessibilityLabel(prompt), 'cordis');
+  }
+
+  private startPresetCreator(): void {
+    if (!this.ready || this.creating || this.data === undefined) { return; }
+    if (this.groups.some((group: DesktopWorkspaceGroup): boolean => !!group.id)) {
+      this.newSession(undefined, '', 'cordis');
+      return;
+    }
+    this.clearSession(true);
+    this.workspaceId = '';
+    this.selectedWorkspaceTitle = '';
+    this.panel = 'session';
+    this.landingPreset = 'cordis';
   }
 
   private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string,
@@ -1828,27 +1851,6 @@ struct DesktopWorkspace {
     } catch (_) {
       return '无法读取剪贴板附件';
     }
-  }
-
-  private attachWorkspaceFile(path: string, name: string): void {
-    const data = this.data;
-    if (data === undefined) {
-      return;
-    }
-    this.chatAction(async (id: string): Promise<string> => {
-      const response = await data.actions.call('workspaceFiles/stat', {
-        'workspaceFileScopeId': id, 'path': path
-      });
-      if (!response.ok) {
-        return desktopHostProblem(response);
-      }
-      const absolutePath = getString(response.value, 'absolutePath') ?? '';
-      const uri = absolutePath.startsWith('/') ? uriFromPath(absolutePath) : '';
-      if (!uri) {
-        return '无法访问宿主返回的文件';
-      }
-      return this.stageDocument(data, id, uri, name);
-    });
   }
 
   private async stageDocument(data: DesktopWorkspaceData, id: string, uri: string, name: string = '',
@@ -2420,6 +2422,20 @@ struct DesktopWorkspace {
     this.setDock(next);
   }
 
+  private openArtifactIn(index: number, tab: DesktopDockTab, path: string, name: string, floating: boolean): void {
+    if (!this.pageActive || !this.dockTabShown(index, tab.id) || this.dockStoredTab(index, tab.id) === undefined) {
+      return;
+    }
+    const next = desktopDockOpenPreviewIn(this.rightDock, path, name, tab.sourceSessionId,
+      floating, this.defaultFloatRect(), this.fileSearchRoot(tab));
+    if (next !== this.rightDock) { this.setDock(next); }
+  }
+
+  private fileMenuCanReference(session: string): boolean {
+    return session === this.sessionId && this.chat?.sessionId === session && this.chat.loading === false &&
+      !this.busySessions.includes(session);
+  }
+
   private showChanges(target: DesktopChangeTarget, sessionId: string = this.sessionId): void {
     if (target.sessionId !== sessionId) { return; }
     const source = sessionId === this.sessionId ? undefined : sessionId;
@@ -2611,17 +2627,39 @@ struct DesktopWorkspace {
     this.panel = 'plugins';
   }
 
-  @Builder
-  private SettingsDialog(compact: boolean) {
-    WithTheme({ colorMode: this.workspaceColorMode() }) {
-      IndexContent({ desktopSection: this.settingsSection, desktopSettingsCompact: compact,
-        desktopAccountNotices: this.data?.accountNotices, desktopAccountHost: this.data?.actions,
-        desktopCodingTools: this.codingTools,
-        onDesktopCodingToolsChange: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
-        onCloseSettings: (): void => { this.closeSettings(); },
-        onSettingsSection: (section: string): void => { this.settingsSection = section; },
-        onOpenPlugins: (): void => { this.settingsOpeningPlugins = true; } })
-    }
+  private settingsSurfaceParams(): DesktopSettingsSurfaceParams {
+    return { compact: this.settingsSurfaceSize?.compact ?? false, mode: this.workspaceColorMode(),
+      section: this.settingsSection, accountNotices: this.data?.accountNotices, host: this.data?.actions,
+      codingTools: this.codingTools, changeCodingTools: (enabled: boolean): void => { this.data?.codingTools.setEnabled(enabled); },
+      close: (): void => { this.closeSettings(); },
+      startCreator: (): void => { this.startPresetCreator(); },
+      selectSection: (section: string): void => { this.settingsSection = section; },
+      openPlugins: (): void => { this.settingsOpeningPlugins = true; } };
+  }
+
+  private refreshSettingsSurface(): void {
+    if (!this.settingsClosing) { this.settingsSurface?.update(this.settingsSurfaceParams()); }
+  }
+
+  private resizeSettingsSurface(): void {
+    const content = this.settingsSurface;
+    if (content === undefined || !this.settingsSurfaceReady || this.settingsClosing || this.settingsSizing) { return; }
+    const size = desktopSettingsSize(this.workbenchWidth, this.workbenchHeight);
+    const previous = this.settingsSurfaceSize;
+    if (size.width === previous?.width && size.height === previous?.height) { return; }
+    this.settingsSizing = true;
+    const style: SheetOptions = { width: size.width, height: size.height,
+      radius: LengthMetrics.vp(size.compact ? 0 : 28) };
+    this.getUIContext().updateBindSheet(content, style, true).then((): void => {
+      if (content !== this.settingsSurface) { return; }
+      this.settingsSizing = false;
+      if (this.settingsClosing) { return; }
+      this.settingsSurfaceSize = size;
+      if (previous?.compact !== size.compact) { this.refreshSettingsSurface(); }
+      this.resizeSettingsSurface();
+    }).catch((): void => {
+      if (content === this.settingsSurface) { this.settingsSizing = false; }
+    });
   }
 
   private async openSettings(section: string = ''): Promise<void> {
@@ -2629,33 +2667,56 @@ struct DesktopWorkspace {
     if (section) { this.settingsSection = section; }
     this.settingsOpen = true;
     this.syncReading();
-    const prompt = this.getUIContext().getPromptAction();
+    const ui = this.getUIContext();
+    let opening: ComponentContent<DesktopSettingsSurfaceParams> | undefined;
     try {
+      const size = desktopSettingsSize(this.workbenchWidth, this.workbenchHeight);
+      this.settingsSurfaceSize = size;
+      const content = new ComponentContent<DesktopSettingsSurfaceParams>(ui, wrapBuilder(buildDesktopSettingsSurface),
+        this.settingsSurfaceParams());
+      this.settingsSurface = content;
+      opening = content;
       const material = dialogMaterial();
-      const compact = this.workbenchWidth < 768;
-      const id = await prompt.openCustomDialog({
-        builder: (): void => { this.SettingsDialog(compact); }, alignment: DialogAlignment.Center,
-        width: compact ? this.workbenchWidth : Math.min(800, this.workbenchWidth - 48),
-        height: compact ? this.workbenchHeight : Math.max(180, Math.min(800, this.workbenchHeight - 48)),
-        autoCancel: true, isModal: true, cornerRadius: compact ? 0 : 28, systemMaterial: material,
+      await ui.openBindSheet(content, {
+        preferType: SheetType.CENTER, width: size.width, height: size.height,
+        dragBar: false, showClose: false, radius: LengthMetrics.vp(size.compact ? 0 : 28), systemMaterial: material,
         maskColor: $r('app.color.desktop_settings_mask'),
         backgroundColor: material === undefined ? $r('app.color.desktop_settings_surface') : undefined,
-        onDidDisappear: (): void => { this.settingsDismissed(); }
+        onDisappear: (): void => { if (this.settingsSurface === content) { this.settingsDismissed(); } }
       });
-      if (this.pageActive && this.settingsOpen) { this.settingsDialog = id; }
-      else { prompt.closeCustomDialog(id); }
+      if (this.settingsSurface !== content) { return; }
+      this.settingsSurfaceReady = true;
+      if (this.settingsClosing || !this.pageActive) { this.dismissSettingsSurface(content); }
+      else { this.resizeSettingsSurface(); }
     } catch (_) {
-      this.settingsDismissed();
-      if (this.pageActive) { prompt.showToast({ message: $r('app.string.desktop_settings_failed') }); }
+      if (opening === undefined || this.settingsSurface === opening) {
+        this.settingsDismissed();
+        if (this.pageActive) { ui.getPromptAction().showToast({ message: $r('app.string.desktop_settings_failed') }); }
+      }
     }
   }
 
   private closeSettings(): void {
-    if (this.settingsDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.settingsDialog); }
+    const content = this.settingsSurface;
+    if (content === undefined || this.settingsClosing) { return; }
+    this.settingsClosing = true;
+    if (this.settingsSurfaceReady) { this.dismissSettingsSurface(content); }
+  }
+
+  private dismissSettingsSurface(content: ComponentContent<DesktopSettingsSurfaceParams>): void {
+    this.getUIContext().closeBindSheet(content).catch((): void => {
+      if (this.settingsSurface === content) { this.settingsClosing = false; }
+    });
   }
 
   private settingsDismissed(): void {
-    this.settingsDialog = -1;
+    const content = this.settingsSurface;
+    this.settingsSurface = undefined;
+    this.settingsSurfaceSize = undefined;
+    this.settingsSurfaceReady = false;
+    this.settingsSizing = false;
+    this.settingsClosing = false;
+    if (content !== undefined) { disposeOverlayContent(content); }
     this.settingsOpen = false;
     const showPlugins = this.settingsOpeningPlugins;
     this.settingsOpeningPlugins = false;
@@ -4721,9 +4782,16 @@ struct DesktopWorkspace {
             this.showArtifact(path, name, tab.sourceSessionId ?? this.sessionId);
           }
         },
-        onAttachWorkspaceFile: (path: string, name: string): void => { this.attachWorkspaceFile(path, name); },
-        onReferenceWorkspaceFile: (path: string, name: string): void => {
-          this.referenceFileAction(DesktopReferenceAction.ADD_TO_CHAT, path, name);
+        onOpenFileIn: (path: string, name: string, floating: boolean): void => {
+          this.openArtifactIn(index, tab, path, name, floating);
+        },
+        canReferenceWorkspaceFile: this.fileMenuCanReference(tab.sourceSessionId ?? this.sessionId),
+        onReferenceWorkspaceFile: (path: string): void => {
+          const session = tab.sourceSessionId ?? this.sessionId;
+          if (this.pageActive && this.dockTabShown(index, tab.id) && this.fileMenuCanReference(session) &&
+            desktopReferenceText(path, false, true)) {
+            this.referenceOffer = { sessionId: session, path: path };
+          }
         } })
     } else if (tab.kind === DesktopDockKind.TERMINAL) {
       DesktopTerminalPane({ host: this.data?.actions, sessionId: this.sessionId, appearance: this.appearance,
@@ -5074,6 +5142,13 @@ struct DesktopWorkspace {
             ready: this.ready && !this.creating && !this.workspaceBusy,
             onPick: (id: string): void => { this.newSession(id); },
             onAdd: (): void => { this.addWorkspace(); } })
+          if (this.landingPreset === 'cordis') {
+            Row({ space: 6 }) {
+              Image($r('app.media.dsh_agent_preset_outline')).width(14).height(14).supportSvg2(true)
+                .draggable(false).accessibilityLevel('no')
+              Text($r('app.string.desktop_agent_preset_cordis')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+            }.key('desktopLandingCreatorPreset').accessibilityGroup(true).padding({ left: 8, right: 8 })
+          }
         }
         .width('100%').padding({ left: 4 })
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
@@ -5214,6 +5289,7 @@ struct DesktopWorkspace {
         this.workbenchBounds = area;
         this.workbenchWidth = Number(area.width);
         this.workbenchHeight = Number(area.height);
+        this.resizeSettingsSurface();
         this.openFirstTimelineTree();
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
         this.defaultDockWidth = Math.max(DOCK_MIN_WIDTH, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
