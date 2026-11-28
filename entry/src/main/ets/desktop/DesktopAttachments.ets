@@ -4,6 +4,7 @@ import { formatBytes } from 'appstate';
 import type { PendingAttachment } from 'appstate';
 import { getArray, getNumber, getRecord, getString } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
+import { desktopFileTypeIcon } from './DesktopFileType';
 
 export interface DesktopMediaAttachment {
   id: string;
@@ -151,7 +152,8 @@ export struct DesktopAttachmentFile {
 
   build() {
     Row({ space: 5 }) {
-      SymbolGlyph($r('sys.symbol.doc_text')).fontSize(14).accessibilityLevel('no')
+      Image(desktopFileTypeIcon(this.filename)).width(16).height(16).supportSvg2(true)
+        .draggable(false).accessibilityLevel('no')
       Text(this.filename).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         .constraintSize({ maxWidth: 138 })
       Text(formatBytes(this.bytes)).fontSize(11).fontColor($r('sys.color.font_tertiary'))

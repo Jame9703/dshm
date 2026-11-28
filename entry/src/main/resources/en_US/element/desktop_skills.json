@@ -2,6 +2,13 @@
   "string": [
     { "name": "desktop_skills_label", "value": "Skills" },
     { "name": "desktop_skills_user_only", "value": "user-only" },
-    { "name": "desktop_skills_failed", "value": "Could not load skills for this session" }
+    { "name": "desktop_skills_failed", "value": "Could not load skills for this session" },
+    { "name": "desktop_skill_tool_title", "value": "Skill" },
+    { "name": "desktop_skill_tool_preparing", "value": "Preparing to load a skill" },
+    { "name": "desktop_skill_tool_running", "value": "Loading skill" },
+    { "name": "desktop_skill_tool_failed", "value": "Skill load failed" },
+    { "name": "desktop_skill_tool_stopped", "value": "Skill load stopped" },
+    { "name": "desktop_skill_tool_instructions", "value": "Instructions" },
+    { "name": "desktop_skill_tool_inspect", "value": "Inspect" }
   ]
 }

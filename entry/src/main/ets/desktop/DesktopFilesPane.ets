@@ -1,21 +1,22 @@
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
-import { FileNode, FilePreview, NodeKind, PreviewKind, previewKindOf, projectWorkspaceListing,
-  projectWorkspaceText, WORKSPACE_ROOT_REQUEST_PATH } from 'appstate';
+import { FilePreview, PreviewKind, previewKindOf, projectWorkspaceText } from 'appstate';
 import { getBoolean, getNumber, getString } from 'connection';
 import { isSystemPreviewableName, mimeTypeForName, openFileLocation, openSystemPreview, uriFromPath } from 'platform';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
-import { defaultDesktopFileSearchPreferences, enabledDesktopFileSearchPaths } from './DesktopFileSearchModel';
-import type { DesktopFileSearchPreferencePatch, DesktopFileSearchPreferences, DesktopFileSearchRule } from './DesktopFileSearchModel';
-import type { DesktopFileSearchPreferenceBook } from './DesktopFileSearchPreference';
-import { desktopFileSearchResults, desktopWorkspaceRelativePath } from './DesktopFileSearchResults';
-import type { DesktopFileNameSpan, DesktopFileSearchNode, DesktopFileSearchResults } from './DesktopFileSearchResults';
-import { DESKTOP_FILE_NAVIGATOR_DEFAULT_WIDTH, DesktopFileNavigatorMode, desktopFileNavigatorBounds,
+import { DesktopFileSearchPreferencePatch, DesktopFileSearchRule } from './DesktopFileSearchModel';
+import { DesktopFileSearchPreferenceBook } from './DesktopFileSearchPreference';
+import { DesktopFileNameSpan } from './DesktopFileSearchResults';
+import { DesktopFileNavigatorMode, desktopFileNavigatorBounds,
   desktopFileNavigatorMode, desktopFileNavigatorRelativePath } from './DesktopFileNavigatorModel';
+import { DESKTOP_FILE_REVEAL_PENDING, DesktopFileNavigator, DesktopFileNavigatorBook,
+  DesktopFileNavigatorLink, DesktopFileNavigatorRow, DesktopFileNavigatorView,
+  emptyDesktopFileNavigatorView } from './DesktopFileNavigator';
 import { DesktopFileSearchSettings } from './DesktopFileSearchSettings';
+import { desktopFileTypeIcon } from './DesktopFileType';
 import lazy { DesktopPdfPreview } from './DesktopPdfPreview';
 import lazy { DesktopImageFilePreview } from './DesktopImageFilePreview';
 import lazy { DesktopHtmlPreview } from './DesktopHtmlPreview';
@@ -24,30 +25,11 @@ import type { DesktopHtmlFile } from './DesktopHtmlFile';
 import type { DesktopDocumentViewState } from './DesktopDocumentZoomModel';
 import { copyDesktopReferenceImage, saveDesktopReferenceFile } from './DesktopReferenceActions';
 
-interface FileRow {
-  path: string;
-  name: string;
-  directory: boolean;
-  depth: number;
-  expanded: boolean;
-  loading: boolean;
-  spans?: DesktopFileNameSpan[];
-}
-
 export interface DesktopFileNavigation {
   path: string;
   name: string;
 }
 
-interface Directory {
-  children: FileNode[];
-  loading: boolean;
-  again: boolean;
-  truncated: boolean;
-  stop?: () => void;
-}
-
-const ROOT: string = WORKSPACE_ROOT_REQUEST_PATH;
 const PREVIEW_LINES: number = 400;
 
 function imageName(name: string): boolean {
@@ -62,7 +44,8 @@ export struct DesktopFilesPane {
   ability?: common.UIAbilityContext;
   preferenceBook?: DesktopFileSearchPreferenceBook;
   @Prop @Watch('reset') sessionId: string = '';
-  @Prop @Watch('bindSearchPreferences') workspaceRoot: string = '';
+  navigatorBook?: DesktopFileNavigatorBook;
+  @Prop @Watch('watchNavigator') navigatorLink: DesktopFileNavigatorLink | undefined = undefined;
   @Prop @Watch('searchVisibilityChanged') shown: boolean = true;
   @Prop @Watch('openRequested') requested: DesktopFileNavigation | undefined = undefined;
   @Prop previewOnly: boolean = false;
@@ -76,19 +59,11 @@ export struct DesktopFilesPane {
   onReferenceWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onAttachWorkspaceFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
 
-  @State private rows: FileRow[] = [];
-  @State private matches: FileRow[] = [];
-  @State private query: string = '';
-  @State private searchPreferences: DesktopFileSearchPreferences = defaultDesktopFileSearchPreferences();
+  @State private navigatorView: DesktopFileNavigatorView = emptyDesktopFileNavigatorView();
   @State private searchSettingsOpen: boolean = false;
   @State private draftSearchRules: DesktopFileSearchRule[] = [];
-  @State private found: DesktopFileSearchResults | undefined = undefined;
   @State private emptyHintOpen: boolean = false;
-  @State private searching: boolean = false;
-  @State private rootLoading: boolean = false;
-  @State private notice: string = '';
-  @State private searchNotice: string = '';
-  @State private selected?: FileRow = undefined;
+  @State private selected?: DesktopFileNavigatorRow = undefined;
   @State private preview?: FilePreview = undefined;
   @State private htmlFile?: DesktopHtmlFile = undefined;
   @State private sourceHtml: boolean = false;
@@ -102,69 +77,44 @@ export struct DesktopFilesPane {
   @State private previewWrap: boolean = true;
   @State private previewOffset: number = 1;
   @State private previewLines: number = 0;
-  @State private navigatorOpen: boolean = false;
   @State private navigatorRowWidth: number = 0;
-  @State private navigatorWidth: number = DESKTOP_FILE_NAVIGATOR_DEFAULT_WIDTH;
   @State private navigatorCurrent: string = '';
   private readonly navigatorScroller: Scroller = new Scroller();
   private navigatorDragWidth: number = 0;
   private revealNavigatorPath: string = '';
-  private readonly directories: Map<string, Directory> = new Map<string, Directory>();
   private active: boolean = false;
-  private searchTimer: number = -1;
-  private searchRevision: number = 0;
-  private searchRequestKey: string = '';
+  private navigatorBinding?: DesktopFileNavigator;
+  private navigatorRoot: string = '';
+  private navigatorListening?: () => void;
+  private navigatorRelease?: () => void;
+  private navigatorHolding: boolean = false;
   private searchSettingsRoot: string = '';
   private draftChanged: boolean = false;
   private searchTriggerFocused: boolean = false;
-  private stopSearchPreferences?: () => void;
-  private boundSearchRoot?: string;
-  private readonly collapsedResults = new Set<string>();
   private previewRevision: number = 0;
   private previewNeedsRefresh: boolean = false;
   private cancelPreviewWatch?: () => void;
 
   aboutToAppear(): void {
     this.active = true;
-    this.bindSearchPreferences();
     this.reset();
   }
 
   aboutToDisappear(): void {
-    this.closeSearchSettings(false);
+    this.stopNavigator();
     this.active = false;
-    this.stopSearchPreferences?.();
-    this.stopSearchPreferences = undefined;
-    this.boundSearchRoot = undefined;
-    this.reset();
+    this.closePreview();
   }
 
   private reset(): void {
-    this.closeSearchSettings(false);
-    for (const directory of this.directories.values()) {
-      directory.stop?.();
-    }
-    this.directories.clear();
-    this.searchRevision++;
-    clearTimeout(this.searchTimer);
-    this.query = '';
-    this.searching = false;
-    this.searchNotice = '';
-    this.searchRequestKey = '';
-    this.found = undefined;
-    this.emptyHintOpen = false;
-    this.collapsedResults.clear();
-    this.rows = [];
-    this.matches = [];
-    this.rootLoading = false;
-    this.notice = '';
-    this.navigatorOpen = false;
+    this.stopNavigator();
+    this.navigatorView = emptyDesktopFileNavigatorView();
     this.navigatorCurrent = '';
     this.revealNavigatorPath = '';
     this.closePreview();
-    if (this.active && this.sessionId.length > 0) {
-      if (!this.previewOnly) { this.expand(ROOT); }
+    if (this.active && this.sessionId) {
       this.openRequested();
+      this.watchNavigator();
     }
   }
 
@@ -173,7 +123,7 @@ export struct DesktopFilesPane {
     if (this.active && file !== undefined && file.path.length > 0) {
       if (this.selected?.path === file.path && this.selected?.name === file.name) { return; }
       this.openPreview({ path: file.path, name: file.name, directory: false, depth: 0, expanded: false, loading: false });
-      if (this.navigatorOpen) { this.locatePreviewInNavigator(); }
+      if (this.navigatorView.open) { this.locatePreviewInNavigator(); }
     }
   }
 
@@ -181,151 +131,96 @@ export struct DesktopFilesPane {
     return { 'workspaceFileScopeId': this.sessionId, 'path': path };
   }
 
-  private expand(path: string): void {
-    const directory: Directory = { children: [], loading: false, again: false, truncated: false };
-    this.directories.set(path, directory);
-    this.watchDirectory(path, directory);
-    this.list(path, directory);
+  private fileRoot(): string { return this.navigatorLink?.root ?? ''; }
+
+  private watchNavigator(): void {
+    const link = this.navigatorLink;
+    const book = this.navigatorBook;
+    if (!this.active || !this.shown || link === undefined || !link.owner || !link.sessionId || book === undefined) {
+      this.stopNavigator();
+      return;
+    }
+    const navigator = book.get(link.owner, link.paneId, link.sessionId, this.host, this.preferenceBook);
+    if (navigator === this.navigatorBinding) {
+      if (this.navigatorRoot === link.root) { return; }
+      if (this.searchSettingsOpen && this.searchSettingsRoot !== link.root) { this.closeSearchSettings(false); }
+      this.navigatorRoot = link.root;
+      navigator.setWorkspaceRoot(link.root);
+      if (this.previewOnly && this.navigatorView.open) { this.locatePreviewInNavigator(); }
+      return;
+    }
+    this.stopNavigator();
+    this.navigatorBinding = navigator;
+    this.navigatorRoot = link.root;
+    navigator.setWorkspaceRoot(link.root);
+    this.navigatorListening = navigator.subscribe((view: DesktopFileNavigatorView): void => { this.drawNavigator(view); });
+    this.drawNavigator(navigator.snapshot());
   }
 
-  private watchDirectory(path: string, directory: Directory): void {
-    directory.stop = this.host?.watch('workspaceFiles/changes', this.args(path), {
-      onItem: (value: Object): void => {
-        if (getString(value, 'kind') === 'change') {
-          this.list(path, directory);
-        }
-      },
-      onError: (): void => {},
-      onEnd: (): void => {}
-    });
+  private stopNavigator(): void {
+    this.closeSearchSettings(false);
+    this.navigatorListening?.();
+    this.navigatorListening = undefined;
+    this.navigatorHolding = false;
+    this.navigatorRelease?.();
+    this.navigatorRelease = undefined;
+    this.navigatorBinding = undefined;
+    this.navigatorRoot = '';
   }
 
-  private collapse(path: string): void {
-    for (const key of this.directories.keys()) {
-      if (key === path || key.startsWith(path + '/')) {
-        this.directories.get(key)?.stop?.();
-        this.directories.delete(key);
+  private drawNavigator(view: DesktopFileNavigatorView): void {
+    const previous = this.navigatorView;
+    this.navigatorView = view;
+    if (previous.query !== view.query || previous.found !== view.found) { this.emptyHintOpen = false; }
+    const holding = this.navigatorBinding !== undefined && (view.open || !this.previewOnly);
+    if (holding !== this.navigatorHolding) {
+      this.navigatorHolding = holding;
+      if (holding) {
+        this.restoreNavigatorScroll(!!view.query.trim());
+        this.navigatorRelease = this.navigatorBinding?.hold();
+        if (this.previewOnly) { this.locatePreviewInNavigator(); }
+      } else {
+        this.navigatorRelease?.();
+        this.navigatorRelease = undefined;
       }
-    }
-    this.rebuild();
-  }
-
-  private async list(path: string, directory: Directory): Promise<void> {
-    const host = this.host;
-    if (host === undefined || this.directories.get(path) !== directory) {
-      return;
-    }
-    if (directory.loading) {
-      directory.again = true;
-      return;
-    }
-    directory.loading = true;
-    this.rebuild();
-    const result = await host.call('workspaceFiles/list', this.args(path));
-    if (this.directories.get(path) !== directory) {
-      return;
-    }
-    directory.loading = false;
-    if (result.ok) {
-      const projection = projectWorkspaceListing(result.value, path === ROOT ? '' : path, []);
-      directory.children = projection.nodes.filter((file: FileNode): boolean => desktopWorkspaceRelativePath(file.path));
-      directory.truncated = projection.truncated;
-      const removed: string[] = [];
-      for (const key of this.directories.keys()) {
-        const parent = key.lastIndexOf('/');
-        if (key !== ROOT && (parent < 0 ? ROOT : key.slice(0, parent)) === path &&
-          !directory.children.some((node: FileNode): boolean => node.path === key && node.kind === NodeKind.DIRECTORY)) {
-          removed.push(key);
-        }
+    } else if (holding) {
+      const searching = !!view.query.trim();
+      if (!!previous.query.trim() !== searching || (searching && previous.searching && !view.searching)) {
+        this.restoreNavigatorScroll(searching);
       }
-      removed.forEach((key: string): void => { this.collapse(key); });
-      this.notice = '';
-    } else {
-      this.notice = desktopHostProblem(result);
-    }
-    this.rebuild();
-    if (directory.again) {
-      directory.again = false;
-      this.list(path, directory);
     }
     this.revealPreviewFile();
   }
 
-  private append(path: string, depth: number, into: FileRow[]): void {
-    const children = this.directories.get(path)?.children ?? [];
-    for (const child of children) {
-      if (!this.searchPreferences.showHidden && child.name.startsWith('.')) {
-        continue;
+  private restoreNavigatorScroll(search: boolean): void {
+    const navigator = this.navigatorBinding;
+    if (navigator === undefined) { return; }
+    const offset = navigator.scrollOffset(search);
+    setTimeout((): void => {
+      if (navigator === this.navigatorBinding && this.navigatorHolding && search === !!this.navigatorView.query.trim()) {
+        this.navigatorScroller.scrollTo({ xOffset: 0, yOffset: offset, animation: false });
       }
-      const directory = this.directories.get(child.path);
-      into.push({
-        name: child.name, path: child.path, directory: child.kind === NodeKind.DIRECTORY,
-        depth: depth, expanded: directory !== undefined, loading: directory?.loading ?? false
-      });
-      if (directory !== undefined) {
-        this.append(child.path, depth + 1, into);
-      }
+    }, 0);
+  }
+
+  private captureNavigatorScroll(): void {
+    if (this.navigatorHolding) {
+      this.navigatorBinding?.saveScroll(!!this.navigatorView.query.trim(), this.navigatorScroller.currentOffset().yOffset);
     }
   }
 
-  private rebuild(): void {
-    const next: FileRow[] = [];
-    this.append(ROOT, 0, next);
-    this.rows = next;
-    this.rootLoading = this.directories.get(ROOT)?.loading ?? false;
-  }
-
-  private refresh(): void {
-    if (this.query.trim()) {
-      this.queueSearch(this.query, true);
-      return;
-    }
-    for (const path of this.directories.keys()) {
-      const directory = this.directories.get(path);
-      if (directory !== undefined) {
-        this.list(path, directory);
-      }
-    }
-  }
-
-  private bindSearchPreferences(): void {
-    if (!this.active || this.boundSearchRoot === this.workspaceRoot) { return; }
-    this.closeSearchSettings(false);
-    this.stopSearchPreferences?.();
-    this.boundSearchRoot = this.workspaceRoot;
-    const root = this.workspaceRoot;
-    const book = this.preferenceBook;
-    this.applySearchPreferences(book?.get(root) ?? defaultDesktopFileSearchPreferences());
-    this.stopSearchPreferences = book?.subscribe(root, (preferences: DesktopFileSearchPreferences): void => {
-      if (this.active && this.boundSearchRoot === root) { this.applySearchPreferences(preferences); }
-    });
-  }
-
-  private applySearchPreferences(preferences: DesktopFileSearchPreferences): void {
-    const changedVisibility = preferences.showHidden !== this.searchPreferences.showHidden;
-    this.searchPreferences = preferences;
-    if (changedVisibility) { this.rebuild(); }
-    if (this.query.trim()) { this.queueSearch(this.query); }
-  }
+  private refresh(): void { this.navigatorBinding?.refresh(); }
 
   private updateSearchPreferences(patch: DesktopFileSearchPreferencePatch): void {
-    const root = this.workspaceRoot;
-    if (this.preferenceBook !== undefined && root) {
-      if (!this.preferenceBook.update(root, patch)) {
-        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_file_results_settings_failed') });
-      }
-      this.applySearchPreferences(this.preferenceBook.get(root));
-    } else {
-      this.applySearchPreferences({ rules: patch.rules ?? this.searchPreferences.rules,
-        showHidden: patch.showHidden ?? this.searchPreferences.showHidden,
-        respectGitignore: patch.respectGitignore ?? this.searchPreferences.respectGitignore });
+    if (this.navigatorBinding?.updatePreferences(patch) === false) {
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_file_results_settings_failed') });
     }
   }
 
   private toggleSearchSettings(): void {
     if (this.searchSettingsOpen) { this.closeSearchSettings(true); return; }
-    this.searchSettingsRoot = this.workspaceRoot;
-    this.draftSearchRules = this.searchPreferences.rules;
+    this.searchSettingsRoot = this.fileRoot();
+    this.draftSearchRules = this.navigatorView.preferences.rules;
     this.draftChanged = false;
     this.searchSettingsOpen = true;
   }
@@ -334,7 +229,7 @@ export struct DesktopFilesPane {
     if (!this.searchSettingsOpen) { return; }
     this.searchSettingsOpen = false;
     if (this.draftChanged) {
-      if (this.workspaceRoot === this.searchSettingsRoot) {
+      if (this.fileRoot() === this.searchSettingsRoot) {
         this.updateSearchPreferences({ rules: this.draftSearchRules });
       } else if (this.searchSettingsRoot) {
         this.preferenceBook?.update(this.searchSettingsRoot, { rules: this.draftSearchRules });
@@ -346,173 +241,55 @@ export struct DesktopFilesPane {
   }
 
   private searchVisibilityChanged(): void {
-    if (this.previewOnly && this.navigatorOpen) {
-      if (this.shown) { this.resumePreviewNavigator(); }
-      else { this.suspendPreviewNavigator(); }
-    } else if (!this.shown) {
-      this.closeSearchSettings(false);
-      clearTimeout(this.searchTimer);
-      this.searchRevision++;
-      this.searching = false;
-      this.searchRequestKey = '';
-    } else if (this.active && this.query.trim() && !this.searchRequestKey) {
-      this.queueSearch(this.query);
-    }
+    this.watchNavigator();
     if (this.shown && this.active && this.previewNeedsRefresh && this.selected !== undefined) {
       this.loadPreview(this.selected, this.previewOffset);
     }
   }
 
   private queueSearch(value: string, force: boolean = false): void {
-    this.query = value;
-    if (!this.active || !this.shown || (this.previewOnly && !this.navigatorOpen)) { return; }
-    const query = value.trim();
-    const paths = enabledDesktopFileSearchPaths(this.searchPreferences.rules);
-    const request: Record<string, Object> = { 'query': query, 'excludedPaths': paths,
-      'includeHidden': this.searchPreferences.showHidden, 'respectGitignore': this.searchPreferences.respectGitignore };
-    const key = query ? JSON.stringify(request) : '';
-    if (!force && key === this.searchRequestKey) { return; }
-    this.searchRequestKey = key;
-    this.matches = [];
-    this.found = undefined;
-    this.emptyHintOpen = false;
-    this.collapsedResults.clear();
-    this.searchNotice = '';
-    clearTimeout(this.searchTimer);
-    const revision = ++this.searchRevision;
-    this.searching = query.length > 0;
-    if (query.length > 0) {
-      this.searchTimer = setTimeout((): void => { this.search(query, request, revision); }, 230);
-    } else if (this.navigatorOpen) {
-      this.revealPreviewFile();
-    }
+    this.navigatorBinding?.queueSearch(value, force);
   }
 
-  private async search(query: string, request: Record<string, Object>, revision: number): Promise<void> {
-    const host = this.host;
-    if (!this.active || host === undefined) {
-      return;
-    }
-    const result = await host.call('workspaceFiles/search', { 'workspaceFileScopeId': this.sessionId, 'request': request });
-    if (revision !== this.searchRevision) {
-      return;
-    }
-    this.searching = false;
-    if (!result.ok) {
-      this.searchNotice = desktopHostProblem(result);
-      return;
-    }
-    this.found = desktopFileSearchResults(result.value, query);
-    this.rebuildMatches();
-  }
-
-  private appendMatches(nodes: DesktopFileSearchNode[], depth: number, rows: FileRow[]): void {
-    for (const node of nodes) {
-      if (!this.searchPreferences.showHidden && node.name.startsWith('.')) { continue; }
-      const expanded = node.directory && !this.collapsedResults.has(node.path);
-      rows.push({ path: node.path, name: node.name, directory: node.directory,
-        depth: depth, expanded: expanded, loading: false, spans: node.spans });
-      if (expanded) { this.appendMatches(node.children, depth + 1, rows); }
-    }
-  }
-
-  private rebuildMatches(): void {
-    const rows: FileRow[] = [];
-    this.appendMatches(this.found?.nodes ?? [], 0, rows);
-    this.matches = rows;
-  }
-
-  private select(row: FileRow): void {
+  private select(row: DesktopFileNavigatorRow): void {
     if (!row.directory) {
       this.openPreview(row);
       return;
     }
-    if (this.query.trim()) {
-      if (this.collapsedResults.has(row.path)) { this.collapsedResults.delete(row.path); }
-      else { this.collapsedResults.add(row.path); }
-      this.rebuildMatches();
-    } else if (this.directories.has(row.path)) {
-      this.revealNavigatorPath = '';
-      this.collapse(row.path);
-    } else {
-      this.expand(row.path);
-    }
+    if (!this.navigatorView.query.trim() && row.expanded) { this.revealNavigatorPath = ''; }
+    this.navigatorBinding?.toggleDirectory(row.path);
   }
 
   private fileFocusId(key: string): string { return key + this.focusScope; }
 
   private togglePreviewNavigator(): void {
-    this.navigatorOpen = !this.navigatorOpen;
-    if (this.navigatorOpen) {
-      this.resumePreviewNavigator();
-    } else {
-      this.suspendPreviewNavigator();
+    const open = !this.navigatorView.open;
+    if (!open) { this.closeSearchSettings(false); }
+    this.navigatorBinding?.setOpen(open);
+    if (!open) {
       this.getUIContext().getFocusController().requestFocus(this.fileFocusId('desktopFilePreviewNavigatorToggle'));
     }
   }
 
-  private resumePreviewNavigator(): void {
-    if (!this.active || !this.shown || !this.workspaceRoot) { return; }
-    if (!this.directories.has(ROOT)) {
-      this.expand(ROOT);
-    } else {
-      for (const path of this.directories.keys()) {
-        const directory = this.directories.get(path);
-        if (directory === undefined || directory.stop !== undefined) { continue; }
-        this.watchDirectory(path, directory);
-        this.list(path, directory);
-      }
-    }
-    if (this.query.trim() && !this.searchRequestKey) { this.queueSearch(this.query); }
-    this.locatePreviewInNavigator();
-  }
-
-  private suspendPreviewNavigator(): void {
-    this.closeSearchSettings(false);
-    clearTimeout(this.searchTimer);
-    this.searchRevision++;
-    this.searching = false;
-    this.searchRequestKey = '';
-    for (const directory of this.directories.values()) {
-      directory.stop?.();
-      directory.stop = undefined;
-      directory.again = false;
-    }
-  }
-
   private locatePreviewInNavigator(): void {
-    this.navigatorCurrent = desktopFileNavigatorRelativePath(this.selected?.path ?? '', this.workspaceRoot);
+    this.navigatorCurrent = desktopFileNavigatorRelativePath(this.selected?.path ?? '', this.fileRoot());
     this.revealNavigatorPath = this.navigatorCurrent;
     this.revealPreviewFile();
   }
 
   private revealPreviewFile(): void {
     const path = this.revealNavigatorPath;
-    if (!path || !this.active || !this.shown || !this.navigatorOpen || this.query.trim()) { return; }
-    const parts = path.split('/');
-    let parent = ROOT;
-    for (let index = 0; index < parts.length - 1; index++) {
-      const level = this.directories.get(parent);
-      if (level === undefined || level.loading) { return; }
-      const directory = parts.slice(0, index + 1).join('/');
-      if ((!this.searchPreferences.showHidden && parts[index].startsWith('.')) ||
-        !level.children.some((node: FileNode): boolean => node.path === directory && node.kind === NodeKind.DIRECTORY)) {
-        this.revealNavigatorPath = '';
-        return;
-      }
-      if (!this.directories.has(directory)) {
-        this.expand(directory);
-        return;
-      }
-      parent = directory;
-    }
-    if (this.directories.get(parent)?.loading) { return; }
-    const index = this.rows.findIndex((row: FileRow): boolean => row.path === path);
+    const navigator = this.navigatorBinding;
+    if (!path || navigator === undefined || !this.shown || !this.navigatorView.open ||
+      this.navigatorView.query.trim()) { return; }
+    const index = navigator.reveal(path);
+    if (index === DESKTOP_FILE_REVEAL_PENDING) { return; }
     this.revealNavigatorPath = '';
     if (index >= 0) {
       setTimeout((): void => {
-        if (this.shown && this.navigatorOpen && this.navigatorCurrent === path && !this.query.trim()) {
-          const current = this.rows.findIndex((row: FileRow): boolean => row.path === path);
+        if (navigator === this.navigatorBinding && this.shown && this.navigatorView.open &&
+          this.navigatorCurrent === path && !this.navigatorView.query.trim()) {
+          const current = this.navigatorView.rows.findIndex((row: DesktopFileNavigatorRow): boolean => row.path === path);
           if (current >= 0) { this.navigatorScroller.scrollToIndex(current, false, ScrollAlign.AUTO); }
         }
       }, 0);
@@ -524,16 +301,16 @@ export struct DesktopFilesPane {
   }
 
   private navigatorPanelWidth(): number {
-    return desktopFileNavigatorBounds(this.navigatorRowWidth, this.navigatorWidth).width;
+    return desktopFileNavigatorBounds(this.navigatorRowWidth, this.navigatorView.width).width;
   }
 
   private resizePreviewNavigator(width: number): void {
-    this.navigatorWidth = desktopFileNavigatorBounds(this.navigatorRowWidth, width).width;
+    this.navigatorBinding?.setWidth(desktopFileNavigatorBounds(this.navigatorRowWidth, width).width);
   }
 
   private navigatorResizeKey(event: KeyEvent): boolean {
     if (event.type !== KeyType.Down) { return false; }
-    const bounds = desktopFileNavigatorBounds(this.navigatorRowWidth, this.navigatorWidth);
+    const bounds = desktopFileNavigatorBounds(this.navigatorRowWidth, this.navigatorView.width);
     switch (event.keyCode) {
       case KeyCode.KEYCODE_DPAD_LEFT: this.resizePreviewNavigator(bounds.width + 20); break;
       case KeyCode.KEYCODE_DPAD_RIGHT: this.resizePreviewNavigator(bounds.width - 20); break;
@@ -545,10 +322,10 @@ export struct DesktopFilesPane {
   }
 
   private previewNavigatorKey(event: KeyEvent): boolean {
-    if (!this.navigatorOpen || this.searchSettingsOpen || event.type !== KeyType.Down ||
+    if (!this.navigatorView.open || this.searchSettingsOpen || event.type !== KeyType.Down ||
       event.keyCode !== KeyCode.KEYCODE_ESCAPE || event.getModifierKeyState?.(['Ctrl']) === true ||
       event.getModifierKeyState?.(['Alt']) === true || event.getModifierKeyState?.(['Shift']) === true) { return false; }
-    if (this.query.trim()) {
+    if (this.navigatorView.query.trim()) {
       this.queueSearch('');
       this.getUIContext().getFocusController().requestFocus(this.fileFocusId('desktopFileSearchInput'));
     } else {
@@ -575,7 +352,7 @@ export struct DesktopFilesPane {
     this.previewLines = 0;
   }
 
-  private openPreview(row: FileRow): void {
+  private openPreview(row: DesktopFileNavigatorRow): void {
     this.closePreview();
     this.rawMarkdown = false;
     this.previewWrap = true;
@@ -593,7 +370,7 @@ export struct DesktopFilesPane {
     });
   }
 
-  private async loadPreview(row: FileRow, offset: number = 1): Promise<void> {
+  private async loadPreview(row: DesktopFileNavigatorRow, offset: number = 1): Promise<void> {
     const host = this.host;
     if (host === undefined) {
       return;
@@ -657,7 +434,7 @@ export struct DesktopFilesPane {
     this.loadPreview(selected);
   }
 
-  private async openSystem(row: FileRow): Promise<void> {
+  private async openSystem(row: DesktopFileNavigatorRow): Promise<void> {
     const ability = this.ability;
     if (ability === undefined || !(await openSystemPreview(ability, this.previewUri, row.name, mimeTypeForName(row.name)))) {
       this.getUIContext().getPromptAction().showToast({ message: '系统未能打开此文件的预览' });
@@ -675,7 +452,7 @@ export struct DesktopFilesPane {
     }
   }
 
-  private async previewFileAction(row: FileRow, copyImage: boolean): Promise<void> {
+  private async previewFileAction(row: DesktopFileNavigatorRow, copyImage: boolean): Promise<void> {
     const session = this.sessionId;
     const ability = this.ability;
     if (ability === undefined || !this.active) { return; }
@@ -697,9 +474,9 @@ export struct DesktopFilesPane {
   }
 
   private searchEmptyHint(): ResourceStr {
-    const hidden = !this.searchPreferences.showHidden;
-    const excluded = this.searchPreferences.rules.some((rule: DesktopFileSearchRule): boolean => rule.enabled);
-    const ignored = this.searchPreferences.respectGitignore;
+    const hidden = !this.navigatorView.preferences.showHidden;
+    const excluded = this.navigatorView.preferences.rules.some((rule: DesktopFileSearchRule): boolean => rule.enabled);
+    const ignored = this.navigatorView.preferences.respectGitignore;
     if (hidden && excluded) {
       return ignored ? $r('app.string.desktop_file_results_hint_all') : $r('app.string.desktop_file_results_hint_both');
     }
@@ -715,7 +492,7 @@ export struct DesktopFilesPane {
   @Builder
   private SearchSettingsPopup() {
     Column() {
-      DesktopFileSearchSettings({ rules: this.draftSearchRules, respectGitignore: this.searchPreferences.respectGitignore,
+      DesktopFileSearchSettings({ rules: this.draftSearchRules, respectGitignore: this.navigatorView.preferences.respectGitignore,
         maxListHeight: 310, onChange: (rules: DesktopFileSearchRule[]): void => {
           this.draftSearchRules = rules;
           this.draftChanged = true;
@@ -740,24 +517,24 @@ export struct DesktopFilesPane {
           enableArrow: false, focusable: true, autoCancel: true, mask: false,
           systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial,
           onStateChange: (event): void => { if (!event.isVisible) { this.closeSearchSettings(false); } } })
-      TextInput({ text: this.query, placeholder: $r('app.string.desktop_file_results_placeholder') })
+      TextInput({ text: this.navigatorView.query, placeholder: $r('app.string.desktop_file_results_placeholder') })
         .key('desktopFileSearchInput').id(this.fileFocusId('desktopFileSearchInput'))
         .height(32).layoutWeight(1).backgroundColor(Color.Transparent)
         .padding({ left: 1, right: 1 }).onChange((value: string): void => { this.queueSearch(value); })
         .onKeyEvent((event: KeyEvent): boolean => {
-          if (event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ESCAPE && this.query) {
+          if (event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ESCAPE && this.navigatorView.query) {
             this.queueSearch('');
             return true;
           }
           return false;
         })
       Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Image(this.searchPreferences.showHidden ? $r('app.media.dsh_secret_eye') : $r('app.media.dsh_secret_eye_off'))
+        Image(this.navigatorView.preferences.showHidden ? $r('app.media.dsh_secret_eye') : $r('app.media.dsh_secret_eye_off'))
           .width(16).height(16).supportSvg2(true).accessibilityLevel('no')
       }.key('desktopFileSearchHidden').width(30).height(32).padding(0).borderRadius(7)
-        .accessibilityText($r('app.string.desktop_file_results_hidden')).accessibilitySelected(this.searchPreferences.showHidden)
-        .focusOnTouch(false).onClick((): void => { this.updateSearchPreferences({ showHidden: !this.searchPreferences.showHidden }); })
-      if (this.query) {
+        .accessibilityText($r('app.string.desktop_file_results_hidden')).accessibilitySelected(this.navigatorView.preferences.showHidden)
+        .focusOnTouch(false).onClick((): void => { this.updateSearchPreferences({ showHidden: !this.navigatorView.preferences.showHidden }); })
+      if (this.navigatorView.query) {
         Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Image($r('app.media.dsh_workspace_search_clear')).width(14).height(14).supportSvg2(true).accessibilityLevel('no')
         }.key('desktopFileSearchClear').width(28).height(32).padding(0).borderRadius(7)
@@ -779,17 +556,17 @@ export struct DesktopFilesPane {
 
   @Builder
   private SearchStatus() {
-    if (this.searchNotice) {
+    if (this.navigatorView.searchNotice) {
       Column({ space: 4 }) {
-        Text($r('app.string.desktop_file_results_failed', this.searchNotice)).fontSize(12)
+        Text($r('app.string.desktop_file_results_failed', this.navigatorView.searchNotice)).fontSize(12)
           .fontColor($r('sys.color.font_secondary'))
         Button($r('app.string.desktop_file_results_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopFileSearchRetry').height(28).onClick((): void => { this.queueSearch(this.query, true); })
+          .key('desktopFileSearchRetry').height(28).onClick((): void => { this.queueSearch(this.navigatorView.query, true); })
       }.alignItems(HorizontalAlign.Start).width('100%').padding(8)
-    } else if (this.found !== undefined) {
-      Text($r('app.string.desktop_file_results_count', String(this.found.count))).key('desktopFileSearchCount')
+    } else if (this.navigatorView.found !== undefined) {
+      Text($r('app.string.desktop_file_results_count', String(this.navigatorView.found.count))).key('desktopFileSearchCount')
         .fontSize(12).fontColor($r('sys.color.font_secondary')).padding({ left: 10, top: 2, bottom: 3 })
-      if (this.found.count === 0) {
+      if (this.navigatorView.found.count === 0) {
         Row({ space: 6 }) {
           Text($r('app.string.desktop_file_results_empty')).key('desktopFileSearchEmpty')
             .fontSize(13).fontColor($r('sys.color.font_secondary'))
@@ -808,7 +585,7 @@ export struct DesktopFilesPane {
     }
   }
 
-  private fileOptions(row: FileRow): MenuElement[] {
+  private fileOptions(row: DesktopFileNavigatorRow): MenuElement[] {
     const items: MenuElement[] = [
       { value: '复制相对路径', action: (): void => {
         pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, row.path))
@@ -834,7 +611,7 @@ export struct DesktopFilesPane {
     return items;
   }
 
-  private async revealFile(row: FileRow): Promise<void> {
+  private async revealFile(row: DesktopFileNavigatorRow): Promise<void> {
     const result = await this.host?.call('workspaceFiles/stat', this.args(row.path));
     const path = getString(result?.value, 'absolutePath') ?? '';
     if (!path.startsWith('/') || !this.active || this.ability === undefined ||
@@ -844,14 +621,14 @@ export struct DesktopFilesPane {
   }
 
   @Builder
-  private FileLine(row: FileRow) {
+  private FileLine(row: DesktopFileNavigatorRow) {
     Row({ space: 5 }) {
       if (row.directory) {
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(11)
-          .rotate({ angle: row.expanded ? 90 : 0 }).fontColor([$r('sys.color.font_secondary')])
-        SymbolGlyph($r('sys.symbol.folder')).fontSize(15).fontColor([$r('sys.color.font_secondary')])
+        Image(row.expanded ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
+          .width(16).height(16).supportSvg2(true).draggable(false).accessibilityLevel('no')
       } else {
-        SymbolGlyph($r('sys.symbol.doc_text')).fontSize(15).fontColor([$r('sys.color.font_secondary')])
+        Image(desktopFileTypeIcon(row.name)).width(16).height(16).supportSvg2(true)
+          .draggable(false).accessibilityLevel('no')
       }
       Column({ space: 2 }) {
         if (row.spans !== undefined) {
@@ -888,8 +665,8 @@ export struct DesktopFilesPane {
     })
   }
 
-  private rowKey(row: FileRow): string {
-    const view = row.spans === undefined ? '' : this.query.trim() + ':';
+  private rowKey(row: DesktopFileNavigatorRow): string {
+    const view = row.spans === undefined ? '' : this.navigatorView.query.trim() + ':';
     return `${view}${row.path}:${row.depth}:${row.directory}:${row.expanded}:${row.loading}`;
   }
 
@@ -929,10 +706,10 @@ export struct DesktopFilesPane {
           .fontSize(13).fontColor($r('sys.color.warning')).padding(14)
       } else if (this.shown) {
         Column() {
-          ForEach([`${this.sessionId}:${this.workspaceRoot}:${this.previewAssetVersion}:${this.interactiveHtml}`],
+          ForEach([`${this.sessionId}:${this.fileRoot()}:${this.previewAssetVersion}:${this.interactiveHtml}`],
             (_key: string): void => {
               DesktopHtmlPreview({ host: this.host, file: this.htmlFile, sessionId: this.sessionId,
-                workspaceRoot: this.workspaceRoot, interactive: this.interactiveHtml })
+                workspaceRoot: this.fileRoot(), interactive: this.interactiveHtml })
             }, (key: string): string => key)
         }.width('100%').layoutWeight(1)
       }
@@ -986,37 +763,37 @@ export struct DesktopFilesPane {
   private FileNavigatorContents() {
     Column() {
       Column() { this.SearchBar() }.width('100%').padding(8)
-      if (this.searching || (!this.query.trim() && this.rootLoading && this.rows.length === 0)) {
+      if (this.navigatorView.searching || (!this.navigatorView.query.trim() && this.navigatorView.rootLoading && this.navigatorView.rows.length === 0)) {
         LoadingProgress().width(22).height(22).margin(6)
       }
-      if (this.query.trim()) {
+      if (this.navigatorView.query.trim()) {
         this.SearchStatus()
-      } else if (this.notice) {
-        Text(this.notice).fontSize(12).fontColor($r('sys.color.warning')).padding(8)
+      } else if (this.navigatorView.notice) {
+        Text(this.navigatorView.notice).fontSize(12).fontColor($r('sys.color.warning')).padding(8)
       }
-      if (!this.query.trim() && this.directories.get(ROOT)?.truncated) {
+      if (!this.navigatorView.query.trim() && this.navigatorView.rootTruncated) {
         Text('工作区文件列表已截断').fontSize(12).padding(8)
       }
-      if (!this.query.trim() && !this.rootLoading && this.rows.length === 0 && !this.notice) {
+      if (!this.navigatorView.query.trim() && !this.navigatorView.rootLoading && this.navigatorView.rows.length === 0 && !this.navigatorView.notice) {
         Text('工作区没有文件').fontSize(13).fontColor($r('sys.color.font_secondary')).padding(12)
       }
       List({ scroller: this.navigatorScroller }) {
-        ForEach(this.query.trim() ? this.matches : this.rows, (row: FileRow): void => {
+        ForEach(this.navigatorView.query.trim() ? this.navigatorView.matches : this.navigatorView.rows, (row: DesktopFileNavigatorRow): void => {
           ListItem() { this.FileLine(row) }
-        }, (row: FileRow): string => this.rowKey(row))
-        if (this.query.trim() && this.found?.truncated) {
+        }, (row: DesktopFileNavigatorRow): string => this.rowKey(row))
+        if (this.navigatorView.query.trim() && this.navigatorView.found?.truncated) {
           ListItem() {
-            Text($r('app.string.desktop_file_results_truncated', String(this.found.count))).fontSize(12)
+            Text($r('app.string.desktop_file_results_truncated', String(this.navigatorView.found.count))).fontSize(12)
               .fontColor($r('sys.color.font_secondary')).padding(8)
           }
         }
-        if (this.query.trim() && this.found?.incomplete) {
+        if (this.navigatorView.query.trim() && this.navigatorView.found?.incomplete) {
           ListItem() {
             Text($r('app.string.desktop_file_results_incomplete')).fontSize(12)
               .fontColor($r('sys.color.font_secondary')).padding(8)
           }
         }
-      }.width('100%').layoutWeight(1)
+      }.width('100%').layoutWeight(1).onScrollStop((): void => { this.captureNavigatorScroll(); })
     }.width('100%').height('100%')
   }
 
@@ -1037,12 +814,12 @@ export struct DesktopFilesPane {
     Stack({ alignContent: Alignment.TopEnd }) {
       Row() {
         Column() { this.PreviewBody() }
-          .width(this.navigatorOpen && this.navigatorMode() === DesktopFileNavigatorMode.PUSH ?
+          .width(this.navigatorView.open && this.navigatorMode() === DesktopFileNavigatorMode.PUSH ?
             this.navigatorRowWidth - this.navigatorPanelWidth() - 16 : '100%').height('100%')
-          .visibility(this.navigatorOpen && this.navigatorMode() === DesktopFileNavigatorMode.FILL ?
+          .visibility(this.navigatorView.open && this.navigatorMode() === DesktopFileNavigatorMode.FILL ?
             Visibility.Hidden : Visibility.Visible)
       }.width('100%').height('100%')
-      if (this.navigatorOpen) {
+      if (this.navigatorView.open) {
         Row() {
           if (this.navigatorMode() !== DesktopFileNavigatorMode.FILL) {
             this.PreviewNavigatorResize()
@@ -1101,13 +878,13 @@ export struct DesktopFilesPane {
             })
           Button('⋯', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(36).padding(0)
             .bindMenu(this.fileOptions(this.selected), desktopMenuOptions(Placement.BottomRight))
-          if (this.previewOnly && this.workspaceRoot) {
+          if (this.previewOnly && this.fileRoot()) {
             Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-              Image(this.navigatorOpen ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
+              Image(this.navigatorView.open ? $r('app.media.dsh_sidebar_folder_open') : $r('app.media.dsh_sidebar_workspace'))
                 .width(16).height(16).supportSvg2(true).accessibilityLevel('no')
             }.key('desktopFilePreviewNavigatorToggle').id(this.fileFocusId('desktopFilePreviewNavigatorToggle'))
-              .width(30).height(30).padding(0).borderRadius(7).accessibilitySelected(this.navigatorOpen)
-              .accessibilityText(this.navigatorOpen ? $r('app.string.desktop_file_navigator_hide') :
+              .width(30).height(30).padding(0).borderRadius(7).accessibilitySelected(this.navigatorView.open)
+              .accessibilityText(this.navigatorView.open ? $r('app.string.desktop_file_navigator_hide') :
                 $r('app.string.desktop_file_navigator_show'))
               .onClick((): void => { this.togglePreviewNavigator(); })
           }

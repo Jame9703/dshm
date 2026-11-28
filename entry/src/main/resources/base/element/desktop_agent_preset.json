@@ -9,6 +9,10 @@
     {"name":"desktop_agent_preset_cordis","value":"创造模式"},
     {"name":"desktop_agent_preset_cordis_description","value":"用对话定制 DSH：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。"},
     {"name":"desktop_agent_preset_no_description","value":"暂无描述。"},
-    {"name":"desktop_agent_preset_selection_failed","value":"未能切换 Agent 预设，请重试。"}
+    {"name":"desktop_agent_preset_selection_failed","value":"未能切换 Agent 预设，请重试。"},
+    {"name":"desktop_preset_view_action","value":"查看配置: %1$s"},
+    {"name":"desktop_preset_view_title","value":"查看配置 · %1$s"},
+    {"name":"desktop_preset_view_close","value":"关闭"},
+    {"name":"desktop_preset_view_failed","value":"无法读取预设配置。"}
   ]
 }

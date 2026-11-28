@@ -52,6 +52,8 @@ import type { DesktopCordisRuntime } from './DesktopCordisRuntime';
 import { DesktopCommandPalette, DesktopPaletteRow } from './DesktopCommandPalette';
 import { activeDesktopSlash, commandCandidates, commandInvocation, resolveDesktopCommand } from './DesktopCommands';
 import { DesktopSkill, desktopMayHaveSkillReference, desktopSkillCandidates } from './DesktopSkills';
+import { desktopPreparingSkillTool } from './DesktopSkillToolModel';
+import { DesktopSkillToolRow } from './DesktopSkillToolRow';
 import type { DesktopCommand, DesktopCommandRecord, DesktopSlashToken } from './DesktopCommands';
 import { desktopMenuOptions, desktopPluginEntryItems } from './DesktopMenuOptions';
 import { DesktopModelPicker } from './DesktopModelPicker';
@@ -235,6 +237,7 @@ export struct DesktopConversationPane {
   @State private attachmentOver: boolean = false;
   @State private compactHeader: boolean = true;
   @State private expandedProcesses: string[] = [];
+  @State private expandedSkills: string[] = [];
   @State private workflowViews: Map<string, DesktopWorkflowView> = new Map();
   private workflowTranscript?: DesktopTranscriptItem[];
   @State private expandedReasoning: string[] = [];
@@ -371,6 +374,7 @@ export struct DesktopConversationPane {
       this.scheduleComposerSync();
       this.following = true;
       this.expandedProcesses = [];
+      this.expandedSkills = [];
       this.expandedReasoning = [];
       this.expandedTranscriptDetails = [];
       this.compactionRequest++;
@@ -1498,7 +1502,7 @@ export struct DesktopConversationPane {
     this.closePalette();
   }
 
-  private inspectCordis(call: string): void {
+  private inspectToolInTrajectory(call: string): void {
     if (!this.developerTools) { return; }
     this.inspectTrajectoryCall = call;
     this.selectView(true);
@@ -1632,13 +1636,20 @@ export struct DesktopConversationPane {
       DesktopCordisCardView({ runtime: this.cordis, card: item.cordis,
         sessionId: this.snapshot?.sessionId ?? '', codeSize: this.typography.codeSize,
         codeFamily: this.typography.codeFamily, inspectAvailable: this.developerTools,
-        onInspect: (call: string): void => { this.inspectCordis(call); },
+        onInspect: (call: string): void => { this.inspectToolInTrajectory(call); },
         onWeb: this.onWeb })
     } else if (item.process !== undefined) {
       DesktopProcessPane({ group: item.process, grouped: row.groupProcess, liveProcessDetail: row.liveProcessDetail,
         expanded: this.expandedProcesses.includes(item.id),
+        expandedSkills: this.expandedSkills, skillInspection: this.developerTools,
+        bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily,
         codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily, timelineDecimals: this.timelineDecimals,
         inspected: this.inspectedTool, onFile: this.onArtifactFile,
+        onSkillToggle: (id: string): void => {
+          this.expandedSkills = this.expandedSkills.includes(id) ?
+            this.expandedSkills.filter((active: string): boolean => active !== id) : [...this.expandedSkills, id];
+        },
+        onSkillInspect: (id: string): void => { this.inspectToolInTrajectory(id); },
         onTimelineReceipt: (tree: string, task: string): void => {
           this.onTimelineReceipt(this.snapshot?.sessionId ?? '', tree, task);
         },
@@ -2062,7 +2073,10 @@ export struct DesktopConversationPane {
           if (this.snapshot?.preparingTool) {
             ListItem() {
               Row({ space: 7 }) {
-                if (desktopCordisAction(this.snapshot?.preparingTool ?? '')) {
+                if (this.snapshot?.preparingTool === 'skill') {
+                  DesktopSkillToolRow({ view: desktopPreparingSkillTool(), callId: 'preparing',
+                    bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily })
+                } else if (desktopCordisAction(this.snapshot?.preparingTool ?? '')) {
                   Image(desktopCordisCardIcon(desktopCordisAction(this.snapshot?.preparingTool ?? '')))
                     .width(14).height(14).supportSvg2(true).accessibilityLevel('no')
                   Text(desktopCordisCardTitle(desktopCordisAction(this.snapshot?.preparingTool ?? ''))).fontSize(14)

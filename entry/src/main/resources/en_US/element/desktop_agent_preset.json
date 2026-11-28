@@ -9,6 +9,10 @@
     {"name":"desktop_agent_preset_cordis","value":"Creator mode"},
     {"name":"desktop_agent_preset_cordis_description","value":"Customize DSH through conversation. Let the agent write plugins that add features or UI, or combine tools and prompts to create your own mode."},
     {"name":"desktop_agent_preset_no_description","value":"No description."},
-    {"name":"desktop_agent_preset_selection_failed","value":"Could not switch the agent preset. Try again."}
+    {"name":"desktop_agent_preset_selection_failed","value":"Could not switch the agent preset. Try again."},
+    {"name":"desktop_preset_view_action","value":"View configuration: %1$s"},
+    {"name":"desktop_preset_view_title","value":"View configuration · %1$s"},
+    {"name":"desktop_preset_view_close","value":"Close"},
+    {"name":"desktop_preset_view_failed","value":"Could not read the preset configuration."}
   ]
 }

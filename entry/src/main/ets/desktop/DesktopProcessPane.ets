@@ -9,6 +9,7 @@ import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import type { DesktopTimelineReceipt, DesktopTimelineReceiptTask } from './DesktopTimelineReceipt';
 import { desktopProcessDiff } from './DesktopProcessDiffModel';
 import type { DesktopProcessDiffFile, DesktopProcessDiffPreview, DesktopProcessDiffStage } from './DesktopProcessDiffModel';
+import { DesktopSkillToolRow } from './DesktopSkillToolRow';
 
 @Component
 export struct DesktopProcessPane {
@@ -17,6 +18,10 @@ export struct DesktopProcessPane {
   @Prop grouped: boolean = true;
   @Prop liveProcessDetail: boolean = false;
   @Prop inspected: string = '';
+  @Prop expandedSkills: string[] = [];
+  @Prop skillInspection: boolean = false;
+  @Prop bodySize: number = 14;
+  @Prop bodyFamily: string = '';
   @Prop codeSize: number = 11;
   @Prop timelineDecimals: number = 2;
   @Prop codeFamily: string = 'monospace';
@@ -24,6 +29,8 @@ export struct DesktopProcessPane {
   onToggle: () => void = (): void => {};
   onTimelineReceipt: (tree: string, task: string) => void = (): void => {};
   onInspect: (id: string) => void = (_id: string): void => {};
+  onSkillToggle: (id: string) => void = (_id: string): void => {};
+  onSkillInspect: (id: string) => void = (_id: string): void => {};
   onFile: (path: string, name: string) => void = (_path: string, _name: string): void => {};
   onQuestionResume: (id: string) => void = (_id: string): void => {};
   onQuestionReview: (id: string) => boolean = (_id: string): boolean => false;
@@ -299,7 +306,12 @@ export struct DesktopProcessPane {
   @Builder
   private Step(row: DesktopToolStep) {
     Column({ space: 3 }) {
-      if (row.timeline !== undefined) {
+      if (row.skill !== undefined) {
+        DesktopSkillToolRow({ view: row.skill, callId: row.id, open: this.expandedSkills.includes(row.id),
+          inspectAvailable: this.skillInspection, bodySize: this.bodySize, bodyFamily: this.bodyFamily,
+          codeSize: this.codeSize, codeFamily: this.codeFamily,
+          onToggle: (): void => { this.onSkillToggle(row.id); }, onInspect: (): void => { this.onSkillInspect(row.id); } })
+      } else if (row.timeline !== undefined) {
         this.ReceiptHeader(row.id, row.timeline)
         if (this.inspected === row.id) { this.Receipt(row.id, row.timeline) }
       } else {
@@ -351,7 +363,8 @@ export struct DesktopProcessPane {
       if (this.expanded || !this.grouped) {
         ForEach(this.group?.steps ?? [], (row: DesktopToolStep): void => { this.Step(row) },
           (row: DesktopToolStep): string => row.id + (row.timelineRevision === 0 ? '' : ':' + row.timelineRevision) +
-            (row.diffRevision === undefined ? '' : ':diff:' + row.diffRevision))
+            (row.diffRevision === undefined ? '' : ':diff:' + row.diffRevision) +
+            (row.skillRevision === undefined ? '' : ':skill:' + row.skillRevision))
       }
     }.width('100%').constraintSize({ maxWidth: 712 }).alignItems(HorizontalAlign.Start)
   }

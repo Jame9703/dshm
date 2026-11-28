@@ -1226,6 +1226,8 @@ export struct IndexContent {
       this.hubError = ok ? '' : hub.snapshot().lastError;
       if (!ok) {
         this.desktopSettingsUrl = '';
+      } else if (this.desktopSettingsVisible && this.nav.settingsSection === 'settings.presets') {
+        hub.refreshAgentPresets();
       }
     }
   }
@@ -4392,8 +4394,15 @@ const stopped: OpResult = await host.stop(`Index 核心操作：${id}`);
       this.closeDesktopSettings();
       return;
     }
+    const previous = this.nav.settingsSection;
     this.nav = openSettings(this.nav, sectionId, this.panelRegistry);
-    if (this.desktopSettingsEntry) { this.onSettingsSection(this.nav.settingsSection); }
+    if (this.desktopSettingsEntry) {
+      this.onSettingsSection(this.nav.settingsSection);
+      if (this.nav.settingsSection === 'settings.presets' && previous !== this.nav.settingsSection &&
+        this.hubConnected && this.connectSettled && !this.connectBusy) {
+        SessionHub.shared().refreshAgentPresets();
+      }
+    }
   }
 
   private selectRightPanelById(panelId: string): void {

@@ -6,6 +6,8 @@ import { readDesktopTimelineReceipt } from './DesktopTimelineReceipt';
 import type { DesktopTimelineReceipt } from './DesktopTimelineReceipt';
 import { readDesktopProcessDiffMeta } from './DesktopProcessDiffModel';
 import type { DesktopProcessDiffMeta } from './DesktopProcessDiffModel';
+import { desktopSkillToolView, readDesktopSkillToolResult } from './DesktopSkillToolModel';
+import type { DesktopSkillToolResult, DesktopSkillToolView } from './DesktopSkillToolModel';
 
 interface ToolEntry {
   id: string;
@@ -24,6 +26,11 @@ interface ToolEntry {
   diffMeta?: DesktopProcessDiffMeta;
   diffStamp?: string;
   diffRevision?: number;
+  skillArgs?: string;
+  skillResult?: DesktopSkillToolResult;
+  // A result can arrive ahead of its call when a missing history page is repaired.
+  unpairedResult?: Object;
+  skillRevision?: number;
   error: string;
 }
 
@@ -39,6 +46,8 @@ export interface DesktopToolStep {
   timelineRevision: number;
   diffMeta?: DesktopProcessDiffMeta;
   diffRevision?: number;
+  skill?: DesktopSkillToolView;
+  skillRevision?: number;
   nested?: boolean;
   interrupted: boolean;
   error: string;
@@ -142,6 +151,12 @@ export class DesktopToolLog {
       const diffMeta = readDesktopProcessDiffMeta(meta);
       const diffStamp = diffMeta === undefined ? undefined : stringifyJson(diffMeta);
       const previous = entry.result;
+      if ((entry.call?.toolName || name) === 'skill') {
+        const skill = readDesktopSkillToolResult(data, child);
+        this.recordSkillResult(entry, skill);
+      } else if (entry.call === undefined) {
+        entry.unpairedResult = data;
+      }
       const changed = seq !== entry.end || problem !== entry.error || previous?.at !== item.at ||
         previous?.toolName !== item.toolName || previous?.toolState !== item.toolState ||
         previous?.toolOutput !== item.toolOutput || timelineStamp !== entry.timelineStamp || diffStamp !== entry.diffStamp;
@@ -169,9 +184,24 @@ export class DesktopToolLog {
       entry.call = item;
       entry.start = seq;
       if (desktopCordisAction(name)) { entry.cordisArgs = getString(data, 'arguments') ?? item.toolArgs; }
+      if (name === 'skill') {
+        entry.skillArgs = getString(data, 'arguments') ?? item.toolArgs;
+        if (entry.end >= 0 && entry.skillResult === undefined) {
+          this.recordSkillResult(entry, readDesktopSkillToolResult(entry.unpairedResult, child));
+        }
+      }
+      entry.unpairedResult = undefined;
     }
     this.entries.set(id, entry);
     return done && !!desktopCordisAction(entry.call?.toolName || name);
+  }
+
+  private recordSkillResult(entry: ToolEntry, skill: DesktopSkillToolResult): void {
+    if (entry.skillResult?.output === skill.output && entry.skillResult.failed === skill.failed &&
+      entry.skillResult.interrupted === skill.interrupted) { return; }
+    entry.skillResult = skill;
+    entry.skillRevision = (entry.skillRevision ?? 0) + 1;
+    this.cachedGroups = undefined;
   }
 
   private step(entry: ToolEntry, depth: number, turn: number, parentStep: number): DesktopToolStep {
@@ -193,6 +223,9 @@ export class DesktopToolLog {
       interrupted: interrupted, error: entry.error, cordis: cordis,
       timeline: item.toolName === 'timeline_tasks' ? entry.timeline : undefined,
       timelineRevision: entry.timelineRevision ?? 0,
+      skill: item.toolName === 'skill' ? desktopSkillToolView(entry.id, entry.skillArgs ?? item.toolArgs,
+        entry.skillResult, interrupted) : undefined,
+      skillRevision: entry.skillRevision,
       diffMeta: entry.diffMeta, diffRevision: entry.diffRevision, nested: !!entry.parentId };
   }
 
@@ -245,6 +278,7 @@ export class DesktopToolLog {
     stamps.push(`${row.id}:${row.start}:${row.end}:${step.interrupted}`);
     if (step.timelineRevision > 0) { stamps.push(String(step.timelineRevision)); }
     if (step.diffRevision !== undefined && step.diffRevision > 0) { stamps.push('diff:' + step.diffRevision); }
+    if (step.skillRevision !== undefined) { stamps.push('skill:' + step.skillRevision); }
     for (const child of children.get(row.id) ?? []) {
       this.attach(child, depth + 1, turn, step.step, children, seen, steps, stamps);
     }

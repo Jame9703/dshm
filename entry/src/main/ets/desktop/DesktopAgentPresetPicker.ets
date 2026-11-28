@@ -42,14 +42,14 @@ function readPresetRoster(host: DesktopHostActions): Promise<DesktopAgentPresetC
   return read.result;
 }
 
-function displayName(choice: DesktopAgentPresetChoice): ResourceStr {
-  if (choice.name !== undefined) { return choice.name; }
-  switch (choice.id) {
+export function desktopAgentPresetName(id: string, name?: string): ResourceStr {
+  if (name !== undefined) { return name; }
+  switch (id) {
     case 'standard': return $r('app.string.desktop_agent_preset_standard');
     case 'ptc': return $r('app.string.desktop_agent_preset_ptc');
     case 'minimal': return $r('app.string.desktop_agent_preset_minimal');
     case 'cordis': return $r('app.string.desktop_agent_preset_cordis');
-    default: return choice.id;
+    default: return id;
   }
 }
 
@@ -113,7 +113,7 @@ export struct DesktopAgentPresetPicker {
   private currentName(): ResourceStr {
     const id = this.currentId();
     const choice = this.choices.find((row: DesktopAgentPresetChoice): boolean => row.id === id);
-    return choice === undefined ? id : displayName(choice);
+    return choice === undefined ? id : desktopAgentPresetName(choice.id, choice.name);
   }
 
   private available(): DesktopAgentPresetChoice[] {
@@ -151,7 +151,7 @@ export struct DesktopAgentPresetPicker {
   private PresetMenu() {
     Menu() {
       ForEach(this.available(), (choice: DesktopAgentPresetChoice): void => {
-        MenuItem({ content: displayName(choice), labelInfo: displayDescription(choice) })
+        MenuItem({ content: desktopAgentPresetName(choice.id, choice.name), labelInfo: displayDescription(choice) })
           .key('desktopAgentPreset-' + choice.id).selectIcon(true).selected(this.currentId() === choice.id)
           .onChange((): void => { this.select(choice); })
       }, (choice: DesktopAgentPresetChoice): string => choice.id)

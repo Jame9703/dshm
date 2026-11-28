@@ -172,7 +172,7 @@ export function decodeDesktopDock(text: string): DesktopDockLayout {
   const layout = emptyDesktopDock();
   if (rows.length > 2) { return layout; }
   if (rows.length > 0) {
-    layout.panes = rows.map((row: Object): DesktopDockPane => {
+    layout.panes = rows.map((row: Object, index: number): DesktopDockPane => {
       const tabs: DesktopDockTab[] = [];
       for (const saved of getArray(row, 'tabs') ?? []) {
         const tab = restoreTab(saved);
@@ -182,7 +182,7 @@ export function decodeDesktopDock(text: string): DesktopDockLayout {
         }
       }
       const active = getString(row, 'active') ?? '';
-      return { tabs: tabs, active: tabs.some((tab: DesktopDockTab): boolean => tab.id === active) ?
+      return { id: index, tabs: tabs, active: tabs.some((tab: DesktopDockTab): boolean => tab.id === active) ?
         active : tabs[0]?.id ?? '' };
     });
     layout.focus = rows.length === 2 && getNumber(state, 'focus') === 1 ? 1 : 0;

@@ -7,6 +7,7 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { DesktopQueuedPrompt, desktopQueueFileSize } from './DesktopPromptQueue';
 import { DesktopAttachmentThumbnail } from './DesktopAttachments';
 import type { DesktopMediaAttachment } from './DesktopAttachments';
+import { desktopFileTypeIcon } from './DesktopFileType';
 
 @Component
 export struct DesktopQueueDock {
@@ -148,11 +149,7 @@ export struct DesktopQueueDock {
   @Builder
   private File(file: DesktopMediaAttachment) {
     Row({ space: 4 }) {
-      if (file.name.toLowerCase().endsWith('.md') || file.name.toLowerCase().endsWith('.markdown')) {
-        this.Icon($r('app.media.dsh_file_markdown'), 16)
-      } else {
-        SymbolGlyph($r('sys.symbol.doc_text')).fontSize(16).accessibilityLevel('no')
-      }
+      this.Icon(desktopFileTypeIcon(file.name), 16)
       Text(file.name).fontSize(13).maxLines(1).flexShrink(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_secondary'))
       Text(desktopQueueFileSize(file.bytes)).fontSize(10).maxLines(1).fontColor($r('sys.color.font_tertiary'))

@@ -196,6 +196,7 @@ export struct SettingsPane {
             // 预设段归 SettingsPresets（P4-5 拆出的域组件）：两半（名单卡片 + agent-* 编辑器）、
             // 三个组件内临时态（两步确认 / 只读查看）与「查看」的中枢直读都随之搬走。
             SettingsPresets({
+              desktopViewer: this.desktopShortcuts, compositionHost: this.desktopAccountHost,
               presets: this.desktopShortcuts ? this.presets.filter((row: AgentPresetRow): boolean =>
                 desktopPresetVisible(row.id, row.name || undefined, this.codingTools.enabled)) : this.presets,
               note: this.presetNote,

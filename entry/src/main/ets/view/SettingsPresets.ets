@@ -31,6 +31,8 @@
  * 写入类动作（复制 / 删除）仍走宿主回调，因为它们要影响"下一步做什么"（提示语落在宿主页上）。
  */
 
+import { window } from '@kit.ArkUI';
+import { dialogMaterial } from 'platform';
 import {
   AgentPresetRow,
   Fs,
@@ -42,6 +44,10 @@ import {
   presetIsBundled
 } from 'appstate';
 import { SettingRow } from './SettingRow';
+import { desktopAgentPresetName } from '../desktop/DesktopAgentPresetPicker';
+import type { DesktopHostActions } from '../desktop/DesktopHostActions';
+import { readDesktopPresetComposition } from '../desktop/DesktopPresetComposition';
+import { DesktopPresetViewer } from '../desktop/DesktopPresetViewer';
 
 /** 设置页「预设」分区 */
 @Component
@@ -52,6 +58,8 @@ export struct SettingsPresets {
   @Prop note: string = '';
   /** **全部**设置分区（含被「通用」策展隐藏的 `agent-*`）——预设编辑器要从这里取 */
   @Prop allGroups: SettingGroup[] = [];
+  @Prop desktopViewer: boolean = false;
+  compositionHost?: DesktopHostActions;
   /** 复制（官方唯一的创建入口；随附预设也能复制） */
   onCopy: (from: string, name: string) => void = () => {
   };
@@ -76,6 +84,93 @@ export struct SettingsPresets {
   @State viewedId: string = '';
   /** 只读查看器当前展示的预设内容（E173） */
   @State viewedContent: string = '';
+  @State private viewerProblem: string = '';
+  private viewerActive: boolean = false;
+  private viewerRequest: number = 0;
+  private viewerOpening: boolean = false;
+  private viewerDialog: number = -1;
+
+  aboutToAppear(): void {
+    this.viewerActive = true;
+  }
+
+  aboutToDisappear(): void {
+    this.viewerActive = false;
+    this.viewerRequest++;
+    this.closePresetViewer();
+  }
+
+  private closePresetViewer(): void {
+    if (this.viewerDialog >= 0) { this.getUIContext().getPromptAction().closeCustomDialog(this.viewerDialog); }
+  }
+
+  private presetLabel(row: AgentPresetRow): string {
+    const label = desktopAgentPresetName(row.id, row.name || undefined);
+    return typeof label === 'string' ? label :
+      this.getUIContext().getHostContext()?.resourceManager.getStringSync(label) ?? row.id;
+  }
+
+  private viewerFailed(problem: string = ''): void {
+    this.viewerProblem = problem || (this.getUIContext().getHostContext()?.resourceManager.getStringSync(
+      $r('app.string.desktop_preset_view_failed').id) ?? '');
+  }
+
+  @Builder
+  private PresetViewer(name: string, yaml: string, maxHeight: number) {
+    DesktopPresetViewer({ presetName: name, yaml: yaml, maxCodeHeight: maxHeight,
+      onClose: (): void => { this.closePresetViewer(); } })
+  }
+
+  private async viewPresetComposition(row: AgentPresetRow): Promise<void> {
+    if (!this.viewerActive || this.viewerOpening || this.viewerDialog >= 0) { return; }
+    this.viewerProblem = '';
+    const host = this.compositionHost;
+    if (host === undefined) { this.viewerFailed(); return; }
+    const request = ++this.viewerRequest;
+    const ui = this.getUIContext();
+    const prompt = ui.getPromptAction();
+    try {
+      const composition = await readDesktopPresetComposition(host, row.id);
+      if (!this.viewerActive || request !== this.viewerRequest) { return; }
+      const yaml = composition.yaml;
+      if (yaml === undefined) { this.viewerFailed(composition.problem); return; }
+      const label = this.presetLabel(row);
+      const material = dialogMaterial();
+      let viewerWidth = 720;
+      let codeHeight = 560;
+      const windowName = ui.getWindowName();
+      if (windowName) {
+        try {
+          const size = window.findWindow(windowName).getWindowProperties().windowRect;
+          viewerWidth = Math.min(viewerWidth, Math.max(1, ui.px2vp(size.width) - 32));
+          codeHeight = Math.min(codeHeight, ui.px2vp(size.height) * 0.6);
+        } catch (_) {}
+      }
+      this.viewerOpening = true;
+      const id = await prompt.openCustomDialog({
+        builder: (): void => { this.PresetViewer(label, yaml, codeHeight); }, alignment: DialogAlignment.Center,
+        width: viewerWidth, autoCancel: true, isModal: true, cornerRadius: 28, systemMaterial: material,
+        maskColor: $r('app.color.desktop_settings_mask'),
+        backgroundColor: material === undefined ? $r('app.color.desktop_settings_surface') : undefined,
+        onDidDisappear: (): void => {
+          if (request !== this.viewerRequest) { return; }
+          this.viewerDialog = -1;
+          this.viewerOpening = false;
+          setTimeout((): void => {
+            if (this.viewerActive && request === this.viewerRequest) {
+              ui.getFocusController().requestFocus('desktopPresetView-' + row.id);
+            }
+          }, 0);
+        }
+      });
+      if (this.viewerActive && request === this.viewerRequest && this.viewerOpening) { this.viewerDialog = id; }
+      else { prompt.closeCustomDialog(id); }
+    } catch (_) {
+      if (this.viewerActive && request === this.viewerRequest) { this.viewerFailed(); }
+    } finally {
+      if (request === this.viewerRequest) { this.viewerOpening = false; }
+    }
+  }
 
   /** `agent-*` 设置分区（E129：Agent 预设相关，官方在设置里有专门分区） */
   private agentGroups(): SettingGroup[] {
@@ -109,6 +204,10 @@ export struct SettingsPresets {
 
   build() {
     Column({ space: Sp.M }) {
+      if (this.viewerProblem.length > 0) {
+        Text(this.viewerProblem).key('desktopPresetViewerError').fontSize(12).width('100%')
+          .fontColor($r('app.color.workspace_status_error'))
+      }
       if (this.note.length > 0) {
         Text(this.note)
           .fontSize(Fs.CAPTION)
@@ -154,7 +253,7 @@ export struct SettingsPresets {
   presetCard(p: AgentPresetRow) {
     Column({ space: 2 }) {
       Row({ space: Sp.S }) {
-        Text(p.name.length > 0 ? p.name : p.id)
+        Text(this.desktopViewer ? desktopAgentPresetName(p.id, p.name || undefined) : p.name || p.id)
           .fontSize(Fs.BODY)
           .fontWeight(FontWeight.Medium)
           .layoutWeight(1)
@@ -187,17 +286,19 @@ export struct SettingsPresets {
           .onClick(() => {
             this.onCopy(p.id, p.name);
           })
-        Text(this.viewedId === p.id ? '收起内容' : '查看')
-          .fontSize(Fs.CAPTION)
-          .fontColor($r('sys.color.brand'))
-          .onClick(() => {
-            if (this.viewedId === p.id) {
-              this.viewedId = '';
-              this.viewedContent = '';
-              return;
-            }
-            this.readPreset(p.id);
-          })
+        if (!this.desktopViewer) {
+          Text(this.viewedId === p.id ? '收起内容' : '查看')
+            .fontSize(Fs.CAPTION)
+            .fontColor($r('sys.color.brand'))
+            .onClick(() => {
+              if (this.viewedId === p.id) {
+                this.viewedId = '';
+                this.viewedContent = '';
+                return;
+              }
+              this.readPreset(p.id);
+            })
+        }
         if (!presetIsBundled(p)) {
           Text(this.confirmingId === p.id ? '确认删除' : '删除')
             .fontSize(Fs.CAPTION)
@@ -218,6 +319,16 @@ export struct SettingsPresets {
                 this.confirmingId = '';
               })
           }
+        }
+        if (this.desktopViewer) {
+          Blank()
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Image($r('app.media.dsh_preset_browse')).width(16).height(16).supportSvg2(true)
+              .draggable(false).accessibilityLevel('no')
+          }.key('desktopPresetView-' + p.id).id('desktopPresetView-' + p.id)
+            .width(28).height(28).borderRadius(8).padding(6)
+            .accessibilityText($r('app.string.desktop_preset_view_action', this.presetLabel(p)))
+            .onClick((): void => { this.viewPresetComposition(p); })
         }
       }
       .width('100%')

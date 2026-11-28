@@ -2,6 +2,13 @@
   "string": [
     { "name": "desktop_skills_label", "value": "技能" },
     { "name": "desktop_skills_user_only", "value": "仅用户" },
-    { "name": "desktop_skills_failed", "value": "无法读取当前会话的技能" }
+    { "name": "desktop_skills_failed", "value": "无法读取当前会话的技能" },
+    { "name": "desktop_skill_tool_title", "value": "加载技能" },
+    { "name": "desktop_skill_tool_preparing", "value": "准备加载技能" },
+    { "name": "desktop_skill_tool_running", "value": "正在加载 skill" },
+    { "name": "desktop_skill_tool_failed", "value": "skill 加载失败" },
+    { "name": "desktop_skill_tool_stopped", "value": "skill 加载已中止" },
+    { "name": "desktop_skill_tool_instructions", "value": "说明" },
+    { "name": "desktop_skill_tool_inspect", "value": "查看" }
   ]
 }

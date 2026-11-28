@@ -48,6 +48,7 @@ export function desktopDockTerminalTab(terminalId: string, title: string,
 }
 
 export interface DesktopDockPane {
+  id: number;
   tabs: DesktopDockTab[];
   active: string;
 }
@@ -76,13 +77,13 @@ export interface DesktopDockLayout {
 }
 
 export function emptyDesktopDock(): DesktopDockLayout {
-  return { panes: [{ tabs: [], active: '' }], focus: 0, floats: [], focusedFloat: '', expanded: false,
+  return { panes: [{ id: 0, tabs: [], active: '' }], focus: 0, floats: [], focusedFloat: '', expanded: false,
     fullscreen: false, width: 0, fraction: 0.5 };
 }
 
 function copyDock(layout: DesktopDockLayout): DesktopDockLayout {
   return { panes: layout.panes.map((pane: DesktopDockPane): DesktopDockPane =>
-    ({ tabs: pane.tabs.slice(), active: pane.active })), focus: layout.focus, floats: layout.floats.slice(),
+    ({ id: pane.id, tabs: pane.tabs.slice(), active: pane.active })), focus: layout.focus, floats: layout.floats.slice(),
     focusedFloat: layout.focusedFloat, expanded: layout.expanded,
     fullscreen: layout.fullscreen, width: layout.width, fraction: layout.fraction };
 }
@@ -303,7 +304,7 @@ export function desktopDockCloseTab(layout: DesktopDockLayout, pane: number, tab
 export function desktopDockSplit(layout: DesktopDockLayout, side: number = 1): DesktopDockLayout {
   if (layout.panes.length > 1) { return layout; }
   const next = copyDock(layout);
-  next.panes.splice(side, 0, { tabs: [], active: '' });
+  next.panes.splice(side, 0, { id: 1 - layout.panes[0].id, tabs: [], active: '' });
   next.focus = side;
   next.focusedFloat = '';
   next.expanded = true;

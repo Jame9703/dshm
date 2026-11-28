@@ -19,6 +19,8 @@ import type { DesktopTerminalRosterSink } from '../desktop/DesktopTerminalRoster
 import { DesktopBrowserPane } from '../desktop/DesktopBrowserPane';
 import { desktopBrowserAddress } from '../desktop/DesktopBrowserAddress';
 import { DesktopFilesPane } from '../desktop/DesktopFilesPane';
+import { DesktopFileNavigatorBook, DesktopFileNavigatorLink, desktopFileNavigatorKey } from '../desktop/DesktopFileNavigator';
+import { desktopFileTypeIcon } from '../desktop/DesktopFileType';
 import { DesktopFileSearchPreferenceBook } from '../desktop/DesktopFileSearchPreference';
 import type { DesktopDocumentViewState } from '../desktop/DesktopDocumentZoomModel';
 import { DesktopChangesPane } from '../desktop/DesktopChangesPane';
@@ -356,6 +358,7 @@ struct DesktopWorkspace {
   private readonly subagentAddresses: Map<string, DesktopSubagentEntry> = new Map();
   private data?: DesktopWorkspaceData;
   private fileSearchBook?: DesktopFileSearchPreferenceBook;
+  private readonly fileNavigators = new DesktopFileNavigatorBook();
   private readonly documentViews = new Map<string, DesktopDocumentViewState>();
   private readonly closingDockTerminals = new Set<string>();
   private readonly pendingTerminalRenames = new Set<string>();
@@ -632,6 +635,7 @@ struct DesktopWorkspace {
     this.shownPlanReviews.clear();
     this.docks.clear();
     this.documentViews.clear();
+    this.fileNavigators.clear();
     this.closingDockTerminals.clear();
     this.pendingTerminalRenames.clear();
     this.terminalRename = undefined;
@@ -2133,6 +2137,9 @@ struct DesktopWorkspace {
     if (menu !== undefined && (!layout.expanded || !layout.panes[menu.pane]?.tabs.some(
       (tab: DesktopDockTab): boolean => tab.id === menu.tab))) {
       this.dockTabContext = undefined;
+    }
+    if (layout.panes !== this.rightDock.panes || layout.floats !== this.rightDock.floats) {
+      this.retainFileNavigators(layout);
     }
     this.rightDock = layout;
     this.docks.set(this.sessionId, layout);
@@ -4628,6 +4635,27 @@ struct DesktopWorkspace {
       this.sessionSummaries.find((row: SessionListItem): boolean => row.id === session)?.cwd ?? '';
   }
 
+  private fileNavigatorBinding(index: number, tab: DesktopDockTab): DesktopFileNavigatorLink {
+    const paneId = index < 0 ? 'float:' + tab.id : 'dock:' + this.rightDock.panes[index]?.id;
+    return { owner: this.sessionId, paneId: paneId, sessionId: tab.sourceSessionId ?? this.sessionId,
+      root: this.fileSearchRoot(tab) };
+  }
+
+  private retainFileNavigators(layout: DesktopDockLayout): void {
+    if (!this.fileNavigators.has(this.sessionId)) { return; }
+    const valid = new Set<string>();
+    const retain = (paneId: string, tab: DesktopDockTab): void => {
+      if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
+        valid.add(desktopFileNavigatorKey(paneId, tab.sourceSessionId ?? this.sessionId));
+      }
+    };
+    layout.panes.forEach((pane: DesktopDockPane): void => {
+      pane.tabs.forEach((tab: DesktopDockTab): void => retain('dock:' + pane.id, tab));
+    });
+    layout.floats.forEach((panel: DesktopDockFloat): void => retain('float:' + panel.tab.id, panel.tab));
+    this.fileNavigators.retain(this.sessionId, valid);
+  }
+
   private documentViewKey(tabId: string): string { return JSON.stringify([this.sessionId, tabId]); }
 
   private documentViewReader(tabId: string): () => DesktopDocumentViewState | undefined {
@@ -4679,7 +4707,8 @@ struct DesktopWorkspace {
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),
         sessionId: tab.sourceSessionId ?? this.sessionId, requested: this.dockStoredTab(index, tab.id)?.file,
         previewOnly: tab.kind === DesktopDockKind.PREVIEW, focusScope: tab.id, viewportWidth: this.workbenchWidth,
-        workspaceRoot: this.fileSearchRoot(tab), shown: this.dockTabShown(index, tab.id),
+        navigatorBook: this.fileNavigators, navigatorLink: this.fileNavigatorBinding(index, tab),
+        shown: this.dockTabShown(index, tab.id),
         interactiveHtml: this.codingTools.enabled,
         preferenceBook: this.fileSearchPreferences(),
         readDocumentView: tab.kind === DesktopDockKind.PREVIEW ? this.documentViewReader(tab.id) : undefined,
@@ -4780,13 +4809,16 @@ struct DesktopWorkspace {
   }
 
   @Builder
-  private DockTitleIcon(kind: DesktopDockKind, key: string) {
+  private DockTitleIcon(kind: DesktopDockKind, key: string, title: string) {
     if (kind === DesktopDockKind.FILES) {
       Image($r('app.media.dsh_file_folder')).key(key).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
     } else if (kind === DesktopDockKind.BROWSER) {
       Image($r('app.media.dsh_browser_globe_outline')).key(key).width(14).height(14).accessibilityLevel('no')
     } else if (kind === DesktopDockKind.COMPACTION) {
       Image($r('app.media.dsh_file_markdown')).key(key).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+    } else if (kind === DesktopDockKind.PREVIEW) {
+      Image(desktopFileTypeIcon(title)).key(key).width(16).height(16).supportSvg2(true)
+        .draggable(false).accessibilityLevel('no')
     }
   }
 
@@ -4806,7 +4838,7 @@ struct DesktopWorkspace {
             this.DockTerminalHeading(index, tab, true)
           } else {
             Row({ space: 4 }) {
-              this.DockTitleIcon(tab.kind, 'desktopDockTabIcon-' + index + '-' + tab.id)
+              this.DockTitleIcon(tab.kind, 'desktopDockTabIcon-' + index + '-' + tab.id, tab.title)
               Text(this.dockTabTitle(tab)).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 .fontColor($r('sys.color.font_primary'))
             }
@@ -4968,7 +5000,7 @@ struct DesktopWorkspace {
                 this.DockTerminalHeading(-1, panel.tab, false)
               } else {
                 Row({ space: 4 }) {
-                  this.DockTitleIcon(panel.tab.kind, 'desktopDockFloatIcon-' + panel.tab.id)
+                  this.DockTitleIcon(panel.tab.kind, 'desktopDockFloatIcon-' + panel.tab.id, panel.tab.title)
                   Text(this.dockTabTitle(panel.tab)).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
                 }
