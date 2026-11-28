@@ -6,6 +6,7 @@ import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
 import { DesktopTerminalCloseConfirmation, DesktopTerminalGuide, DesktopTerminalTitle } from './DesktopTerminalChrome';
 import { DesktopTerminalClient } from './DesktopTerminalClient';
+import { desktopTerminalKeySequence, DesktopTerminalKey } from './DesktopTerminalKeys';
 import { DesktopTerminalSelection } from './DesktopTerminalSelection';
 import type { DesktopTerminalSelectionSpan } from './DesktopTerminalSelection';
 import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
@@ -27,8 +28,6 @@ const MOUSE_PRESS: number = 1;
 const MOUSE_MOVE: number = 32;
 const ESC: string = '\x1b';
 const CANVAS_FONT_FAMILIES: Set<string> = new Set(['monospace', 'sans-serif', 'serif']);
-const FUNCTION_KEYS: string[] = ['OP', 'OQ', 'OR', 'OS', '[15~', '[17~',
-  '[18~', '[19~', '[20~', '[21~', '[23~', '[24~'];
 let nextTerminalInput: number = 0;
 
 interface TerminalHit {
@@ -97,9 +96,12 @@ export struct DesktopTerminalPane {
   private charWidth: number = 8;
   private canvasFontFamily: string = 'monospace';
   private scrollY: number = 0;
-  private ctrl: boolean = false;
+  private ctrlLeft: boolean = false;
+  private ctrlRight: boolean = false;
   private shiftLeft: boolean = false;
   private shiftRight: boolean = false;
+  private altRight: boolean = false;
+  private composingInput: boolean = false;
   private createIssued: boolean = false;
   private closeDialogId: number = -1;
   private closeDialogOpening: boolean = false;
@@ -594,7 +596,8 @@ export struct DesktopTerminalPane {
     const code = event.keyCode;
     const down = event.type === KeyType.Down;
     if (code === KeyCode.KEYCODE_CTRL_LEFT || code === KeyCode.KEYCODE_CTRL_RIGHT) {
-      this.ctrl = down;
+      if (code === KeyCode.KEYCODE_CTRL_LEFT) { this.ctrlLeft = down; }
+      else { this.ctrlRight = down; }
       return false;
     }
     if (code === KeyCode.KEYCODE_SHIFT_LEFT || code === KeyCode.KEYCODE_SHIFT_RIGHT) {
@@ -603,47 +606,30 @@ export struct DesktopTerminalPane {
       else { this.shiftRight = down; }
       return false;
     }
-    if (this.onShortcut(event)) { return true; }
-    if (!down) { return false; }
-    const control = event.getModifierKeyState?.(['Ctrl']) ?? this.ctrl;
-    const shift = event.getModifierKeyState?.(['Shift']) === true;
-    if (control && shift && code === KeyCode.KEYCODE_C) { this.copySelection(); return true; }
-    if (control && shift && code === KeyCode.KEYCODE_V) { this.pasteScreen().catch((): void => {}); return true; }
-    if (shift && (code === KeyCode.KEYCODE_PAGE_UP || code === KeyCode.KEYCODE_PAGE_DOWN)) {
+    if (code === KeyCode.KEYCODE_ALT_RIGHT) { this.altRight = down; return false; }
+    if (!down || this.composingInput) { return false; }
+    const key: DesktopTerminalKey = {
+      code: code, unicode: event.unicode ?? 0, meta: event.metaKey === 1,
+      ctrl: this.ctrlLeft || this.ctrlRight || event.getModifierKeyState?.(['Ctrl']) === true,
+      alt: this.altRight || event.getModifierKeyState?.(['Alt']) === true,
+      shift: this.shiftLeft || this.shiftRight || event.getModifierKeyState?.(['Shift']) === true
+    };
+    // AltGr can arrive as right Alt with Ctrl. Let the editor commit the platform's printable character.
+    if (this.altRight && key.ctrl && key.unicode >= 33 && key.unicode <= 126) { return false; }
+    if (!key.meta && this.onShortcut(event)) { return true; }
+    if (key.ctrl && !key.alt && !key.meta) {
+      if (key.shift && code === KeyCode.KEYCODE_C) { this.copySelection(); return true; }
+      if (key.shift && code === KeyCode.KEYCODE_V) { this.pasteScreen().catch((): void => {}); return true; }
+      if (!key.shift && code === KeyCode.KEYCODE_V) { return false; }
+    }
+    if (key.shift && (code === KeyCode.KEYCODE_PAGE_UP || code === KeyCode.KEYCODE_PAGE_DOWN)) {
       const lines = Math.max(1, (this.frame?.rows.length ?? 1) - 1);
       this.client?.scroll(code === KeyCode.KEYCODE_PAGE_UP ? -lines : lines);
       return true;
     }
     if (!this.state?.writable) { return false; }
-    let text = '';
-    if (control && code >= KeyCode.KEYCODE_A && code <= KeyCode.KEYCODE_Z) {
-      if (code === KeyCode.KEYCODE_V) {
-        return false;
-      }
-      text = String.fromCharCode(code - KeyCode.KEYCODE_A + 1);
-    } else if (control && code === KeyCode.KEYCODE_SPACE) {
-      text = '\x00';
-    } else if (code >= KeyCode.KEYCODE_DPAD_UP && code <= KeyCode.KEYCODE_DPAD_RIGHT) {
-      const prefix = this.client?.applicationCursor() ? 'O' : '[';
-      text = ESC + prefix + 'ABDC'.charAt(code - KeyCode.KEYCODE_DPAD_UP);
-    } else if (code >= KeyCode.KEYCODE_F1 && code <= KeyCode.KEYCODE_F12) {
-      text = ESC + FUNCTION_KEYS[code - KeyCode.KEYCODE_F1];
-    } else {
-      switch (code) {
-        case KeyCode.KEYCODE_ENTER:
-        case KeyCode.KEYCODE_NUMPAD_ENTER: text = '\r'; break;
-        case KeyCode.KEYCODE_DEL: text = '\x7f'; break;
-        case KeyCode.KEYCODE_TAB: text = shift ? ESC + '[Z' : '\t'; break;
-        case KeyCode.KEYCODE_ESCAPE: text = ESC; break;
-        case KeyCode.KEYCODE_MOVE_HOME: text = ESC + '[H'; break;
-        case KeyCode.KEYCODE_MOVE_END: text = ESC + '[F'; break;
-        case KeyCode.KEYCODE_INSERT: text = ESC + '[2~'; break;
-        case KeyCode.KEYCODE_FORWARD_DEL: text = ESC + '[3~'; break;
-        case KeyCode.KEYCODE_PAGE_UP: text = ESC + '[5~'; break;
-        case KeyCode.KEYCODE_PAGE_DOWN: text = ESC + '[6~'; break;
-        default: return false;
-      }
-    }
+    const text = desktopTerminalKeySequence(key, this.client?.applicationCursor() === true);
+    if (!text) { return false; }
     this.writeInput(text);
     return true;
   }
@@ -839,29 +825,32 @@ export struct DesktopTerminalPane {
         .enabled(this.state?.selected !== undefined)
         .enableKeyboardOnFocus(this.state?.writable === true)
         .hitTestBehavior(HitTestMode.None)
-        .enablePreviewText(false)
         .enterKeyType(EnterKeyType.Done)
         .onFocus((): void => { this.inputFocused = true; this.draw(); })
         .onBlur((): void => {
           this.inputFocused = false;
-          this.ctrl = false;
+          this.ctrlLeft = false;
+          this.ctrlRight = false;
           this.shiftLeft = false;
           this.shiftRight = false;
+          this.altRight = false;
+          this.composingInput = false;
           this.draw();
         })
         .onKeyPreIme((event: KeyEvent): boolean => this.handleTerminalKey(event))
-        .onSubmit((): void => { this.writeInput('\r'); })
+        .onSubmit((): void => { if (!this.composingInput) { this.writeInput('\r'); } })
         .onPaste((value: string, event: PasteEvent): void => {
           event.preventDefault?.();
           this.pasteInput(value);
         })
-        .onChange((value: string): void => {
-          if (!value) {
-            return;
-          }
+        .onChange((value: string, preview?: PreviewText): void => {
+          this.composingInput = (preview?.value ?? '').length > 0;
+          if (this.composingInput) { return; }
+          const previous = this.input;
           this.input = value;
-          this.writeInput(value);
-          setTimeout((): void => { this.input = ''; }, 0);
+          if (!value) { return; }
+          this.writeInput(value.startsWith(previous) ? value.slice(previous.length) : value);
+          setTimeout((): void => { if (!this.composingInput && this.input === value) { this.input = ''; } }, 0);
         })
       Row().width(1).height(1).position(this.selectionMenuAnchor).hitTestBehavior(HitTestMode.None)
         .bindContextMenu(this.selectionMenu, this.SelectionMenu(), {
