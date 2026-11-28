@@ -52,11 +52,20 @@ interface TerminalInput {
   rows: number;
 }
 
+interface ClosingTerminalFocus {
+  stream: DuplexStream;
+  waitAck: number;
+  focusSequence: number;
+  timer: number;
+}
+
 export type DesktopTerminalRetentionObserver = (id: string, listener: (problem: string) => void) => () => void;
 export type DesktopTerminalRosterObserver = (sink: DesktopTerminalRosterSink) => () => void;
 
 const MAX_INPUT_QUEUE: number = 32768;
 const ACK_TIMEOUT_MS: number = 10000;
+const FOCUS_CLOSE_TIMEOUT_MS: number = 1000;
+const FOCUS_OUT: string = '\x1b[O';
 const DEFAULT_COLS: number = 80;
 const DEFAULT_ROWS: number = 24;
 
@@ -88,6 +97,7 @@ export class DesktopTerminalClient {
   private shells: DesktopShell[] = [];
   private selected: string = '';
   private writable: boolean = false;
+  private focused: boolean = false;
   private loading: boolean = true;
   private busy: boolean = false;
   private error: string = '';
@@ -113,6 +123,7 @@ export class DesktopTerminalClient {
   private lastOutput: number = -1;
   private lastInput: number = 0;
   private waitAck: number = 0;
+  private waitingFocusOut: boolean = false;
   private ackTimer: number = -1;
   private paintTimer: number = -1;
   private queueBytes: number = 0;
@@ -120,6 +131,7 @@ export class DesktopTerminalClient {
   private stopWatch?: () => void;
   private stopRetentionObservation?: () => void;
   private stream?: DuplexStream;
+  private readonly closingFocus: Map<number, ClosingTerminalFocus> = new Map();
   private emulator?: TerminalEmulator;
   private createEmulator?: TerminalEmulatorFactory;
 
@@ -225,7 +237,7 @@ export class DesktopTerminalClient {
       this.stopWatch?.();
       this.stopWatch = undefined;
       this.stopObservingRetention();
-      this.detach();
+      this.detach(false, true);
     }
   }
 
@@ -337,7 +349,7 @@ export class DesktopTerminalClient {
       return;
     }
     this.stopObservingRetention();
-    this.detach(force && id === this.selected);
+    this.detach(force && id === this.selected, id !== this.selected);
     this.selected = id;
     this.error = '';
     this.issue = 'none';
@@ -362,6 +374,8 @@ export class DesktopTerminalClient {
       onItem: (value: Object): void => {
         if (this.live && this.generation === generation) {
           this.receive(value);
+        } else {
+          this.receiveClosingFocus(generation, value);
         }
       },
       onError: (_code: string, message: string): void => { this.ended(generation, message); },
@@ -441,6 +455,11 @@ export class DesktopTerminalClient {
     return this.emulator?.isApplicationCursor() === true;
   }
 
+  setFocused(focused: boolean): void {
+    this.focused = focused;
+    this.emulator?.setFocused(focused);
+  }
+
   mouseModes(): TerminalMouseModes | undefined { return this.emulator?.mouseModes(); }
 
   reportMouse(event: TerminalMouseInput): void {
@@ -459,7 +478,7 @@ export class DesktopTerminalClient {
     this.live = false;
     this.stopObservingRetention();
     this.stopWatch?.();
-    this.detach();
+    this.detach(false, true);
   }
 
   private project(value: Object): DesktopTerminalRow {
@@ -522,7 +541,7 @@ export class DesktopTerminalClient {
   private forgetSelection(): void {
     this.stopObservingRetention();
     this.selected = '';
-    this.detach();
+    this.detach(false, true);
   }
 
   private updateTerminalInfo(value: Object | undefined): void {
@@ -543,12 +562,14 @@ export class DesktopTerminalClient {
       this.maxFrameBytes = getNumber(getRecord(value, 'inputWindow'), 'maxFrameBytes') ?? this.maxFrameBytes;
       this.lastOutput = getNumber(value, 'sequence') ?? 0;
       this.emulator?.dispose();
+      const generation = this.generation;
       this.emulator = this.createEmulator?.(this.cols, this.rows, this.scrollback, (reply: string): void => {
-        this.write(reply, false);
+        if (this.generation === generation) { this.write(reply, false); }
       }, (report: string, binary: boolean, pressed: boolean): void => {
         // The Web client sends onData only, and this Host protocol carries UTF-8 text.
-        if (!binary) { this.write(report, pressed); }
+        if (!binary && this.generation === generation) { this.write(report, pressed); }
       });
+      this.emulator?.setFocused(this.focused && this.shown);
       this.paintText(getString(value, 'screen') ?? '', true);
       this.publish();
     } else if (kind === 'output') {
@@ -571,6 +592,7 @@ export class DesktopTerminalClient {
       }
       clearTimeout(this.ackTimer);
       this.waitAck = 0;
+      this.waitingFocusOut = false;
       const refusal = getString(value, 'refusal');
       if (refusal) {
         this.writable = false;
@@ -628,6 +650,7 @@ export class DesktopTerminalClient {
     }
     const sequence = ++this.lastInput;
     this.waitAck = sequence;
+    this.waitingFocusOut = next.type === 'write' && !next.typed && next.data === FOCUS_OUT;
     const generation = this.generation;
     const payload: Record<string, Object> = { 'type': next.type, 'sequence': sequence };
     if (next.type === 'write') {
@@ -669,6 +692,7 @@ export class DesktopTerminalClient {
   }
 
   private ended(generation: number, message: string): void {
+    if (this.closeFocusStream(generation)) { return; }
     if (this.live && this.generation === generation) {
       this.detach(true);
       this.error = message;
@@ -677,10 +701,51 @@ export class DesktopTerminalClient {
     }
   }
 
-  private detach(keepScreen: boolean = false): void {
+  private holdStreamForFocus(stream: DuplexStream, generation: number): boolean {
+    if (!this.writable || this.waitAck === 0 || (!this.waitingFocusOut &&
+      !this.queue.some((item: TerminalInput): boolean => item.type === 'write' && !item.typed && item.data === FOCUS_OUT))) {
+      return false;
+    }
+    // Keep the old attachment until the final focus-out is acknowledged. Unsent typing is discarded as on regular detach.
+    const closing: ClosingTerminalFocus = { stream: stream, waitAck: this.waitAck,
+      focusSequence: this.waitingFocusOut ? this.waitAck : this.lastInput + 1,
+      timer: setTimeout((): void => { this.closeFocusStream(generation); }, FOCUS_CLOSE_TIMEOUT_MS) };
+    this.closingFocus.set(generation, closing);
+    return true;
+  }
+
+  private receiveClosingFocus(generation: number, value: Object): void {
+    const closing = this.closingFocus.get(generation);
+    if (closing === undefined || getString(value, 'type') !== 'ack' ||
+      getNumber(value, 'sequence') !== closing.waitAck) { return; }
+    if (closing.waitAck === closing.focusSequence || getString(value, 'refusal')) {
+      this.closeFocusStream(generation);
+      return;
+    }
+    closing.waitAck = closing.focusSequence;
+    const focusOut: Record<string, Object> = { 'type': 'write', 'sequence': closing.focusSequence,
+      'data': FOCUS_OUT, 'typed': false };
+    closing.stream.send(focusOut).then((sent: boolean): void => {
+      if (!sent) { this.closeFocusStream(generation); }
+    }).catch((): void => { this.closeFocusStream(generation); });
+  }
+
+  private closeFocusStream(generation: number): boolean {
+    const closing = this.closingFocus.get(generation);
+    if (closing === undefined) { return false; }
+    this.closingFocus.delete(generation);
+    clearTimeout(closing.timer);
+    closing.stream.close();
+    return true;
+  }
+
+  private detach(keepScreen: boolean = false, reportBlur: boolean = false): void {
+    if (reportBlur) { this.emulator?.setFocused(false); }
+    const stream = this.stream;
+    const generation = this.generation;
     this.generation++;
-    this.stream?.close();
     this.stream = undefined;
+    if (stream !== undefined && (!reportBlur || !this.holdStreamForFocus(stream, generation))) { stream.close(); }
     if (!keepScreen) {
       this.emulator?.dispose();
       this.emulator = undefined;
@@ -690,6 +755,7 @@ export class DesktopTerminalClient {
     this.lastOutput = -1;
     this.lastInput = 0;
     this.waitAck = 0;
+    this.waitingFocusOut = false;
     clearTimeout(this.ackTimer);
     clearTimeout(this.paintTimer);
     this.paintTimer = -1;

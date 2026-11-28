@@ -20,10 +20,11 @@ async function check(create) {
     await pauseUntilWritten(terminal, '\x1b[?25l\x1b[6n');
     assert.equal(terminal.frame().cursorVisible, false);
     assert.deepEqual(replies, ['\x1b[2;5R'], 'screen-position response is relayed');
+    assert.equal(terminal.paste('a\r\nb\nc'), 'a\rb\rc');
     await pauseUntilWritten(terminal, '\x1b[?25h\x1b[?1h\x1b[?2004h');
     assert.equal(terminal.frame().cursorVisible, true);
     assert.equal(terminal.isApplicationCursor(), true);
-    assert.equal(terminal.paste('a\nb'), '\x1b[200~a\nb\x1b[201~');
+    assert.equal(terminal.paste('a\nb'), '\x1b[200~a\rb\x1b[201~');
 
     await pauseUntilWritten(terminal, '\x1b[?1049hALT');
     assert.match(terminal.visibleText(), /ALT/);
@@ -44,8 +45,27 @@ async function check(create) {
   }
 }
 
+async function checkFocus(create) {
+  const reports = [];
+  const terminal = create(32, 4, 24, reply => reports.push(reply));
+  try {
+    terminal.setFocused(true);
+    assert.deepEqual(reports, [], 'focus is silent before the program enables reporting');
+    await pauseUntilWritten(terminal, '\x1b[?1004h\x1b[?1004h');
+    terminal.setFocused(true);
+    terminal.setFocused(false);
+    terminal.setFocused(false);
+    await pauseUntilWritten(terminal, '\x1b[?1004l');
+    terminal.setFocused(true);
+    assert.deepEqual(reports, ['\x1b[I', '\x1b[I', '\x1b[O'], 'query replies and real focus changes are distinct');
+  } finally {
+    terminal.dispose();
+  }
+}
+
 const create = await loadTerminalEmulator();
 await check(create);
+await checkFocus(create);
 if (process.argv.includes('--self-test')) {
   const dropsEscapeSequence = (...args) => {
     const terminal = create(...args);
@@ -54,5 +74,11 @@ if (process.argv.includes('--self-test')) {
     return terminal;
   };
   await assert.rejects(check(dropsEscapeSequence), { name: 'AssertionError' });
+  const ignoresFocusChanges = (...args) => {
+    const terminal = create(...args);
+    terminal.setFocused = () => {};
+    return terminal;
+  };
+  await assert.rejects(checkFocus(ignoresFocusChanges), { name: 'AssertionError' });
 }
-console.log('PASS native terminal screen, ANSI chunks, cursor reports, alternate buffer, paste and scrollback');
+console.log('PASS native terminal screen, ANSI chunks, cursor and focus reports, alternate buffer, paste and scrollback');

@@ -1,4 +1,5 @@
 import { pasteboard } from '@kit.BasicServicesKit';
+import { window } from '@kit.ArkUI';
 import { KeyCode } from '@kit.InputKit';
 import { resourceManager } from '@kit.LocalizationKit';
 import { dialogMaterial } from 'platform';
@@ -48,6 +49,7 @@ export struct DesktopTerminalPane {
   host?: DesktopHostActions;
   @Prop @Watch('reloadSession') sessionId: string = '';
   @Prop @Watch('visibilityChanged') shown: boolean = true;
+  @Prop @Watch('scheduleFocus') focusEligible: boolean = false;
   @Prop @Watch('draw') appearance: string = 'system';
   @Prop @Watch('applyFont') cellFontSize: number = 13;
   @Prop @Watch('applyFontFamily') cellFontFamily: string = 'monospace';
@@ -65,7 +67,6 @@ export struct DesktopTerminalPane {
 
   @State private state?: DesktopTerminalState = undefined;
   @State private input: string = '';
-  @State private inputFocused: boolean = false;
   @State private visibleScreen: string = '';
   @State private selectionActive: boolean = false;
   @State private selectionMenu: boolean = false;
@@ -96,6 +97,20 @@ export struct DesktopTerminalPane {
   private charWidth: number = 8;
   private canvasFontFamily: string = 'monospace';
   private scrollY: number = 0;
+  private inputFocused: boolean = false;
+  private inputHasFocus: boolean = false;
+  private inputWindowActive: boolean = true;
+  private inputWindow?: window.Window;
+  private focusTimer: number = -1;
+  private readonly inputWindowEvent = (event: window.WindowEventType): void => {
+    if (event === window.WindowEventType.WINDOW_INACTIVE || event === window.WindowEventType.WINDOW_HIDDEN ||
+      event === window.WindowEventType.WINDOW_DESTROYED) {
+      this.inputWindowActive = false;
+    } else if (event === window.WindowEventType.WINDOW_ACTIVE || event === window.WindowEventType.WINDOW_SHOWN) {
+      this.inputWindowActive = this.inputWindow?.isFocused() === true && this.inputWindow?.isWindowShowing() === true;
+    }
+    this.syncInputFocus();
+  };
   private ctrlLeft: boolean = false;
   private ctrlRight: boolean = false;
   private shiftLeft: boolean = false;
@@ -115,6 +130,8 @@ export struct DesktopTerminalPane {
 
   aboutToDisappear(): void {
     this.resetMouse(true);
+    this.inputFocusChanged(false);
+    clearTimeout(this.focusTimer);
     this.active = false;
     this.clearSelection();
     this.dismissCloseDialog();
@@ -123,6 +140,7 @@ export struct DesktopTerminalPane {
   }
 
   private reloadSession(): void {
+    clearTimeout(this.focusTimer);
     this.resetMouse(true);
     this.clearSelection();
     this.dismissCloseDialog();
@@ -141,14 +159,16 @@ export struct DesktopTerminalPane {
         return;
       }
       const previous = this.state?.selected ?? '';
+      const wasWritable = this.state?.writable === true;
       const previousTitle = this.selected()?.title ?? '';
       this.state = state;
-      if (state.selected !== previous) { this.resetMouse(false); this.clearSelection(); }
+      if (state.selected !== previous) { this.resetMouse(false); this.clearSelection(); this.resetInputKeys(); }
       else if (!state.writable && this.reportedButton !== NO_BUTTON) { this.resetMouse(false); }
       const title = this.selected()?.title ?? '';
       if (state.selected !== previous || title !== previousTitle) {
         this.onTerminalSelected(id, state.selected, title);
       }
+      if (state.writable && (!wasWritable || state.selected !== previous)) { this.scheduleFocus(); }
       this.createFromShortcut();
     }, (frame: TerminalPaintFrame | undefined): void => {
       if (!this.active || this.sessionId !== id) {
@@ -159,13 +179,19 @@ export struct DesktopTerminalPane {
       this.visibleScreen = this.client?.visibleText() ?? '';
       this.draw();
     }, this.observeRetention, this.openInNewTab, this.observeRoster);
+    this.client.setFocused(this.inputFocused);
     this.fit();
     this.client.start(this.preferredTerminal);
   }
 
   private visibilityChanged(): void {
     if (!this.active) { return; }
-    if (!this.shown) { this.resetMouse(true); this.clearSelection(); }
+    if (!this.shown) {
+      this.resetMouse(true);
+      this.clearSelection();
+      this.inputFocusChanged(false);
+      clearTimeout(this.focusTimer);
+    }
     if (this.shown && this.client === undefined) { this.reloadSession(); }
     else { this.client?.setShown(this.shown); }
   }
@@ -327,6 +353,53 @@ export struct DesktopTerminalPane {
     if (this.active && this.shown && this.state?.selected) {
       try { this.getUIContext().getFocusController().requestFocus(this.inputFocusId); } catch (_) {}
     }
+  }
+
+  private scheduleFocus(): void {
+    clearTimeout(this.focusTimer);
+    if (!this.active || !this.shown || !this.focusEligible || this.state?.writable !== true) { return; }
+    this.focusTimer = setTimeout((): void => {
+      if (this.focusEligible && this.state?.writable === true) { this.focusInput(); }
+    }, 16);
+  }
+
+  private inputFocusChanged(focused: boolean): void {
+    if (this.inputHasFocus === focused) { return; }
+    this.inputHasFocus = focused;
+    if (focused) {
+      try {
+        const name = this.getUIContext().getWindowName();
+        if (name !== undefined) {
+          const owner = window.findWindow(name);
+          owner.on('windowEvent', this.inputWindowEvent);
+          this.inputWindow = owner;
+          this.inputWindowActive = owner.isFocused() && owner.isWindowShowing();
+        }
+      } catch (_) {}
+    } else {
+      try { this.inputWindow?.off('windowEvent', this.inputWindowEvent); } catch (_) {}
+      this.inputWindow = undefined;
+      this.inputWindowActive = true;
+    }
+    this.syncInputFocus();
+  }
+
+  private syncInputFocus(): void {
+    const focused = this.active && this.shown && this.inputHasFocus && this.inputWindowActive;
+    if (this.inputFocused === focused) { return; }
+    this.inputFocused = focused;
+    if (!focused) { this.resetInputKeys(); }
+    this.client?.setFocused(focused);
+    this.draw();
+  }
+
+  private resetInputKeys(): void {
+    this.ctrlLeft = false;
+    this.ctrlRight = false;
+    this.shiftLeft = false;
+    this.shiftRight = false;
+    this.altRight = false;
+    this.composingInput = false;
   }
 
   private hit(x: number, y: number): TerminalHit {
@@ -822,21 +895,13 @@ export struct DesktopTerminalPane {
         .width(80).height(30).opacity(0.01).backgroundColor(Color.Transparent)
         .caretColor(Color.Transparent).fontColor(Color.Transparent)
         .accessibilityText('终端输入')
+        .focusable(this.shown)
         .enabled(this.state?.selected !== undefined)
         .enableKeyboardOnFocus(this.state?.writable === true)
         .hitTestBehavior(HitTestMode.None)
         .enterKeyType(EnterKeyType.Done)
-        .onFocus((): void => { this.inputFocused = true; this.draw(); })
-        .onBlur((): void => {
-          this.inputFocused = false;
-          this.ctrlLeft = false;
-          this.ctrlRight = false;
-          this.shiftLeft = false;
-          this.shiftRight = false;
-          this.altRight = false;
-          this.composingInput = false;
-          this.draw();
-        })
+        .onFocus((): void => { this.inputFocusChanged(true); })
+        .onBlur((): void => { this.inputFocusChanged(false); })
         .onKeyPreIme((event: KeyEvent): boolean => this.handleTerminalKey(event))
         .onSubmit((): void => { if (!this.composingInput) { this.writeInput('\r'); } })
         .onPaste((value: string, event: PasteEvent): void => {

@@ -76,6 +76,7 @@ export interface TerminalEmulator {
   scrollToBottom(): boolean;
   viewportTop(): number;
   isApplicationCursor(): boolean;
+  setFocused(focused: boolean): void;
   mouseModes(): TerminalMouseModes;
   mouse(event: TerminalMouseInput): boolean;
   /** Signed wheel units. Delta mode 0 is pixels, 1 is lines, 2 is pages. */

@@ -45,6 +45,10 @@ class TerminalEmulator {
     this.mouseService = this.terminal._core.coreMouseService;
     this.reportingMouse = undefined;
     this.partialWheel = 0;
+    this.focused = false;
+    this.reportFocus = () => onReply(this.focused ? '\x1b[I' : '\x1b[O');
+    // Browser xterm also answers the parser's immediate focus request on DECSET 1004.
+    this.terminal._core._inputHandler.onRequestSendFocus(this.reportFocus);
     this.terminal.onData(data => {
       if (this.reportingMouse) onMouseReport?.(data, false,
         this.reportingMouse.button < 4 && this.reportingMouse.action === 1);
@@ -99,6 +103,12 @@ class TerminalEmulator {
 
   isApplicationCursor() {
     return this.terminal.modes.applicationCursorKeysMode;
+  }
+
+  setFocused(focused) {
+    if (this.focused === focused) return;
+    this.focused = focused;
+    if (this.terminal.modes.sendFocusMode) this.reportFocus();
   }
 
   mouseModes() {

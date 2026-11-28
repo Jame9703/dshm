@@ -4255,6 +4255,7 @@ struct DesktopWorkspace {
     } else if (tab.kind === DesktopDockKind.TERMINAL) {
       DesktopTerminalPane({ host: this.data?.actions, sessionId: this.sessionId, appearance: this.appearance,
         shown: this.dockTabShown(index, tab.id),
+        focusEligible: this.rightDock.focusedFloat ? this.rightDock.focusedFloat === tab.id : index === this.rightDock.focus,
         cellFontSize: this.typography.terminalSize, cellFontFamily: this.typography.terminalFamily,
         preferredTerminal: tab.terminalId ?? '',
         observeRetention: (id: string, listener: (problem: string) => void): (() => void) => {
