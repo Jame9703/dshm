@@ -165,8 +165,10 @@ export function desktopHostItems(result: RpcResult): Object[] {
   return getArray(wrapped, 'items') ?? [];
 }
 
-export function desktopLocalizedText(value: Object | undefined, field: string): string {
+export function desktopLocalizedText(value: Object | undefined, field: string, locale: string = ''): string {
   const map = getRecord(value, field);
-  return getString(value, field) || getString(map, 'zh-CN') || getString(map, 'zh') ||
+  const language = locale.split('-')[0];
+  return getString(value, field) || (locale ? getString(map, locale) || getString(map, language) ||
+    (language === 'en' ? getString(map, 'en-US') : '') : '') || getString(map, 'zh-CN') || getString(map, 'zh') ||
     getString(map, 'en-US') || getString(map, 'en') || '';
 }

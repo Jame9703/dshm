@@ -1,0 +1,18 @@
+{
+  "string": [
+    { "name": "desktop_plugin_list_tab", "value": "Installed" },
+    { "name": "desktop_plugin_list_built_in", "value": "Built-in plugin settings" },
+    { "name": "desktop_plugin_list_experimental", "value": "Experimental plugins" },
+    { "name": "desktop_plugin_list_installed", "value": "Installed plugins" },
+    { "name": "desktop_plugin_list_empty", "value": "No plugins are installed yet." },
+    { "name": "desktop_plugin_list_more", "value": "More" },
+    { "name": "desktop_plugin_list_back", "value": "Back to plugin list" },
+    { "name": "desktop_plugin_list_back_more", "value": "Back to experimental plugins" },
+    { "name": "desktop_plugin_list_toggle", "value": "Enable %1$s" },
+    { "name": "desktop_plugin_list_experimental_tag", "value": "Experimental" },
+    { "name": "desktop_plugin_list_not_running", "value": "Not running" },
+    { "name": "desktop_plugin_list_problem", "value": "Problem" },
+    { "name": "desktop_plugin_list_missing_files", "value": "Files missing" },
+    { "name": "desktop_plugin_list_not_installed", "value": "Not installed" }
+  ]
+}

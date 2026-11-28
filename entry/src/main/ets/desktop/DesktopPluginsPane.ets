@@ -1,5 +1,6 @@
 import { getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
+import { i18n } from '@kit.LocalizationKit';
 import { SETTINGS_DESCRIBE_ENDPOINT } from 'dshcompat';
 import { dialogMaterial } from 'platform';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem, desktopLocalizedText } from './DesktopHostActions';
@@ -21,6 +22,9 @@ import { DesktopPluginVersionScan, emptyDesktopPluginVersionScanSnapshot } from 
 import type { DesktopPluginVersionEntry, DesktopPluginVersionResult, DesktopPluginVersionScanSnapshot,
   DesktopPluginVersionTarget } from './DesktopPluginVersionScan';
 import { DesktopPluginMarketDetail } from './DesktopPluginMarketDetail';
+import { desktopPluginList } from './DesktopPluginListModel';
+import type { DesktopPluginListInput } from './DesktopPluginListModel';
+import { DesktopPluginArtwork, desktopPluginIcon } from './DesktopPluginArtwork';
 import { DesktopTimelineSettings } from './DesktopTimelineSettings';
 import { DESKTOP_TIMELINE_BUNDLE, DESKTOP_TIMELINE_NS } from './DesktopTimelineSettingsModel';
 import { DesktopConnectorAccounts } from './DesktopConnectorAccounts';
@@ -36,8 +40,14 @@ interface DesktopPluginRow {
   description: string;
   enabled: boolean;
   toggle: boolean;
+  readOnly: boolean;
   removable: boolean;
   installed: boolean;
+  official: boolean;
+  listedByDefault?: boolean;
+  hasError: boolean;
+  beta: boolean;
+  artwork: string;
   availability: string;
   unsupportedPlatform: boolean;
   version: string;
@@ -51,22 +61,25 @@ interface DesktopPluginRow {
   components: DesktopPluginComponent[];
 }
 
+interface DesktopPluginCards {
+  mine: DesktopPluginRow[];
+  extensions: DesktopPluginRow[];
+  more: DesktopPluginRow[];
+}
+
 interface DesktopMarketSource {
   url: string;
   title: string;
 }
 
-function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
+function pluginRows(result: RpcResult, bundle: boolean, locale: string = ''): DesktopPluginRow[] {
   const rows: DesktopPluginRow[] = [];
   for (const value of desktopHostItems(result)) {
       const id = getString(value, bundle ? 'name' : 'entryId') ?? '';
       const enabled = getBoolean(value, 'enabled') === true;
-      const optional = getBoolean(value, 'optional') === true;
       const installed = getBoolean(value, 'installed') === true;
-      if (id.length === 0 || (bundle && !enabled && !optional && !installed &&
-        getBoolean(value, 'listedByDefault') !== true)) {
-        continue;
-      }
+      const readOnly = !!getString(value, 'readOnlyReason');
+      if (id.length === 0) { continue; }
       const target = getRecord(value, 'installTarget');
       const availability = bundle ? getString(value, 'availability') ?? '' : '';
       const installSpec = getString(target, 'spec') ?? '';
@@ -78,25 +91,30 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
       const meta = getRecord(value, 'meta');
       rows.push({
         id: id,
-        title: bundle ? desktopLocalizedText(meta, 'title') || id : getString(value, 'moduleName') ?? id,
-        description: bundle ? desktopLocalizedText(meta, 'description') || getString(value, 'description') || '' :
+        title: bundle ? desktopLocalizedText(meta, 'title', locale) || id : getString(value, 'moduleName') ?? id,
+        description: bundle ? desktopLocalizedText(meta, 'description', locale) || getString(value, 'description') || '' :
           getString(value, 'fiberPhase') ?? getString(value, 'phase') ?? '',
         version: getString(value, 'version') ?? '',
         source: bundle ? getString(value, 'source') ?? '' : '',
         installed: installed,
+        official: bundle && getBoolean(value, 'official') === true,
+        listedByDefault: bundle ? getBoolean(value, 'listedByDefault') : undefined,
+        hasError: error !== undefined,
+        beta: getBoolean(meta, 'beta') === true,
+        artwork: desktopPluginIcon(getString(meta, 'icon') ?? ''),
+        readOnly: readOnly,
         availability: availability,
         unsupportedPlatform: unsupportedPlatform,
         enabled: enabled,
-        toggle: !getString(value, 'readOnlyReason') && (bundle ?
-          enabled || ((optional || installed) && canEnableBundle) : !!getString(value, 'patchId')),
-        removable: bundle && getBoolean(value, 'removable') === true && !getString(value, 'readOnlyReason'),
+        toggle: !readOnly && (bundle ? enabled || canEnableBundle : !!getString(value, 'patchId')),
+        removable: bundle && getBoolean(value, 'removable') === true && !readOnly,
         update: bundle ? getString(value, 'update') ?? '' : '',
         installSpec: installSpec,
         installVersion: installVersion,
         catalogUpdate: bundle && getBoolean(target, 'catalogUpdate') === true,
         phase: getString(value, 'fiberPhase') ?? '',
         diagnostic: getString(value, 'diagnostic') ?? '',
-        components: bundle && availability !== 'missing' ? desktopPluginComponents(value) : []
+        components: bundle && availability !== 'missing' ? desktopPluginComponents(value, locale) : []
       });
   }
   return rows;
@@ -107,7 +125,7 @@ export struct DesktopPluginsPane {
   host?: DesktopHostActions;
   @ObjectLink installer: DesktopPluginInstall;
   @ObjectLink maintenance: DesktopPluginMaintenance;
-  @Prop localePreference: string = 'system';
+  @Prop @Watch('catalogLocaleChanged') localePreference: string = 'system';
   @ObjectLink connectorAccounts: DesktopConnectorAccounts;
   @Prop @Watch('requestedBundleChanged') requestedBundle: string = '';
   @Prop requestedTitle: string = '';
@@ -118,6 +136,8 @@ export struct DesktopPluginsPane {
   @State private detailError: string = '';
   @State private detailLoading: boolean = false;
   @State private tab: string = 'bundles';
+  @State private moreOpen: boolean = false;
+  private readonly pageScroller: Scroller = new Scroller();
   @State private settingsVisited: boolean = false;
   @State private basicScopes: string[] = [];
   @State private optionalNamespaces: string[] = [];
@@ -126,6 +146,7 @@ export struct DesktopPluginsPane {
   @State private settingsDetail: string = '';
   @State private bundles: DesktopPluginRow[] = [];
   @State private plugins: DesktopPluginRow[] = [];
+  @State private bundleCards: DesktopPluginCards = { mine: [], extensions: [], more: [] };
   @State private sources: DesktopMarketSource[] = [];
   @State private source: string = '';
   @State private sourceInput: string = '';
@@ -200,16 +221,23 @@ export struct DesktopPluginsPane {
   }
 
   private requestedBundleChanged(): void {
-    if (this.requestedBundle) { this.openBundle(this.requestedBundle); }
+    if (this.requestedBundle) { this.moreOpen = false; this.openBundle(this.requestedBundle); }
     else { this.closeBundle(); }
   }
 
+  private catalogLocaleChanged(): void { this.refresh(); }
+
   private closeBundle(): void {
+    if (!this.moreOpen && this.bundleCards.more.some((row: DesktopPluginRow): boolean => row.id === this.detailName) &&
+      !this.bundleCards.extensions.some((row: DesktopPluginRow): boolean => row.id === this.detailName)) {
+      this.moreOpen = true;
+    }
     this.detailRead++;
     this.detailName = '';
     this.componentDetail = false;
     this.worktreeVisited = false;
     this.resetVersions();
+    this.scrollToTop();
   }
 
   private async openBundle(name: string): Promise<void> {
@@ -218,6 +246,7 @@ export struct DesktopPluginsPane {
     this.marketDetail = undefined;
     this.resetVersions();
     this.detailName = name;
+    this.scrollToTop();
     const cached = this.versionScan?.result(name);
     if (cached !== undefined) { this.showVersionResult(cached); }
     this.componentDetail = false;
@@ -260,7 +289,20 @@ export struct DesktopPluginsPane {
   }
 
   private onBundleList(): boolean {
-    return this.tab === 'bundles' && !this.detailName && !this.settingsDetail && this.marketDetail === undefined;
+    return this.tab === 'bundles' && !this.moreOpen && !this.detailName && !this.settingsDetail && this.marketDetail === undefined;
+  }
+
+  private showingMore(): boolean {
+    return this.tab === 'bundles' && this.moreOpen && !this.detailName;
+  }
+
+  private showMore(open: boolean): void {
+    this.moreOpen = open;
+    this.scrollToTop();
+  }
+
+  private scrollToTop(): void {
+    try { this.pageScroller.scrollEdge(Edge.Top); } catch (_) {}
   }
 
   private async loadBasicScopes(host: DesktopHostActions): Promise<void> {
@@ -282,9 +324,12 @@ export struct DesktopPluginsPane {
       host.call('pluginMarket/listIndexes')
     ]);
     if (!this.active || this.host !== host) { return false; }
-    if (results[0].ok) {
-      this.bundles = pluginRows(results[0], true);
-      this.versionScan?.replaceTargets(this.bundles.filter((row: DesktopPluginRow): boolean => this.canCheckVersions(row))
+    if (results[0].ok && results[1].ok) {
+      const locale = this.localePreference === 'system' ? i18n.System.getSystemLanguage() : this.localePreference;
+      this.bundles = pluginRows(results[0], true, locale);
+      this.plugins = pluginRows(results[1], false, locale);
+      this.bundleCards = this.projectBundleCards(this.bundles, this.plugins);
+      this.versionScan?.replaceTargets(this.bundleCards.mine.filter((row: DesktopPluginRow): boolean => this.canCheckVersions(row))
         .map((row: DesktopPluginRow): DesktopPluginVersionTarget => ({
           name: row.id, version: row.version, update: row.update, source: row.source
         })));
@@ -294,7 +339,6 @@ export struct DesktopPluginsPane {
         this.resetVersions();
       }
     }
-    if (results[1].ok) { this.plugins = pluginRows(results[1], false); }
     this.marketError = desktopHostProblem(results[2]);
     if (results[2].ok) {
       const sources: DesktopMarketSource[] = [];
@@ -314,6 +358,32 @@ export struct DesktopPluginsPane {
     this.catalogError = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
     this.updateActivation();
     return results[0].ok && results[1].ok;
+  }
+
+  private projectBundleCards(bundles: DesktopPluginRow[], plugins: DesktopPluginRow[]): DesktopPluginCards {
+    const live = new Set<string>();
+    for (const plugin of plugins) { if (plugin.enabled) { live.add(plugin.id); } }
+    const byId = new Map<string, DesktopPluginRow>();
+    const candidates: DesktopPluginListInput[] = [];
+    for (const bundle of bundles) {
+      if (byId.has(bundle.id)) { continue; }
+      byId.set(bundle.id, bundle);
+      candidates.push({ id: bundle.id, official: bundle.official, enabled: bundle.enabled, installed: bundle.installed,
+        listedByDefault: bundle.listedByDefault, hasError: bundle.hasError,
+        rowsRunning: bundle.components.some((component: DesktopPluginComponent): boolean => live.has(component.entryId)) });
+    }
+    const groups = desktopPluginList(candidates);
+    return { mine: this.rowsById(groups.mine, byId), extensions: this.rowsById(groups.extensions, byId),
+      more: this.rowsById(groups.more, byId) };
+  }
+
+  private rowsById(ids: string[], rows: Map<string, DesktopPluginRow>): DesktopPluginRow[] {
+    const result: DesktopPluginRow[] = [];
+    for (const id of ids) {
+      const row = rows.get(id);
+      if (row !== undefined) { result.push(row); }
+    }
+    return result;
   }
 
   private async saveSources(urls: string[]): Promise<void> {
@@ -747,10 +817,10 @@ export struct DesktopPluginsPane {
         }
       } });
     }
-    if (row.installSpec.length > 0 && !row.unsupportedPlatform) {
+    if (row.installSpec.length > 0 && !row.unsupportedPlatform && !row.readOnly) {
       result.push({ value: '安装', action: (): void => {
         const current = this.bundles.find((item: DesktopPluginRow): boolean => item.id === row.id);
-        if (current?.installSpec === row.installSpec && !current.unsupportedPlatform) {
+        if (current?.installSpec === row.installSpec && !current.unsupportedPlatform && !current.readOnly) {
           this.openInstall(row.installSpec);
         }
       } });
@@ -775,32 +845,134 @@ export struct DesktopPluginsPane {
   }
 
   @Builder
-  private PluginRow(row: DesktopPluginRow, navigable: boolean = false) {
+  private CardTag(label: Resource, color: Resource) {
+    Text(label).fontSize(11).fontColor(color).lineHeight(16).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+  }
+
+  @Builder
+  private BundleCard(row: DesktopPluginRow) {
+    Column({ space: 5 }) {
+      Row({ space: 8 }) {
+        Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 14 }) {
+            Column() {
+              DesktopPluginArtwork({ icon: row.artwork, packageName: row.id })
+            }.width(48).height(48).justifyContent(FlexAlign.Center).borderRadius(10)
+              .border({ width: 0.5, color: $r('app.color.workspace_border') })
+            Column({ space: 4 }) {
+              Row({ space: 6 }) {
+                Text(row.title).fontSize(14).lineHeight(20).fontWeight(FontWeight.Medium)
+                  .fontColor($r('sys.color.font_primary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+                if (row.beta) {
+                  this.CardTag($r('app.string.desktop_plugin_list_experimental_tag'), $r('sys.color.font_secondary'))
+                }
+                if (row.hasError) {
+                  this.CardTag(row.enabled && row.components.every((part: DesktopPluginComponent): boolean => !part.entryId) ?
+                    $r('app.string.desktop_plugin_list_not_running') : $r('app.string.desktop_plugin_list_problem'),
+                  $r('app.color.workspace_status_error'))
+                }
+                if (row.availability === 'missing') {
+                  this.CardTag(row.installed ? $r('app.string.desktop_plugin_list_missing_files') :
+                    $r('app.string.desktop_plugin_list_not_installed'), $r('sys.color.font_secondary'))
+                }
+                if (this.hasAvailableUpdate(row)) {
+                  Text($r('app.string.desktop_plugin_updates_badge')).fontSize(11).fontColor($r('sys.color.brand'))
+                    .key('desktopPluginAvailableUpdate-' + row.id)
+                }
+              }.width('100%')
+              if (row.description) {
+                Text(row.description).fontSize(13).lineHeight(18).fontColor($r('sys.color.font_secondary'))
+                  .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          }.width('100%')
+        }.padding(8).borderRadius(10).layoutWeight(1).key('desktopPluginBundle-' + row.id)
+          .onClick((): void => { this.openBundle(row.id); })
+        Toggle({ type: ToggleType.Switch, isOn: row.enabled }).width(36).height(22)
+          .key('desktopPluginToggle-' + row.id).accessibilityText($r('app.string.desktop_plugin_list_toggle', row.title))
+          .enabled(row.toggle && !this.busy && !this.installer.busy() && this.maintenance.phase !== 'running')
+          .onChange((enabled: boolean): void => {
+            if (enabled !== row.enabled) { this.toggleBundle(row.id, enabled); }
+          })
+      }.width('100%').padding({ right: 8 })
+      if (row.unsupportedPlatform) {
+        Text($r('app.string.desktop_plugin_unsupported_platform')).key('desktopPluginUnavailable-' + row.id)
+          .fontSize(12).fontColor($r('sys.color.font_secondary')).margin({ left: 70, bottom: 6 })
+      }
+    }.key('desktopPluginCard-' + row.id).width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private BundleCards(group: 'mine' | 'extensions' | 'more') {
+    Column({ space: 2 }) {
+      ForEach(group === 'more' ? this.bundleCards.more :
+        group === 'extensions' ? this.bundleCards.extensions : this.bundleCards.mine, (row: DesktopPluginRow): void => {
+        this.BundleCard(row)
+      }, (row: DesktopPluginRow): string => JSON.stringify(row))
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private InstalledBundleGroups() {
+    Column({ space: 32 }) {
+      if (this.basicScopes.length > 0) { this.BasicSettingsCards() }
+      if (this.bundleCards.more.length > 0) {
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            Text($r('app.string.desktop_plugin_list_experimental')).fontSize(14).lineHeight(22)
+              .fontWeight(FontWeight.Medium).layoutWeight(1)
+            Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+              Row({ space: 4 }) {
+                Text($r('app.string.desktop_plugin_list_more')).fontSize(14).fontColor($r('sys.color.font_secondary'))
+                Image($r('app.media.dsh_browser_chevron_right_outline')).width(14).height(14)
+                  .supportSvg2(true).draggable(false).accessibilityLevel('no')
+              }
+            }.key('desktopPluginShowMore').onClick((): void => { this.showMore(true); })
+          }.width('100%')
+          if (this.bundleCards.extensions.length > 0) { this.BundleCards('extensions') }
+        }.key('desktopPluginGroupExtensions').width('100%').alignItems(HorizontalAlign.Start)
+      }
+      if (this.bundleCards.mine.length > 0) {
+        Column({ space: 8 }) {
+          Text($r('app.string.desktop_plugin_list_installed')).fontSize(14).lineHeight(22).fontWeight(FontWeight.Medium)
+          this.BundleCards('mine')
+        }.key('desktopPluginGroupInstalled').width('100%').alignItems(HorizontalAlign.Start)
+      }
+      if (!this.catalogBusy && this.basicScopes.length === 0 && this.bundleCards.more.length === 0 &&
+        this.bundleCards.mine.length === 0) {
+        Text($r('app.string.desktop_plugin_list_empty')).fontColor($r('sys.color.font_secondary'))
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private MoreHeader() {
+    Row({ space: 8 }) {
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Image($r('app.media.dsh_browser_chevron_left_outline')).width(20).height(20).supportSvg2(true)
+          .draggable(false).accessibilityLevel('no')
+      }.key('desktopPluginMoreBack').width(32).height(32).padding(0)
+        .accessibilityText($r('app.string.desktop_plugin_list_back'))
+        .onClick((): void => { this.showMore(false); })
+      Text($r('app.string.desktop_plugin_list_experimental')).fontSize(26).fontWeight(FontWeight.Medium)
+    }.width('100%')
+  }
+
+  @Builder
+  private PluginRow(row: DesktopPluginRow) {
     Row({ space: 10 }) {
       Column({ space: 4 }) {
         Text(row.title).fontSize(15).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text([row.enabled ? '已启用' : '未启用', row.version || (navigable ? '' : row.description)]
+        Text([row.enabled ? '已启用' : '未启用', row.version || row.description]
           .filter((item: string): boolean => item.length > 0).join(' · '))
           .fontSize(12).fontColor($r('sys.color.font_secondary'))
-        if (navigable && row.description) {
-          Text(row.description).fontSize(13).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-            .fontColor($r('sys.color.font_secondary'))
-        }
         if (row.unsupportedPlatform) {
           Text($r('app.string.desktop_plugin_unsupported_platform')).key('desktopPluginUnavailable-' + row.id)
             .fontSize(12).fontColor($r('sys.color.font_secondary'))
         }
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (navigable) {
-        if (this.hasAvailableUpdate(row)) {
-          Button($r('app.string.desktop_plugin_updates_badge'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopPluginAvailableUpdate-' + row.id).fontSize(12).fontColor($r('sys.color.brand'))
-            .onClick((): void => { this.openBundle(row.id); })
-        }
-        Button($r('app.string.desktop_plugin_maintenance_view'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopPluginBundle-' + row.id).onClick((): void => { this.openBundle(row.id); })
-      }
       if (this.rowActions(row).length > 0) {
         Button('更多', { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopPluginManage-' + row.id).accessibilityText('管理 ' + row.title).enabled(!this.busy)
@@ -898,7 +1070,7 @@ export struct DesktopPluginsPane {
   @Builder
   private BasicSettingsCards() {
     Column({ space: 8 }) {
-      Text($r('app.string.desktop_plugin_basic_title')).fontSize(17).fontWeight(FontWeight.Medium)
+      Text($r('app.string.desktop_plugin_list_built_in')).fontSize(14).lineHeight(22).fontWeight(FontWeight.Medium)
       ForEach(this.basicScopes, (scope: string): void => {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 12 }) {
@@ -983,9 +1155,12 @@ export struct DesktopPluginsPane {
   @Builder
   private BundleOverview() {
     Column({ space: 12 }) {
-      Button('返回插件包', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
+      Button(this.moreOpen ? $r('app.string.desktop_plugin_list_back_more') : $r('app.string.desktop_plugin_list_back'),
+        { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginDetailBack')
         .onClick((): void => { this.closeBundle(); })
       Row({ space: 8 }) {
+        DesktopPluginArtwork({ icon: this.bundles.find((row: DesktopPluginRow): boolean =>
+          row.id === this.detailName)?.artwork ?? '', packageName: this.detailName })
         Text((this.detailName === this.requestedBundle ? this.requestedTitle : '') ||
           this.bundles.find((row: DesktopPluginRow): boolean => row.id === this.detailName)?.title || this.detailName)
           .key('desktopPluginDetailTitle').fontSize(22).fontWeight(FontWeight.Medium)
@@ -1153,7 +1328,9 @@ export struct DesktopPluginsPane {
 
   build() {
     Column({ space: 14 }) {
-      Row({ space: 8 }) {
+      if (this.showingMore()) { this.MoreHeader() }
+      else {
+       Row({ space: 8 }) {
         Text('插件').fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
         if (this.onBundleList() && this.versionScanState.finished && !this.versionScanState.scanning && !this.catalogBusy) {
           Text(this.versionScanState.available > 0 ?
@@ -1181,14 +1358,15 @@ export struct DesktopPluginsPane {
           .enabled(!this.busy).onClick((): void => { this.onWeb(this.detailName); })
       }
       .width('100%')
-      if (!this.detailName && !this.settingsDetail && this.marketDetail === undefined) {
+      }
+      if (!this.showingMore() && !this.detailName && !this.settingsDetail && this.marketDetail === undefined) {
         Row({ space: 8 }) {
-          Button(this.tab === 'bundles' ? '插件包' : this.tab === 'entries' ? '运行中的插件' :
+          Button(this.tab === 'bundles' ? $r('app.string.desktop_plugin_list_tab') : this.tab === 'entries' ? '运行中的插件' :
             this.tab === 'settings' ? '配置' : '插件市场',
             { buttonStyle: ButtonStyleMode.TEXTUAL })
             .key('desktopPluginsView').enabled(!this.busy)
             .bindMenu([
-              { value: '插件包', action: (): void => { this.tab = 'bundles'; } },
+              { value: $r('app.string.desktop_plugin_list_tab'), action: (): void => { this.tab = 'bundles'; } },
               { value: '运行中的插件', action: (): void => { this.tab = 'entries'; } },
               { value: '配置', action: (): void => { this.settingsVisited = true; this.tab = 'settings'; } },
               { value: '插件市场', action: (): void => {
@@ -1218,7 +1396,7 @@ export struct DesktopPluginsPane {
       if (this.status || this.catalogError) {
         Text(this.status || this.catalogError).fontSize(13).fontColor($r('sys.color.font_secondary')).width('100%')
       }
-      Scroll() {
+      Scroll(this.pageScroller) {
         Column({ space: 8 }) {
           if (this.detailName) {
             this.BundleDetail()
@@ -1226,19 +1404,23 @@ export struct DesktopPluginsPane {
             this.BasicSettingsDetail()
           } else if (this.marketDetail !== undefined) {
             this.MarketDetail()
+          } else if (this.showingMore()) {
+            Column() {
+              this.BundleCards('more')
+            }.key('desktopPluginMorePage').width('100%').alignItems(HorizontalAlign.Start)
           } else {
             if (this.settingsVisited) {
               DesktopPluginSettings({ host: this.host }).visibility(this.tab === 'settings' ? Visibility.Visible : Visibility.None)
             }
             if (this.tab === 'market') {
               this.Discover()
-            } else if (this.tab !== 'settings') {
-              if (this.tab === 'bundles' && this.basicScopes.length > 0) { this.BasicSettingsCards() }
-              ForEach(this.tab === 'bundles' ? this.bundles : this.plugins, (row: DesktopPluginRow) => {
-                this.PluginRow(row, this.tab === 'bundles')
+            } else if (this.tab === 'bundles') {
+              this.InstalledBundleGroups()
+            } else if (this.tab === 'entries') {
+              ForEach(this.plugins, (row: DesktopPluginRow) => {
+                this.PluginRow(row)
               }, (row: DesktopPluginRow): string => JSON.stringify(row))
-              if (!this.busy && !this.catalogBusy && (this.tab === 'bundles' ?
-                this.bundles.length === 0 && this.basicScopes.length === 0 : this.plugins.length === 0)) {
+              if (!this.busy && !this.catalogBusy && this.plugins.length === 0) {
                 Text('暂无插件').fontColor($r('sys.color.font_secondary'))
               }
             }

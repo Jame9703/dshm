@@ -1,0 +1,18 @@
+{
+  "string": [
+    { "name": "desktop_plugin_list_tab", "value": "已安装" },
+    { "name": "desktop_plugin_list_built_in", "value": "内置插件配置" },
+    { "name": "desktop_plugin_list_experimental", "value": "实验性插件" },
+    { "name": "desktop_plugin_list_installed", "value": "已安装插件" },
+    { "name": "desktop_plugin_list_empty", "value": "暂无已安装插件" },
+    { "name": "desktop_plugin_list_more", "value": "更多" },
+    { "name": "desktop_plugin_list_back", "value": "返回插件列表" },
+    { "name": "desktop_plugin_list_back_more", "value": "返回实验性插件" },
+    { "name": "desktop_plugin_list_toggle", "value": "启用 %1$s" },
+    { "name": "desktop_plugin_list_experimental_tag", "value": "实验性" },
+    { "name": "desktop_plugin_list_not_running", "value": "未运行" },
+    { "name": "desktop_plugin_list_problem", "value": "异常" },
+    { "name": "desktop_plugin_list_missing_files", "value": "文件缺失" },
+    { "name": "desktop_plugin_list_not_installed", "value": "未安装" }
+  ]
+}

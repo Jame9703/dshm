@@ -1,5 +1,6 @@
 import { getArray, getRecord, getString } from 'connection';
 import { desktopLocalizedText } from './DesktopHostActions';
+import { DesktopPluginArtwork, desktopPluginIcon } from './DesktopPluginArtwork';
 
 export interface DesktopPluginComponent {
   rowId: string;
@@ -7,6 +8,7 @@ export interface DesktopPluginComponent {
   module: string;
   title: string;
   description: string;
+  artwork: string;
 }
 
 export interface DesktopPluginComponentView {
@@ -18,7 +20,7 @@ export interface DesktopPluginComponentView {
   diagnostic: string;
 }
 
-export function desktopPluginComponents(value: Object): DesktopPluginComponent[] {
+export function desktopPluginComponents(value: Object, locale: string = ''): DesktopPluginComponent[] {
   const rows: DesktopPluginComponent[] = [];
   const seen = new Set<string>();
   for (const row of getArray(value, 'rows') ?? []) {
@@ -27,7 +29,9 @@ export function desktopPluginComponents(value: Object): DesktopPluginComponent[]
     seen.add(rowId);
     const meta = getRecord(row, 'meta');
     rows.push({ rowId: rowId, entryId: getString(row, 'entryId') ?? '', module: getString(row, 'moduleName') ?? '',
-      title: desktopLocalizedText(meta, 'title') || rowId, description: desktopLocalizedText(meta, 'description') });
+      title: desktopLocalizedText(meta, 'title', locale) || rowId,
+      description: desktopLocalizedText(meta, 'description', locale),
+      artwork: desktopPluginIcon(getString(meta, 'icon') ?? '') });
   }
   return rows;
 }
@@ -65,8 +69,8 @@ export struct DesktopPluginBundleComponents {
         }
         ForEach(this.visibleRows(), (row: DesktopPluginComponentView): void => {
           Row({ space: 12 }) {
-            Image($r('app.media.dsh_plugin_artwork_component')).width(30).height(30)
-              .supportSvg2(true).draggable(false).accessibilityLevel('no')
+            DesktopPluginArtwork({ icon: row.component.artwork, packageName: row.component.module, component: true,
+              artworkSize: 30 })
             Column({ space: 4 }) {
               Text(row.component.title).fontSize(14).fontWeight(FontWeight.Medium)
               Text(row.component.description || row.component.module).fontSize(12).fontColor($r('sys.color.font_secondary'))
