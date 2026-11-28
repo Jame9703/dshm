@@ -83,6 +83,11 @@ export interface DesktopInteraction {
 
 const RECOMMENDED = new RegExp('\\s*(?:\\((?:recommended|推荐)\\)|（(?:recommended|推荐)）)\\s*$', 'i');
 
+export function desktopQuestionOption(label: string, detail: string): DesktopQuestionOption {
+  return { label: label, caption: label.replace(RECOMMENDED, '') || label,
+    recommended: RECOMMENDED.test(label), detail: detail };
+}
+
 function planReviewOf(raw: Object, questions: DesktopQuestion[]): DesktopPlanReview | undefined {
   const entry = getArray(raw, 'questions')?.[0];
   const intent = getRecord(entry, 'intent');
@@ -117,8 +122,7 @@ function questionsOf(value: Object): DesktopQuestion[] {
     for (const option of getArray(item, 'options') ?? []) {
       const label = getString(option, 'label') ?? '';
       if (label) {
-        options.push({ label: label, caption: label.replace(RECOMMENDED, '') || label,
-          recommended: RECOMMENDED.test(label), detail: getString(option, 'description') ?? '' });
+        options.push(desktopQuestionOption(label, getString(option, 'description') ?? ''));
       }
     }
     const intent = getRecord(item, 'intent');

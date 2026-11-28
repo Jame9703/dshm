@@ -22,6 +22,10 @@ import { DesktopPluginVersionScan, emptyDesktopPluginVersionScanSnapshot } from 
 import type { DesktopPluginVersionEntry, DesktopPluginVersionResult, DesktopPluginVersionScanSnapshot,
   DesktopPluginVersionTarget } from './DesktopPluginVersionScan';
 import { DesktopPluginMarketDetail } from './DesktopPluginMarketDetail';
+import { DESKTOP_MARKET_PAGE_SIZE, desktopMarketDeclaredQuery, desktopMarketQueryPayload, desktopMarketQueryWithText,
+  desktopMarketUnfiltered, emptyDesktopMarketQuery, readDesktopMarketDeclarations } from './DesktopPluginMarketQuery';
+import type { DesktopMarketDeclaration, DesktopMarketDeclarations, DesktopMarketQuery,
+  DesktopMarketSort } from './DesktopPluginMarketQuery';
 import { desktopPluginList } from './DesktopPluginListModel';
 import type { DesktopPluginListInput } from './DesktopPluginListModel';
 import { DesktopPluginArtwork, desktopPluginIcon } from './DesktopPluginArtwork';
@@ -34,6 +38,7 @@ import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import type { DesktopPluginLocation } from './DesktopWorkspaceHandoff';
 
 const MARKET_BUNDLE: string = '@deepseek-ai/dsh-experimental-plugin-market-bundle';
+const MARKET_TEXT_DELAY_MS: number = 250;
 
 interface DesktopPluginRow {
   id: string;
@@ -155,7 +160,17 @@ export struct DesktopPluginsPane {
   @State private sourceInput: string = '';
   @State private editSources: boolean = false;
   @State private marketError: string = '';
-  @State private query: string = '';
+  @State private marketQuery: DesktopMarketQuery = emptyDesktopMarketQuery();
+  @State private marketDeclarations: DesktopMarketDeclarations = readDesktopMarketDeclarations();
+  @State private marketLoading: boolean = false;
+  @State private marketMatched: boolean = false;
+  @State private marketListError: string = '';
+  private marketRetryAppend: boolean = false;
+  private marketRetryRefresh: boolean = false;
+  private marketRetryCount: number = DESKTOP_MARKET_PAGE_SIZE;
+  private marketRead: number = 0;
+  private marketTextTimer: number = -1;
+  private marketMetadata?: Object;
   @State private nextOffset: number = -1;
   @State private fetchedAt: number = 0;
   @State private market: Object[] = [];
@@ -211,6 +226,9 @@ export struct DesktopPluginsPane {
 
   aboutToDisappear(): void {
     this.active = false;
+    this.cancelMarketTextTimer();
+    this.marketRead++;
+    this.marketLoading = false;
     this.versionScan?.dispose();
     this.versionScan = undefined;
     this.stopCatalog?.();
@@ -255,7 +273,10 @@ export struct DesktopPluginsPane {
     return { kind: this.moreOpen ? 'more' : 'list', name: '', rowId: '' };
   }
 
-  private catalogLocaleChanged(): void { this.refresh(); }
+  private catalogLocaleChanged(): void {
+    this.marketDeclarations = readDesktopMarketDeclarations(this.marketMetadata, this.marketLocale());
+    this.refresh();
+  }
 
   private closeBundle(): void {
     if (!this.moreOpen && this.bundleCards.more.some((row: DesktopPluginRow): boolean => row.id === this.detailName) &&
@@ -383,9 +404,7 @@ export struct DesktopPluginsPane {
       }
       this.sources = sources;
       if (!sources.some((row: DesktopMarketSource): boolean => row.url === this.source)) {
-        this.source = sources[0]?.url ?? '';
-        this.market = [];
-        this.nextOffset = -1;
+        this.selectMarketSource(sources[0]?.url ?? '');
       }
     }
     this.catalogError = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
@@ -448,36 +467,187 @@ export struct DesktopPluginsPane {
     this.saveSources([...this.sources.map((row: DesktopMarketSource): string => row.url), url]);
   }
 
-  private async searchMarket(append: boolean): Promise<void> {
-    if (this.host === undefined || this.busy || this.source.length === 0 || (append && this.nextOffset < 0)) {
+  private marketLocale(): string {
+    return (this.localePreference === 'system' ? i18n.System.getSystemLanguage() : this.localePreference).replace(/_/g, '-');
+  }
+
+  private cancelMarketTextTimer(): void {
+    if (this.marketTextTimer !== -1) { clearTimeout(this.marketTextTimer); }
+    this.marketTextTimer = -1;
+  }
+
+  private selectMarketSource(source: string): void {
+    if (this.source === source) { return; }
+    this.cancelMarketTextTimer();
+    this.marketRead++;
+    this.source = source;
+    this.marketQuery = emptyDesktopMarketQuery();
+    this.marketMetadata = undefined;
+    this.marketDeclarations = readDesktopMarketDeclarations();
+    this.market = [];
+    this.marketMatched = false;
+    this.marketLoading = false;
+    this.marketListError = '';
+    this.nextOffset = -1;
+    this.fetchedAt = 0;
+    if (this.tab === 'market' && source) { this.searchMarket(false); }
+  }
+
+  private changeMarketQuery(query: DesktopMarketQuery, debounce: boolean = false): void {
+    this.cancelMarketTextTimer();
+    this.marketRead++;
+    this.marketLoading = false;
+    this.marketMatched = false;
+    this.marketListError = '';
+    this.marketQuery = query;
+    if (!debounce) { this.searchMarket(false); return; }
+    this.marketTextTimer = setTimeout((): void => {
+      this.marketTextTimer = -1;
+      this.searchMarket(false);
+    }, MARKET_TEXT_DELAY_MS);
+  }
+
+  private selectMarketCategory(category: string): void {
+    const query = this.marketQuery;
+    if (category !== query.category) {
+      this.changeMarketQuery({ text: query.text, category: category, labels: query.labels, sort: query.sort });
+    }
+  }
+
+  private toggleMarketLabel(id: string): void {
+    const query = this.marketQuery;
+    const labels = query.labels.includes(id) ? query.labels.filter((label: string): boolean => label !== id) :
+      [...query.labels, id];
+    this.changeMarketQuery({ text: query.text, category: query.category, labels: labels, sort: query.sort });
+  }
+
+  private chooseMarketSort(sort: DesktopMarketSort): void {
+    const query = this.marketQuery;
+    if (sort.kind !== query.sort.kind || sort.id !== query.sort.id || sort.direction !== query.sort.direction) {
+      this.changeMarketQuery({ text: query.text, category: query.category, labels: query.labels, sort: sort });
+    }
+  }
+
+  private async searchMarket(append: boolean, refresh: boolean = false,
+    count: number = DESKTOP_MARKET_PAGE_SIZE): Promise<void> {
+    const host = this.host;
+    const source = this.source;
+    if (host === undefined || !this.active || !source ||
+      (append && (this.marketLoading || !this.marketMatched || this.nextOffset < 0))) {
       return;
     }
-    this.busy = true;
-    const sort: Record<string, Object> = { 'kind': 'relevance' };
-    const query: Record<string, Object> = {
-      'text': this.query.trim(), 'offset': append ? this.nextOffset : 0, 'limit': 30, 'sort': sort
-    };
-    if (append) {
-      query['fetchedAt'] = this.fetchedAt;
-    }
-    const result = await this.host.call('pluginMarket/search', { 'url': this.source, 'query': query });
-    if (!this.active) {
-      return;
-    }
-    this.busy = false;
-    this.status = desktopHostProblem(result);
-    if (result.ok) {
-      const entries = getArray(result.value, 'entries') ?? [];
-      const fetchedAt = getNumber(result.value, 'fetchedAt') ?? 0;
-      if (append && fetchedAt !== this.fetchedAt) {
-        this.status = '市场目录已变化，请重新搜索';
-        this.nextOffset = -1;
+    this.cancelMarketTextTimer();
+    const read = ++this.marketRead;
+    const query = this.marketQuery;
+    this.marketLoading = true;
+    this.marketListError = '';
+    this.marketRetryAppend = append;
+    this.marketRetryRefresh = refresh;
+    this.marketRetryCount = count;
+    let offset = append ? this.nextOffset : 0;
+    let fetchedAt = append ? this.fetchedAt : 0;
+    let entries: Object[] = [];
+    let metadata: Object | undefined;
+    let title = '';
+    let restarted = false;
+    try {
+      while (true) {
+        const limit = Math.min(DESKTOP_MARKET_PAGE_SIZE, count - entries.length);
+        const result = await host.call('pluginMarket/search', { 'url': source,
+          'query': desktopMarketQueryPayload(query, offset, limit, fetchedAt, refresh && !restarted && offset === 0) });
+        if (!this.active || this.host !== host || read !== this.marketRead) { return; }
+        if (!result.ok) { this.marketListError = desktopHostProblem(result); return; }
+        const timestamp = getNumber(result.value, 'fetchedAt') ?? 0;
+        if (offset > 0 && timestamp !== fetchedAt) {
+          if (append) {
+            this.searchMarket(false, false, this.market.length + DESKTOP_MARKET_PAGE_SIZE);
+            return;
+          }
+          if (restarted) { this.marketListError = this.marketText($r('app.string.desktop_plugin_discover_changed')); return; }
+          restarted = true;
+          offset = 0;
+          fetchedAt = 0;
+          entries = [];
+          continue;
+        }
+        entries = [...entries, ...(getArray(result.value, 'entries') ?? [])];
+        metadata = getRecord(result.value, 'metadata');
+        title = desktopLocalizedText(result.value, 'title', this.marketLocale());
+        fetchedAt = timestamp;
+        const next = getNumber(result.value, 'nextOffset') ?? -1;
+        offset = next > offset ? next : -1;
+        if (append || offset < 0 || entries.length >= count) { break; }
+      }
+      const declarations = readDesktopMarketDeclarations(metadata, this.marketLocale());
+      const declared = desktopMarketDeclaredQuery(query, declarations);
+      this.marketMetadata = metadata;
+      this.marketDeclarations = declarations;
+      if (declared !== query) {
+        this.marketQuery = declared;
+        this.marketMatched = false;
+        this.searchMarket(false, false, count);
         return;
       }
+      if (title) {
+        this.sources = this.sources.map((row: DesktopMarketSource): DesktopMarketSource =>
+          row.url === source && row.title !== title ? { url: source, title: title } : row);
+      }
+      this.marketMatched = true;
       this.market = append ? [...this.market, ...entries] : entries;
       this.fetchedAt = fetchedAt;
-      this.nextOffset = getNumber(result.value, 'nextOffset') ?? -1;
+      this.nextOffset = offset;
+    } catch (_) {
+      if (this.active && this.host === host && read === this.marketRead) {
+        this.marketListError = this.marketText($r('app.string.desktop_plugin_discover_failed'));
+      }
+    } finally {
+      if (this.active && this.host === host && read === this.marketRead) { this.marketLoading = false; }
     }
+  }
+
+  private marketText(value: Resource): string {
+    return this.getUIContext().getHostContext()?.resourceManager.getStringSync(value) ?? '';
+  }
+
+  private marketSortLabel(): string {
+    const sort = this.marketQuery.sort;
+    if (sort.kind === 'relevance') { return this.marketText($r('app.string.desktop_plugin_discover_relevance')); }
+    if (sort.kind === 'published') { return this.marketText($r('app.string.desktop_plugin_discover_published')); }
+    const key = this.marketDeclarations.sortKeys.find((row: DesktopMarketDeclaration): boolean => row.id === sort.id);
+    return key?.title || this.marketText($r('app.string.desktop_plugin_discover_index_order'));
+  }
+
+  private marketSortItems(): MenuElement[] {
+    const sort = this.marketQuery.sort;
+    const items: MenuElement[] = [];
+    if (this.marketQuery.text.trim()) {
+      items.push({ value: $r('app.string.desktop_plugin_discover_relevance'),
+        icon: sort.kind === 'relevance' ? $r('app.media.dsh_dock_check') : undefined,
+        action: (): void => { this.chooseMarketSort({ kind: 'relevance' }); } });
+    }
+    items.push({ value: $r('app.string.desktop_plugin_discover_index_order'),
+      icon: sort.kind === 'index' ? $r('app.media.dsh_dock_check') : undefined,
+      action: (): void => { this.chooseMarketSort({ kind: 'index' }); } });
+    items.push({ value: $r('app.string.desktop_plugin_discover_published'),
+      icon: sort.kind === 'published' ? $r('app.media.dsh_dock_check') : undefined,
+      action: (): void => { this.chooseMarketSort({ kind: 'published', direction: 'desc' }); } });
+    for (const row of this.marketDeclarations.sortKeys) {
+      items.push({ value: row.title, icon: sort.kind === 'key' && row.id === sort.id ? $r('app.media.dsh_dock_check') : undefined,
+        action: (): void => { this.chooseMarketSort({ kind: 'key', id: row.id, direction: row.direction }); } });
+    }
+    if (sort.kind === 'published' || sort.kind === 'key') {
+      items.push({ value: sort.direction === 'asc' ? $r('app.string.desktop_plugin_discover_descending') :
+        $r('app.string.desktop_plugin_discover_ascending'), action: (): void => {
+          this.chooseMarketSort({ kind: sort.kind, id: sort.id, direction: sort.direction === 'asc' ? 'desc' : 'asc' });
+        } });
+    }
+    return items;
+  }
+
+  private marketEntryLabels(entry: Object): DesktopMarketDeclaration[] {
+    const ids = getArray(getRecord(entry, 'metadata'), 'labels') ?? [];
+    return this.marketDeclarations.labels.filter((row: DesktopMarketDeclaration): boolean =>
+      ids.some((id: Object): boolean => id === row.id));
   }
 
   private async mutate(endpoint: string, payload: Record<string, Object>, activate: string = ''): Promise<void> {
@@ -1296,28 +1466,113 @@ export struct DesktopPluginsPane {
   }
 
   @Builder
+  private MarketSearchFields() {
+    Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Row({ space: 5 }) {
+        Text(this.sources.find((row: DesktopMarketSource): boolean => row.url === this.source)?.title ||
+          $r('app.string.desktop_plugin_discover_source'))
+          .fontSize(13).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Image($r('app.media.dsh_queue_chevron_down_outline')).width(12).height(12).supportSvg2(true)
+          .accessibilityLevel('no').draggable(false)
+      }
+    }.key('desktopPluginDiscoverSource').constraintSize({ maxWidth: 210 }).padding({ left: 8, right: 8 })
+      .enabled(!this.busy && this.sources.length > 0)
+      .bindMenu(this.sources.map((row: DesktopMarketSource): MenuElement => {
+        return { value: row.title, icon: row.url === this.source ? $r('app.media.dsh_dock_check') : undefined,
+          action: (): void => { this.selectMarketSource(row.url); } };
+      }), desktopMenuOptions(Placement.BottomLeft))
+    Row({ space: 4 }) {
+      Image($r('app.media.dsh_workspace_search_outline')).width(14).height(14).supportSvg2(true)
+        .accessibilityLevel('no').draggable(false)
+      TextInput({ text: this.marketQuery.text, placeholder: $r('app.string.desktop_plugin_discover_search') })
+        .key('desktopPluginDiscoverSearch').fontSize(13).layoutWeight(1).height(36).backgroundColor(Color.Transparent)
+        .enabled(this.source.length > 0)
+        .onChange((value: string): void => {
+          if (value !== this.marketQuery.text) {
+            this.changeMarketQuery(desktopMarketQueryWithText(this.marketQuery, value), true);
+          }
+        })
+        .onSubmit((): void => { this.searchMarket(false); })
+    }.layoutWeight(1).padding({ left: 6 }).backgroundColor($r('app.color.workspace_panel')).borderRadius(6)
+  }
+
+  @Builder
+  private MarketControls() {
+    if (this.marketDeclarations.labels.length > 0) {
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 5 }) {
+          Image($r('app.media.dsh_session_sliders_two_outline')).width(13).height(13).supportSvg2(true)
+            .accessibilityLevel('no').draggable(false)
+          Text(this.marketQuery.labels.length > 0 ?
+            $r('app.string.desktop_plugin_discover_label_count', String(this.marketQuery.labels.length)) :
+            $r('app.string.desktop_plugin_discover_labels')).fontSize(13)
+        }
+      }.key('desktopPluginDiscoverLabels').padding({ left: 8, right: 8 }).enabled(!this.busy)
+        .bindMenu(this.marketDeclarations.labels.map((row: DesktopMarketDeclaration): MenuElement => {
+          return { value: row.title, icon: this.marketQuery.labels.includes(row.id) ? $r('app.media.dsh_dock_check') : undefined,
+            action: (): void => { this.toggleMarketLabel(row.id); } };
+        }), desktopMenuOptions(Placement.BottomRight))
+    }
+    if (this.source) {
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 5 }) {
+          Text($r('app.string.desktop_plugin_discover_sort', this.marketSortLabel()))
+            .fontSize(13).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Image($r('app.media.dsh_queue_chevron_down_outline')).width(12).height(12).supportSvg2(true)
+            .accessibilityLevel('no').draggable(false)
+        }
+      }.key('desktopPluginDiscoverSort').constraintSize({ maxWidth: 220 })
+        .padding({ left: 8, right: 8 }).enabled(!this.busy)
+        .bindMenu(this.marketSortItems(), desktopMenuOptions(Placement.BottomRight))
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        if (this.marketLoading) {
+          LoadingProgress().width(14).height(14).accessibilityLevel('no')
+        } else {
+          Image($r('app.media.dsh_browser_refresh_outline')).width(14).height(14).supportSvg2(true)
+            .accessibilityLevel('no').draggable(false)
+        }
+      }.key('desktopPluginDiscoverRefresh').accessibilityText($r('app.string.desktop_plugin_discover_refresh'))
+        .width(34).padding(0).enabled(!this.busy && !this.marketLoading)
+        .onClick((): void => { this.searchMarket(false, true); })
+    }
+  }
+
+  @Builder
+  private MarketCategory(id: string, title: ResourceStr) {
+    Button(title, { buttonStyle: ButtonStyleMode.TEXTUAL })
+      .key('desktopPluginDiscoverCategory-' + id)
+      .accessibilitySelected(this.marketQuery.category === id)
+      .backgroundColor(this.marketQuery.category === id ? $r('app.color.workspace_panel') : Color.Transparent)
+      .fontSize(13).height(32).padding({ left: 10, right: 10 }).borderRadius(10).enabled(!this.busy)
+      .onClick((): void => { this.selectMarketCategory(id); })
+  }
+
+  @Builder
   private Discover() {
     Row({ space: 8 }) {
-      Button(this.sources.find((row: DesktopMarketSource): boolean => row.url === this.source)?.title || '索引来源',
-        { buttonStyle: ButtonStyleMode.TEXTUAL })
-        .enabled(!this.busy && this.sources.length > 0)
-        .bindMenu(this.sources.map((row: DesktopMarketSource): MenuElement => {
-          return { value: row.title, action: (): void => {
-            this.source = row.url;
-            this.market = [];
-            this.nextOffset = -1;
-            this.searchMarket(false);
-          } };
-        }), desktopMenuOptions(Placement.BottomLeft))
-      TextInput({ 'text': this.query, placeholder: '搜索市场插件' }).layoutWeight(1)
-        .onChange((value: string): void => { this.query = value; })
-        .onSubmit((): void => { this.searchMarket(false); })
-      Button('搜索').enabled(!this.busy && this.source.length > 0).onClick((): void => { this.searchMarket(false); })
+      this.MarketSearchFields()
+      if (this.paneWidth >= 680) { this.MarketControls() }
       Button('管理索引', { buttonStyle: ButtonStyleMode.TEXTUAL })
         .enabled(this.marketError.length === 0 && !this.busy)
         .onClick((): void => { this.editSources = !this.editSources; })
     }
     .width('100%')
+    if (this.paneWidth < 680) {
+      Row({ space: 8 }) {
+        this.MarketControls()
+      }.width('100%')
+    }
+    if (this.marketDeclarations.categories.length > 0) {
+      Scroll() {
+        Row({ space: 6 }) {
+          this.MarketCategory('', $r('app.string.desktop_plugin_discover_all'))
+          ForEach(this.marketDeclarations.categories, (row: DesktopMarketDeclaration): void => {
+            this.MarketCategory(row.id, row.title)
+          }, (row: DesktopMarketDeclaration): string => row.id)
+        }
+      }.key('desktopPluginDiscoverCategories').width('100%').scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off).align(Alignment.Start)
+    }
     if (this.marketError.length > 0) {
       if (this.canEnableMarket()) {
         Row({ space: 8 }) {
@@ -1356,16 +1611,38 @@ export struct DesktopPluginsPane {
         .width('100%').padding(8)
       }, (row: DesktopMarketSource): string => row.url)
     }
+    if (this.marketListError.length > 0) {
+      Row({ space: 8 }) {
+        Text(this.marketListError).key('desktopPluginDiscoverError').fontColor($r('sys.color.warning')).layoutWeight(1)
+        Button($r('app.string.desktop_plugin_discover_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPluginDiscoverRetry').enabled(!this.marketLoading)
+          .onClick((): void => { this.searchMarket(this.marketRetryAppend, this.marketRetryRefresh, this.marketRetryCount); })
+      }.width('100%')
+    } else if (this.marketMatched && !this.marketLoading && this.market.length === 0) {
+      Text(desktopMarketUnfiltered(this.marketQuery) ? $r('app.string.desktop_plugin_discover_empty') :
+        $r('app.string.desktop_plugin_discover_no_matches')).key('desktopPluginDiscoverEmpty')
+        .fontColor($r('sys.color.font_secondary'))
+    }
     ForEach(this.market, (entry: Object) => {
       Row({ space: 8 }) {
+        DesktopPluginArtwork({ icon: desktopPluginIcon(getString(entry, 'icon') ?? ''),
+          packageName: getString(entry, 'name') ?? '' })
         Column({ space: 4 }) {
-          Text(desktopLocalizedText(entry, 'title') || getString(entry, 'name') || '').fontSize(15)
-          Text(desktopLocalizedText(entry, 'description')).fontSize(13).fontColor($r('sys.color.font_secondary'))
+          Flex({ wrap: FlexWrap.Wrap }) {
+            Button(desktopLocalizedText(entry, 'title', this.marketLocale()) || getString(entry, 'name') || '',
+              { buttonStyle: ButtonStyleMode.TEXTUAL })
+              .key('desktopPluginMarketEntry-' + getString(entry, 'name'))
+              .fontSize(15).padding(0).margin({ right: 6 })
+              .onClick((): void => { this.marketDetailSource = this.source; this.marketDetail = entry; })
+            ForEach(this.marketEntryLabels(entry), (row: DesktopMarketDeclaration): void => {
+              Text(row.title).fontSize(11).padding({ left: 6, right: 6, top: 3, bottom: 3 })
+                .margin({ right: 4 }).borderRadius(6).backgroundColor($r('app.color.workspace_selection'))
+            }, (row: DesktopMarketDeclaration): string => row.id)
+          }
+          Text(desktopLocalizedText(entry, 'description', this.marketLocale())).fontSize(13)
+            .fontColor($r('sys.color.font_secondary'))
         }
         .layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Button($r('app.string.desktop_plugin_maintenance_view'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .key('desktopPluginMarketEntry-' + getString(entry, 'name'))
-          .onClick((): void => { this.marketDetailSource = this.source; this.marketDetail = entry; })
         if (this.marketActions(entry).length > 0) {
           Button('选择版本', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
             .bindMenu(this.marketActions(entry), desktopMenuOptions(Placement.BottomRight))
@@ -1373,8 +1650,9 @@ export struct DesktopPluginsPane {
       }
       .width('100%').padding(10).borderRadius(12).backgroundColor($r('app.color.workspace_panel'))
     }, (entry: Object): string => getString(entry, 'name') ?? '')
-    if (this.nextOffset >= 0) {
-      Button('加载更多', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy)
+    if (this.nextOffset >= 0 && this.marketMatched) {
+      Button($r('app.string.desktop_plugin_discover_more'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+        .key('desktopPluginDiscoverMore').enabled(!this.busy && !this.marketLoading)
         .onClick((): void => { this.searchMarket(true); })
     }
   }
@@ -1424,7 +1702,7 @@ export struct DesktopPluginsPane {
               { value: '配置', action: (): void => { this.settingsVisited = true; this.tab = 'settings'; } },
               { value: '插件市场', action: (): void => {
                 this.tab = 'market';
-                if (this.market.length === 0) {
+                if (!this.marketMatched && !this.marketLoading) {
                   this.searchMarket(false);
                 }
               } }

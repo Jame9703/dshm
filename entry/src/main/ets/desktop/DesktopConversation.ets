@@ -83,6 +83,7 @@ export interface DesktopTranscriptItem {
   message?: TrajectoryItem;
   interrupted?: boolean;
   userCopyText?: string;
+  humanPrompt?: boolean;
   notice?: DesktopTranscriptNotice;
   compaction?: DesktopCompactionRow;
   contextMessage?: DesktopContextMessage;
@@ -1167,6 +1168,7 @@ export class DesktopConversation {
         }
         continue;
       }
+      let humanPrompt = false;
       if (eventType === 'user/message') {
         const source = getRecord(getRecord(event, 'data'), 'source');
         const kind = getString(source, 'kind');
@@ -1175,6 +1177,7 @@ export class DesktopConversation {
           if (seq > 0 && labels.length > 0) { this.recallLabels.set(seq - 1, labels); }
           continue;
         }
+        humanPrompt = kind === 'user';
       }
       const message = projectWireRecord(record);
       const attachments = message?.speaker === Speaker.USER ?
@@ -1189,6 +1192,7 @@ export class DesktopConversation {
           result.set(message.id, { id: message.id, sequence: seq,
             turn: eventTurn || loadedTurn || undefined, message: message, attachments: attachments,
             interrupted: message.speaker === Speaker.ASSISTANT && getBoolean(getRecord(event, 'data'), 'interrupted') === true,
+            humanPrompt: humanPrompt,
             userCopyText: message.speaker === Speaker.USER ? desktopUserMessageCopyText(getRecord(event, 'data')) : undefined });
         }
       }

@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "desktop_workspace_picker_search", "value": "Search workspaces" },
+    { "name": "desktop_workspace_picker_empty", "value": "No matching workspaces" },
+    { "name": "desktop_workspace_picker_folder_error", "value": "Couldn’t open folder" },
+    { "name": "desktop_workspace_picker_retry", "value": "Choose again" },
+    { "name": "desktop_workspace_picker_cancel", "value": "Cancel" }
+  ]
+}

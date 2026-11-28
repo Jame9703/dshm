@@ -8,6 +8,7 @@ export interface DesktopDraftReference {
 export interface DesktopComposerDraft {
   text: string;
   references: DesktopDraftReference[];
+  recalledSequence?: number;
 }
 
 export const EMPTY_DESKTOP_DRAFT: DesktopComposerDraft = { text: '', references: [] };

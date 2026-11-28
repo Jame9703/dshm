@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "desktop_workspace_picker_search", "value": "搜索工作区" },
+    { "name": "desktop_workspace_picker_empty", "value": "未找到匹配的工作区" },
+    { "name": "desktop_workspace_picker_folder_error", "value": "无法打开文件夹" },
+    { "name": "desktop_workspace_picker_retry", "value": "重新选择" },
+    { "name": "desktop_workspace_picker_cancel", "value": "取消" }
+  ]
+}

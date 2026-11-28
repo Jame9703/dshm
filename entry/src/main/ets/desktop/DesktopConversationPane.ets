@@ -86,6 +86,7 @@ import type { DesktopTypography } from './DesktopTheme';
 import { desktopDraftEditorOffset, desktopDraftTriggerText, desktopDraftWireOffset, EMPTY_DESKTOP_DRAFT,
   replaceDesktopDraftRange, sameDesktopDraft } from './DesktopDraftReferences';
 import type { DesktopComposerDraft, DesktopDraftReference } from './DesktopDraftReferences';
+import { desktopPromptHistoryStep } from './DesktopPromptHistory';
 
 @Component
 export struct DesktopConversationPane {
@@ -883,7 +884,10 @@ export struct DesktopConversationPane {
       this.getUIContext().getHostContext()?.resourceManager.getConfigurationSync().colorMode === resourceManager.ColorMode.DARK);
     const sampleCaret = this.composerSession === this.sessionId && sameDesktopDraft(this.composerDraft, this.draft);
     if (sampleCaret && this.composerDark === dark && this.composerTextSize === this.typography.textSize &&
-      this.composerTextFamily === this.typography.textFamily) { return; }
+      this.composerTextFamily === this.typography.textFamily) {
+      this.composerDraft = this.draft;
+      return;
+    }
     const caret = sampleCaret ? this.composerCaret() : this.draft.text.length;
     this.composerSession = this.sessionId;
     this.composerDark = dark;
@@ -1096,7 +1100,33 @@ export struct DesktopConversationPane {
       this.onPasteAttachments();
       return !desktopClipboardHasText();
     }
-    return this.paletteKey(event);
+    return this.paletteKey(event) || this.recallComposerPrompt(event);
+  }
+
+  private recallComposerPrompt(event: KeyEvent): boolean {
+    const older = event.keyCode === KeyCode.KEYCODE_DPAD_UP;
+    if (event.type !== KeyType.Down || (!older && event.keyCode !== KeyCode.KEYCODE_DPAD_DOWN) ||
+      this.palette || this.busy || !this.composerReady || this.composerSession !== this.sessionId ||
+      this.snapshot?.sessionId !== this.sessionId || this.snapshot?.loading !== false ||
+      event.metaKey === 1 || event.getModifierKeyState?.(['Ctrl']) === true ||
+      event.getModifierKeyState?.(['Alt']) === true || event.getModifierKeyState?.(['Shift']) === true) { return false; }
+    const controller = this.composer.controller;
+    const draft = this.composerDraft;
+    const selection = controller.getSelection();
+    if (selection?.start !== selection?.end || !!controller.getPreviewText()?.value ||
+      controller.getCaretOffset() !== desktopDraftEditorOffset(draft, draft.text.length) ||
+      (draft.recalledSequence === undefined && draft.text !== '')) { return false; }
+    const next = desktopPromptHistoryStep(this.snapshot.transcript, draft.recalledSequence, older);
+    if (next === undefined) { return false; }
+    const recalled: DesktopComposerDraft = { text: next.text, references: [], recalledSequence: next.sequence };
+    this.dismissedDraft = undefined;
+    this.paletteNotice = '';
+    this.renderComposer(recalled);
+    this.composerSelectionEnd = recalled.text.length;
+    controller.setCaretOffset(this.composerSelectionEnd);
+    this.onDraft(this.composerSession, recalled);
+    this.refreshSlash();
+    return true;
   }
 
   private dropAttachments(event: DragEvent): void {
@@ -2089,7 +2119,8 @@ export struct DesktopConversationPane {
       if (this.questionReview() !== undefined) {
         Row() {
           DesktopQuestionHistoryView({ row: this.questionReview(), review: true,
-            bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily,
+            bodySize: this.typography.textSize, bodyFamily: this.typography.textFamily, typography: this.typography,
+            onLink: this.onLink,
             onClose: (): void => { this.reviewedQuestionCall = ''; } })
         }.width('100%').padding({ left: 20, right: 20, bottom: 8 }).justifyContent(FlexAlign.Center)
       } else if (this.visibleInteraction().length > 0) {

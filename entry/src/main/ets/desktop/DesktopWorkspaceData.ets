@@ -52,6 +52,11 @@ export interface DesktopSessionCreation {
   problem: string;
 }
 
+export interface DesktopWorkspaceCreation {
+  id: string;
+  problem: string;
+}
+
 const UNAVAILABLE_PRESETS: string[] = ['agent-preset/not-found', 'agent-preset/invalid'];
 
 export interface DesktopWorkspaceRow {
@@ -428,19 +433,19 @@ export class DesktopWorkspaceData {
     return this.workspaces.find((row: DesktopWorkspaceRow): boolean => row.id === workspaceId)?.path ?? '';
   }
 
-  async createWorkspace(path: string): Promise<string> {
+  async createWorkspace(path: string): Promise<DesktopWorkspaceCreation> {
     const result = await this.actions.call('workspace/create', { 'path': path });
     if (!this.active || !result.ok) {
-      return '';
+      return { id: '', problem: desktopHostProblem(result) };
     }
     const record = getRecord(result.value, 'workspace');
     const workspace = record === undefined ? undefined : workspaceFromHost(record);
-    if (workspace === undefined) { return ''; }
+    if (workspace === undefined) { return { id: '', problem: '' }; }
     if (!this.workspaces.some((row: DesktopWorkspaceRow): boolean => row.id === workspace.id)) {
       this.workspaces = [...this.workspaces, workspace];
       this.publish();
     }
-    return workspace.id;
+    return { id: workspace.id, problem: '' };
   }
 
   creatorWorkspace(sessionId: string): string {

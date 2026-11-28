@@ -1,0 +1,22 @@
+{
+  "string": [
+    { "name": "desktop_plugin_discover_source", "value": "Index source" },
+    { "name": "desktop_plugin_discover_search", "value": "Search plugins" },
+    { "name": "desktop_plugin_discover_labels", "value": "Labels" },
+    { "name": "desktop_plugin_discover_label_count", "value": "Labels · %s" },
+    { "name": "desktop_plugin_discover_sort", "value": "Sort: %s" },
+    { "name": "desktop_plugin_discover_relevance", "value": "Best match" },
+    { "name": "desktop_plugin_discover_index_order", "value": "Default order" },
+    { "name": "desktop_plugin_discover_published", "value": "Publish date" },
+    { "name": "desktop_plugin_discover_ascending", "value": "Sort ascending" },
+    { "name": "desktop_plugin_discover_descending", "value": "Sort descending" },
+    { "name": "desktop_plugin_discover_refresh", "value": "Refresh" },
+    { "name": "desktop_plugin_discover_all", "value": "All" },
+    { "name": "desktop_plugin_discover_empty", "value": "This index lists no plugins." },
+    { "name": "desktop_plugin_discover_no_matches", "value": "No plugins match." },
+    { "name": "desktop_plugin_discover_more", "value": "Show more" },
+    { "name": "desktop_plugin_discover_retry", "value": "Retry" },
+    { "name": "desktop_plugin_discover_changed", "value": "This index changed while loading." },
+    { "name": "desktop_plugin_discover_failed", "value": "Could not read this index." }
+  ]
+}

@@ -95,6 +95,8 @@ import { DesktopArchiveDialog, DesktopArchiveFilter, desktopArchiveActivity } fr
 import type { DesktopArchiveNotice, DesktopArchiveRequest } from '../desktop/DesktopSessionArchive';
 import type { DesktopConversation, DesktopConversationSnapshot } from '../desktop/DesktopConversation';
 import { DesktopAccountSessionNotice, DesktopWorkspaceData } from '../desktop/DesktopWorkspaceData';
+import { DesktopWorkspacePicker } from '../desktop/DesktopWorkspacePicker';
+import type { DesktopWorkspacePickerRow } from '../desktop/DesktopWorkspacePickerModel';
 import { readDesktopNativeDestination } from '../desktop/DesktopWorkspaceHandoff';
 import type { DesktopHandoffSubagent, DesktopNativeDestination, DesktopPluginLocation,
   DesktopWebDestination } from '../desktop/DesktopWorkspaceHandoff';
@@ -284,6 +286,7 @@ struct DesktopWorkspace {
   private pluginTitle: string = '';
   private pluginDescription: string = '';
   @State private workspaceBusy: boolean = false;
+  private workspaceFolderErrorOpen: boolean = false;
   @State private forking: boolean = false;
   private pendingForkId: string = '';
   private pendingForkSource: string = '';
@@ -2503,13 +2506,11 @@ struct DesktopWorkspace {
     }
   }
 
-  private workspaceMenu(): Array<MenuElement> {
-    const items = this.groups.filter((group: DesktopWorkspaceGroup): boolean => !!group.id)
-      .map((group: DesktopWorkspaceGroup): MenuElement => {
-        return { value: group.title, action: (): void => { this.newSession(group.id); } };
-    });
-    items.push({ value: $r('app.string.desktop_experiment_add_workspace'), action: (): void => { this.addWorkspace(); } });
-    return items;
+  private workspacePickerRows(): DesktopWorkspacePickerRow[] {
+    return this.groups.filter((group: DesktopWorkspaceGroup): boolean => !!group.id)
+      .map((group: DesktopWorkspaceGroup): DesktopWorkspacePickerRow => ({
+        id: group.id, title: this.accessibilityLabel(group.title), path: group.path
+      }));
   }
 
   private pickWorkspace(group: DesktopWorkspaceGroup): void {
@@ -2528,7 +2529,7 @@ struct DesktopWorkspace {
     const data = this.data;
     const ui = this.getUIContext();
     const context = ui.getHostContext();
-    if (data === undefined || !this.ready || context === undefined || this.workspaceBusy) {
+    if (data === undefined || !this.ready || context === undefined || this.workspaceBusy || this.workspaceFolderErrorOpen) {
       return;
     }
     const selection = this.nativeSelectionVersion;
@@ -2540,15 +2541,16 @@ struct DesktopWorkspace {
         return;
       }
       if (picked.outcome !== PickOutcome.PICKED || picked.path.length === 0) {
-        ui.getPromptAction().showToast({ message: picked.reason || $r('app.string.desktop_experiment_action_failed') });
+        this.showWorkspaceFolderError(data, picked.reason || $r('app.string.desktop_experiment_action_failed'));
         return;
       }
-      const id = await data.createWorkspace(picked.path);
+      const created = await data.createWorkspace(picked.path);
       if (this.data !== data) {
         return;
       }
-      if (id.length === 0) {
-        ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
+      const id = created.id;
+      if (!id) {
+        this.showWorkspaceFolderError(data, created.problem || $r('app.string.desktop_experiment_action_failed'));
         return;
       }
       if (picked.reason.length > 0) {
@@ -2559,12 +2561,29 @@ struct DesktopWorkspace {
         await this.newSession(id);
       }
     } catch (_) {
-      ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
+      this.showWorkspaceFolderError(data, $r('app.string.desktop_experiment_action_failed'));
     } finally {
       if (this.data === data) {
         this.workspaceBusy = false;
       }
     }
+  }
+
+  private showWorkspaceFolderError(owner: DesktopWorkspaceData, message: ResourceStr): void {
+    if (!this.pageActive || this.data !== owner || this.workspaceFolderErrorOpen) { return; }
+    this.workspaceFolderErrorOpen = true;
+    this.getUIContext().getPromptAction().showDialog({
+      title: $r('app.string.desktop_workspace_picker_folder_error'),
+      message: message,
+      buttons: [
+        { text: $r('app.string.desktop_workspace_picker_cancel'), color: '#777777' },
+        { text: $r('app.string.desktop_workspace_picker_retry'), color: '#4176E6' }
+      ],
+      systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial
+    }).then((result): void => {
+      this.workspaceFolderErrorOpen = false;
+      if (result.index === 1 && this.pageActive && this.data === owner) { this.addWorkspace(); }
+    }).catch((): void => { this.workspaceFolderErrorOpen = false; });
   }
 
   private openPlugins(name: string = '', title: string = '', description: string = '', location?: DesktopPluginLocation): void {
@@ -5001,21 +5020,11 @@ struct DesktopWorkspace {
       .justifyContent(FlexAlign.Center)
       Column({ space: 8 }) {
         Row() {
-          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            Row({ space: 7 }) {
-              SymbolGlyph($r('sys.symbol.folder')).fontSize(16).fontColor([$r('sys.color.font_secondary')])
-              Text(this.selectedWorkspaceTitle || $r('app.string.desktop_experiment_choose_workspace'))
-                .fontSize(14).fontColor($r('sys.color.font_primary'))
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(11)
-                .fontColor([$r('sys.color.font_secondary')]).rotate({ angle: 90 })
-            }
-          }
-          .constraintSize({ maxWidth: '80%' }).height(30).padding({ left: 8, right: 8 })
-          .key('desktopWorkspaceLandingPicker')
-          .borderRadius(7).backgroundColor(Color.Transparent).focusOnTouch(false)
-          .enabled(this.ready && !this.creating && !this.workspaceBusy)
-          .bindMenu(this.workspaceMenu(), desktopMenuOptions(Placement.BottomLeft))
+          DesktopWorkspacePicker({ rows: this.workspacePickerRows(), selectedId: this.workspaceId,
+            caption: this.selectedWorkspaceTitle || $r('app.string.desktop_experiment_choose_workspace'),
+            ready: this.ready && !this.creating && !this.workspaceBusy,
+            onPick: (id: string): void => { this.newSession(id); },
+            onAdd: (): void => { this.addWorkspace(); } })
         }
         .width('100%').padding({ left: 4 })
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {

@@ -1,0 +1,22 @@
+{
+  "string": [
+    { "name": "desktop_plugin_discover_source", "value": "索引来源" },
+    { "name": "desktop_plugin_discover_search", "value": "搜索插件" },
+    { "name": "desktop_plugin_discover_labels", "value": "标签" },
+    { "name": "desktop_plugin_discover_label_count", "value": "标签 · %s" },
+    { "name": "desktop_plugin_discover_sort", "value": "排序：%s" },
+    { "name": "desktop_plugin_discover_relevance", "value": "最佳匹配" },
+    { "name": "desktop_plugin_discover_index_order", "value": "默认顺序" },
+    { "name": "desktop_plugin_discover_published", "value": "发布时间" },
+    { "name": "desktop_plugin_discover_ascending", "value": "改为升序" },
+    { "name": "desktop_plugin_discover_descending", "value": "改为降序" },
+    { "name": "desktop_plugin_discover_refresh", "value": "刷新" },
+    { "name": "desktop_plugin_discover_all", "value": "全部" },
+    { "name": "desktop_plugin_discover_empty", "value": "此索引没有插件" },
+    { "name": "desktop_plugin_discover_no_matches", "value": "没有符合条件的插件" },
+    { "name": "desktop_plugin_discover_more", "value": "显示更多" },
+    { "name": "desktop_plugin_discover_retry", "value": "重试" },
+    { "name": "desktop_plugin_discover_changed", "value": "此索引在加载过程中发生了变化" },
+    { "name": "desktop_plugin_discover_failed", "value": "无法读取此索引" }
+  ]
+}
