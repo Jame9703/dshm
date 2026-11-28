@@ -42,28 +42,31 @@ export struct DesktopTimelineDock {
     }
   }
 
+  private toggle(): void {
+    if (this.tree !== undefined) { this.onToggle(this.owner, this.tree.id); }
+  }
+
   @Builder
   private Action() {
-    Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
-      Row({ space: 10 }) {
-        Text(this.tree?.title ?? '').fontSize(13).fontWeight(FontWeight.Medium)
-          .fontColor($r('sys.color.font_primary')).maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: '30%' })
-        Row() {
-          DesktopTimelineProgressBar({ progress: this.tree?.progress ?? 0, status: this.tree?.status ?? 'pending',
-            parts: this.segmented ? this.tree?.parts : undefined, decimals: this.decimals })
-        }.layoutWeight(1)
-        Text(desktopTimelinePercent(this.tree?.progress ?? 0, this.decimals) + '%').key('desktopTimelineDockPercent')
-          .fontSize(12).fontColor($r('sys.color.font_secondary'))
+    Row({ space: 10 }) {
+      Text(this.tree?.title ?? '').fontSize(13).fontWeight(FontWeight.Medium)
+        .fontColor($r('sys.color.font_primary')).maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: '30%' })
+        .onClick((): void => { this.toggle(); })
+      Row() {
+        DesktopTimelineProgressBar({ progress: this.tree?.progress ?? 0, status: this.tree?.status ?? 'pending',
+          parts: this.segmented ? this.tree?.parts : undefined, decimals: this.decimals,
+          progressKey: 'desktopTimelineDockProgress', onTap: (): void => { this.toggle(); } })
+      }.layoutWeight(1).padding({ top: 10, bottom: 10 })
+      Text(desktopTimelinePercent(this.tree?.progress ?? 0, this.decimals) + '%').key('desktopTimelineDockPercent')
+        .fontSize(12).fontColor($r('sys.color.font_secondary')).onClick((): void => { this.toggle(); })
+      Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Image($r('app.media.dsh_browser_right_up_outline')).width(16).height(16).supportSvg2(true)
           .rotate({ angle: this.showing ? 180 : 0 }).draggable(false).accessibilityLevel('no')
-      }.width('100%')
-    }.key('desktopTimelineDockToggle').height(36).layoutWeight(1).borderRadius(10).focusOnTouch(false)
-    .padding({ left: 12, right: this.removable ? 7 : 11 })
-    .accessibilityText(this.showing ? $r('app.string.desktop_timeline_dock_close') : $r('app.string.desktop_timeline_dock_open'))
-    .onClick((): void => {
-      if (this.tree !== undefined) { this.onToggle(this.owner, this.tree.id); }
-    })
+      }.key('desktopTimelineDockToggle').width(28).height(28).padding(0).focusOnTouch(false)
+        .accessibilityText(this.showing ? $r('app.string.desktop_timeline_dock_close') : $r('app.string.desktop_timeline_dock_open'))
+        .onClick((): void => { this.toggle(); })
+    }.height(36).layoutWeight(1).padding({ left: 12, right: this.removable ? 1 : 5 })
   }
 
   build() {

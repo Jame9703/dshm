@@ -1,4 +1,5 @@
 import { dialogMaterial } from 'platform';
+import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { getField, getNumber, getRecord, getString, randomUuid } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
@@ -16,6 +17,9 @@ import type { DesktopTimelineDiscussionTarget, DesktopTimelineNoticeLabels } fro
 import { desktopTimelineStatus, readDesktopTimeline } from './DesktopTimelineModel';
 import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import { DesktopTimelineProgressBar } from './DesktopTimelineProgressBar';
+import { DesktopTimelineOverview } from './DesktopTimelineOverview';
+import { DesktopTimelineTaskMetrics } from './DesktopTimelineTaskMetrics';
+import { desktopTimelineDuration, desktopTimelineWeight } from './DesktopTimelineMetricsModel';
 import type { DesktopTimelineLocation, DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
 
@@ -56,6 +60,7 @@ export struct DesktopTimelinePane {
   onRetry: () => void = (): void => {};
   onTaskRoot: (session: string, tree: string) => void = (): void => {};
   onWeb: () => void = (): void => {};
+  onLink: (href: string) => void = (): void => {};
   onNotify: (sessionId: string, text: string) => Promise<string> =
     (_sessionId: string, _text: string): Promise<string> => Promise.resolve('unavailable');
 
@@ -83,6 +88,7 @@ export struct DesktopTimelinePane {
   @State private discussionScope: string = '';
   @State private discussionExpanded: boolean = false;
   @State private controlNow: number = 0;
+  @State private historyKey: string = '';
   @State private acknowledgedControls: Object[] = [];
   private controlTimer: number = -1;
   private controlAttempt?: TimelineControlAttempt;
@@ -623,13 +629,6 @@ export struct DesktopTimelinePane {
 
   private time(value: number): string { return new Date(value).toLocaleString(); }
 
-  private duration(ms: number): string {
-    const minutes = Math.floor(ms / 60000);
-    if (minutes <= 0) { return '<1m'; }
-    const hours = Math.floor(minutes / 60);
-    return hours > 0 ? String(hours) + 'h ' + (minutes % 60) + 'm' : String(minutes) + 'm';
-  }
-
   private targetAnnotations(kind: string, tree: string, id: string): Object[] {
     return this.view.annotations.filter((entry: Object): boolean => {
       const target = getRecord(entry, 'target');
@@ -672,6 +671,11 @@ export struct DesktopTimelinePane {
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.layoutWeight(1).padding(3).borderRadius(6).key('desktopTimelineTask-' + task.id)
         .accessibilityText(task.title).onClick((): void => { this.pushDetail(tree.id, task.id); })
+      Row() {
+        DesktopTimelineProgressBar({ progress: task.progress, status: task.status, label: task.title, thickness: 4,
+          parts: this.segmentedProgress ? task.parts : undefined, decimals: this.progressDecimals,
+          progressKey: 'desktopTimelineTaskProgress-' + task.id })
+      }.width(40)
       Text(desktopTimelinePercent(task.progress, this.progressDecimals) + '%').fontSize(11).fontColor($r('sys.color.font_secondary'))
     }.width('100%').padding({ left: 8 + Math.min(5, task.depth) * 10 })
   }
@@ -929,10 +933,9 @@ export struct DesktopTimelinePane {
         Button('···', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(30).height(30).padding(0)
           .key('desktopTimelineTreeMenu').accessibilityText($r('app.string.desktop_timeline_tree_options'))
           .bindMenu(this.treeTransferOptions(tree), desktopMenuOptions(Placement.BottomRight))
-        Text(desktopTimelinePercent(tree.progress, this.progressDecimals) + '%').fontSize(12).fontColor($r('sys.color.font_secondary'))
       }.width('100%')
-      DesktopTimelineProgressBar({ progress: tree.progress, status: tree.status,
-        parts: this.segmentedProgress ? tree.parts : undefined, decimals: this.progressDecimals })
+      DesktopTimelineOverview({ tree: tree, active: this.active, running: this.running,
+        decimals: this.progressDecimals, segmented: this.segmentedProgress })
       if (tree.description) { Text(tree.description).fontSize(13).width('100%') }
       this.TreeControl({ kind: 'tree', tree: tree.id, id: '' })
       ForEach(this.visibleTasks(tree), (task: DesktopTimelineTask): void => { this.TaskRow(tree, task) },
@@ -957,27 +960,86 @@ export struct DesktopTimelinePane {
       .onClick((): void => { this.pushDetail('', report.id); })
   }
 
+  private revisionProgress(row: Object): string {
+    const progress = desktopTimelinePercent(getNumber(row, 'progress') ?? 0, this.progressDecimals);
+    const previous = getNumber(row, 'previousProgress');
+    const before = previous === undefined ? progress : desktopTimelinePercent(previous, this.progressDecimals);
+    return before === progress ? progress + '%' : before + '% → ' + progress + '%';
+  }
+
+  @Builder
+  private TaskHistory(task: DesktopTimelineTask, key: string) {
+    Column({ space: 8 }) {
+      Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 7 }) {
+          Image($r('app.media.dsh_browser_chevron_right_outline')).width(12).height(12).supportSvg2(true)
+            .rotate({ angle: this.historyKey === key ? 90 : 0 }).accessibilityLevel('no')
+          Text($r('app.string.desktop_timeline_task_history')).fontSize(13)
+          Text(String(task.history.length)).fontSize(11).fontColor($r('sys.color.font_secondary'))
+        }
+      }.key('desktopTimelineTaskHistoryToggle').borderRadius(6).height(34)
+      .onClick((): void => { this.historyKey = this.historyKey === key ? '' : key; })
+      if (this.historyKey === key) {
+        if (task.history.length === 0) {
+          Text($r('app.string.desktop_timeline_metric_history_empty')).fontSize(12).fontColor($r('sys.color.font_secondary'))
+        }
+        ForEach(task.history.slice().reverse(), (row: Object, index: number): void => {
+          this.HistoryRevision(task.title, row, index)
+        }, (row: Object, index: number): string => String(getNumber(row, 'at') ?? 0) + ':' + index)
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start).padding({ top: 9 })
+      .border({ width: { top: 0.5 }, color: $r('app.color.workspace_border') })
+  }
+
+  @Builder
+  private HistoryRevision(currentTitle: string, row: Object, index: number) {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        Text(this.time(getNumber(row, 'at') ?? 0)).fontSize(11).fontColor($r('sys.color.font_secondary'))
+        Text(desktopTimelineStatus(getString(row, 'status') ?? 'pending')).fontSize(11)
+          .fontColor($r('sys.color.font_secondary'))
+      }.width('100%')
+      if (getString(row, 'title') && getString(row, 'title') !== currentTitle) {
+        Text(getString(row, 'title') ?? '').fontSize(13).width('100%')
+      }
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.RevisionMetric($r('app.string.desktop_timeline_metric_progress'), this.revisionProgress(row),
+          'desktopTimelineTaskHistoryProgress-' + index)
+        this.RevisionMetric($r('app.string.desktop_timeline_metric_weight'), desktopTimelineWeight(getNumber(row, 'weight') ?? 1),
+          'desktopTimelineTaskHistoryWeight-' + index)
+      }.width('100%')
+      if (getString(row, 'description')) { MarkdownRenderer({ text: getString(row, 'description') ?? '', onLink: this.onLink }) }
+      if (getString(row, 'note')) { MarkdownRenderer({ text: getString(row, 'note') ?? '', onLink: this.onLink }) }
+      if (getString(row, 'details')) { MarkdownRenderer({ text: getString(row, 'details') ?? '', onLink: this.onLink }) }
+    }.width('100%').padding(9).alignItems(HorizontalAlign.Start).borderRadius(8)
+      .border({ width: 0.5, color: $r('app.color.workspace_border') })
+  }
+
+  @Builder
+  private RevisionMetric(label: Resource, value: string, id: string) {
+    Column({ space: 3 }) {
+      Text(label).fontSize(11).fontColor($r('sys.color.font_secondary'))
+      Text(value).fontSize(14).fontWeight(FontWeight.Medium).key(id)
+    }.padding(8).margin({ right: 6, bottom: 6 }).constraintSize({ minWidth: 92 }).alignItems(HorizontalAlign.Start)
+      .backgroundColor($r('app.color.workspace_panel')).borderRadius(8)
+  }
+
   @Builder
   private TaskDetail(task?: DesktopTimelineTask, target?: TimelineDetailTarget) {
     Column({ space: 9 }) {
       if (task !== undefined && target !== undefined) {
-        Text(task.title).width('100%').fontSize(18).fontWeight(FontWeight.Medium)
-        Text(desktopTimelineStatus(task.status)).fontSize(13).fontColor($r('sys.color.font_secondary'))
-        DesktopTimelineProgressBar({ progress: task.progress, status: task.status,
-          parts: this.segmentedProgress ? task.parts : undefined, decimals: this.progressDecimals })
-        if (task.description) { Text(task.description).width('100%').fontSize(14) }
-        if (task.note) { Text(task.note).width('100%').fontSize(13).copyOption(CopyOptions.LocalDevice) }
-        if (task.details) { Text(task.details).width('100%').fontSize(13).copyOption(CopyOptions.LocalDevice) }
-        if (task.history.length > 0) {
-          Text($r('app.string.desktop_timeline_task_history')).width('100%').fontSize(14).fontWeight(FontWeight.Medium)
-          ForEach(task.history.slice(-40).reverse(), (row: Object): void => {
-            Column({ space: 3 }) {
-              Text(this.time(getNumber(row, 'at') ?? 0)).fontSize(11).fontColor($r('sys.color.font_secondary'))
-              Text(getString(row, 'note') || getString(row, 'details') || getString(row, 'title') || '').fontSize(13)
-            }.width('100%').alignItems(HorizontalAlign.Start)
-          }, (row: Object, index: number): string => String(getNumber(row, 'at') ?? 0) + ':' + index)
-        }
+        Row({ space: 8 }) {
+          Text(task.title).layoutWeight(1).fontSize(18).fontWeight(FontWeight.Medium)
+          Text(desktopTimelineStatus(task.status)).fontSize(13).fontColor($r('sys.color.font_secondary'))
+        }.width('100%')
+        Text(this.view.trees.find((row: DesktopTimelineTree): boolean => row.id === target.tree)?.title ?? '')
+          .fontSize(12).fontColor($r('sys.color.font_secondary'))
+        if (task.description) { MarkdownRenderer({ text: task.description, onLink: this.onLink }) }
+        if (task.note) { MarkdownRenderer({ text: task.note, onLink: this.onLink }) }
+        DesktopTimelineTaskMetrics({ task: task, decimals: this.progressDecimals })
+        if (task.details) { MarkdownRenderer({ text: task.details, onLink: this.onLink }) }
         this.Discussions('task', target.tree, target.id)
+        this.TaskHistory(task, target.tree + ':' + target.id)
       } else {
         Text($r('app.string.desktop_timeline_missing_detail')).width('100%').fontSize(13)
       }
@@ -1004,10 +1066,10 @@ export struct DesktopTimelinePane {
           .fontColor($r('sys.color.font_secondary')).fontSize(12)
         Text($r('app.string.desktop_timeline_tool_calls', report.toolCount)).fontSize(12)
         if (report.savedPeriod !== undefined) {
-          Text($r('app.string.desktop_timeline_saved_period', this.duration(report.savedPeriod))).fontSize(12)
+          Text($r('app.string.desktop_timeline_saved_period', desktopTimelineDuration(report.savedPeriod))).fontSize(12)
         }
         if (report.workMs !== undefined && report.workMs !== report.savedPeriod) {
-          Text($r('app.string.desktop_timeline_work_duration', this.duration(report.workMs))).fontSize(12)
+          Text($r('app.string.desktop_timeline_work_duration', desktopTimelineDuration(report.workMs))).fontSize(12)
         }
         this.ReportSection($r('app.string.desktop_timeline_report_progress'), report.progress)
         this.ReportSection($r('app.string.desktop_timeline_report_unknowns'), report.uncertainties)

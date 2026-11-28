@@ -4115,7 +4115,8 @@ struct DesktopWorkspace {
         running: this.chat?.sessionId === this.sessionId && this.chat?.running === true,
         onNotify: (id: string, text: string): Promise<string> =>
           this.data?.conversation.sendTimelineNotice(id, text) ?? Promise.resolve('会话已切换'),
-        onWeb: (): void => { this.openWeb(false); } })
+        onWeb: (): void => { this.openWeb(false); },
+        onLink: (href: string): void => this.openConversationLink(href) })
     } else if (tab.kind === DesktopDockKind.FILES || tab.kind === DesktopDockKind.PREVIEW) {
       DesktopFilesPane({ host: this.data?.actions,
         ability: this.getUIContext().getSharedLocalStorage()?.get<common.UIAbilityContext>('dshDesktopPreviewContext'),

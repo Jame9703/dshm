@@ -12,11 +12,23 @@ export interface DesktopTimelineSource {
   value: Object;
 }
 
+export interface DesktopTimelineProgressPart {
+  fraction: number;
+  leaves: number;
+  titles: string[];
+}
+
 export interface DesktopTimelineParts {
-  done: number;
-  active: number;
-  pending: number;
-  blocked: number;
+  done: DesktopTimelineProgressPart;
+  active: DesktopTimelineProgressPart;
+  pending: DesktopTimelineProgressPart;
+  blocked: DesktopTimelineProgressPart;
+}
+
+interface DesktopTimelineMeasure {
+  progress: number;
+  status: string;
+  parts: DesktopTimelineParts;
 }
 
 export interface DesktopTimelineTask {
@@ -30,6 +42,8 @@ export interface DesktopTimelineTask {
   priority: string;
   ownPriority: string;
   share: number;
+  unitsDone: number;
+  unitsTotal: number;
   progress: number;
   parts: DesktopTimelineParts;
   depth: number;
@@ -43,9 +57,11 @@ export interface DesktopTimelineTree {
   title: string;
   description: string;
   tasks: DesktopTimelineTask[];
+  createdAt: number;
+  latestActivityAt: number;
   status: string;
   progress: number;
-  parts: DesktopTimelineParts;
+  parts?: DesktopTimelineParts;
 }
 
 export interface DesktopTimelineReport {
@@ -97,64 +113,82 @@ function parseTask(item: Object): DesktopTimelineTask | undefined {
   const status = getString(item, 'status') ?? 'pending';
   if (!id || !title || status === 'retired') { return undefined; }
   const done = getArray(item, 'done') ?? [];
-  const total = numeric(done[1]);
-  const progress = status === 'done' ? 1 : total > 0 ? Math.max(0, Math.min(1, numeric(done[0]) / total)) : 0;
+  const unitsDone = numeric(done[0]);
+  const unitsTotal = numeric(done[1]);
+  const progress = status === 'done' ? 1 : unitsTotal > 0 ? Math.max(0, Math.min(1, unitsDone / unitsTotal)) : 0;
+  const share = getNumber(item, 'timeShare') ?? 1;
   return { id: id, title: title, status: status, parent: getString(item, 'parent') ?? '',
     description: getString(item, 'description') ?? '', note: getString(item, 'note') ?? '',
     details: getString(item, 'details') ?? '', priority: getString(item, 'priority') ?? '',
     ownPriority: getString(item, 'priority') ?? '',
-    share: Math.max(Number.EPSILON, getNumber(item, 'timeShare') ?? 1),
-    progress: progress, parts: leafParts(progress, status),
+    share: Number.isFinite(share) && share > 0 ? share : 1, unitsDone: unitsDone, unitsTotal: unitsTotal,
+    progress: progress, parts: leafParts(progress, status, title),
     depth: 0, children: 0, history: getArray(item, 'history') ?? [] };
 }
 
-function leafParts(progress: number, status: string): DesktopTimelineParts {
-  const remainder = 1 - progress;
-  return { done: progress, active: status === 'active' ? remainder : 0,
-    pending: status === 'active' || status === 'blocked' ? 0 : remainder,
-    blocked: status === 'blocked' ? remainder : 0 };
+function emptyPart(): DesktopTimelineProgressPart { return { fraction: 0, leaves: 0, titles: [] }; }
+
+function emptyParts(): DesktopTimelineParts {
+  return { done: emptyPart(), active: emptyPart(), pending: emptyPart(), blocked: emptyPart() };
 }
 
-function weightedParts(rows: DesktopTimelineTask[], progress: number, status: string): DesktopTimelineParts {
-  if (rows.length === 0) { return leafParts(progress, status); }
-  let largest = 0;
-  for (const row of rows) { largest = Math.max(largest, row.share); }
-  let active = 0;
-  let pending = 0;
-  let blocked = 0;
-  for (const row of rows) {
-    const weight = row.share / largest;
-    active += weight * row.parts.active;
-    pending += weight * row.parts.pending;
-    blocked += weight * row.parts.blocked;
+function unfinishedPart(parts: DesktopTimelineParts, status: string): DesktopTimelineProgressPart {
+  return status === 'active' ? parts.active : status === 'blocked' ? parts.blocked : parts.pending;
+}
+
+function leafParts(progress: number, status: string, title: string): DesktopTimelineParts {
+  const parts = emptyParts();
+  parts.done.fraction = progress;
+  const unfinished = unfinishedPart(parts, status);
+  unfinished.fraction = 1 - progress;
+  const bucket = status === 'done' ? parts.done : unfinished;
+  bucket.leaves = 1;
+  bucket.titles.push(title);
+  return parts;
+}
+
+function accumulatePart(target: DesktopTimelineProgressPart, child: DesktopTimelineProgressPart, weight: number): void {
+  target.fraction += weight * child.fraction;
+  target.leaves += child.leaves;
+  for (const title of child.titles) {
+    if (target.titles.length >= 6) { break; }
+    target.titles.push(title);
   }
-  const rest = active + pending + blocked;
-  if (rest === 0) { return leafParts(progress, status); }
-  const fraction = (1 - progress) / rest;
-  return { done: progress, active: active * fraction, pending: pending * fraction, blocked: blocked * fraction };
 }
 
-function weighted(rows: DesktopTimelineTask[]): number {
-  if (rows.length === 0) { return 0; }
-  if (rows.every((row: DesktopTimelineTask): boolean => row.status === 'done')) { return 1; }
+function measureGroup(rows: DesktopTimelineTask[]): DesktopTimelineMeasure {
   let largest = 0;
   for (const row of rows) { largest = Math.max(largest, row.share); }
+  const parts = emptyParts();
   let sum = 0;
   let total = 0;
+  let done = true;
+  let active = false;
+  let blocked = false;
+  let paused = false;
   for (const row of rows) {
     const weight = row.share / largest;
     sum += row.progress * weight;
     total += weight;
+    done = done && row.status === 'done';
+    active = active || row.status === 'active';
+    blocked = blocked || row.status === 'blocked';
+    paused = paused || row.status === 'paused';
+    accumulatePart(parts.done, row.parts.done, weight);
+    accumulatePart(parts.active, row.parts.active, weight);
+    accumulatePart(parts.pending, row.parts.pending, weight);
+    accumulatePart(parts.blocked, row.parts.blocked, weight);
   }
-  return total > 0 ? Math.min(0.9999, sum / total) : 0;
-}
-
-function groupStatus(rows: DesktopTimelineTask[]): string {
-  if (rows.every((row: DesktopTimelineTask): boolean => row.status === 'done')) { return 'done'; }
-  for (const status of ['active', 'blocked', 'paused']) {
-    if (rows.some((row: DesktopTimelineTask): boolean => row.status === status)) { return status; }
-  }
-  return 'pending';
+  const status = done ? 'done' : active ? 'active' : blocked ? 'blocked' : paused ? 'paused' : 'pending';
+  const progress = done ? 1 : Math.min(0.9999, sum / total);
+  const rest = parts.active.fraction + parts.pending.fraction + parts.blocked.fraction;
+  const scale = rest > 0 ? (1 - progress) / rest : 0;
+  parts.done.fraction = progress;
+  parts.active.fraction *= scale;
+  parts.pending.fraction *= scale;
+  parts.blocked.fraction *= scale;
+  if (rest === 0) { unfinishedPart(parts, status).fraction = 1 - progress; }
+  return { progress: progress, status: status, parts: parts };
 }
 
 function parseTree(raw: Object): DesktopTimelineTree | undefined {
@@ -163,7 +197,10 @@ function parseTree(raw: Object): DesktopTimelineTree | undefined {
   if (!id || !title) { return undefined; }
   const branches = new Map<string, DesktopTimelineTask[]>();
   const seen = new Set<string>();
+  const createdAt = numeric(getNumber(raw, 'createdAt'));
+  let latestActivityAt = createdAt;
   for (const rawTask of getArray(raw, 'tasks') ?? []) {
+    latestActivityAt = Math.max(latestActivityAt, numeric(getNumber(rawTask, 'updatedAt')));
     const task = parseTask(rawTask);
     if (task === undefined || seen.has(task.id)) { continue; }
     seen.add(task.id);
@@ -191,15 +228,16 @@ function parseTree(raw: Object): DesktopTimelineTree | undefined {
     const task = tasks[i];
     const children = branches.get(task.id);
     if (children !== undefined && children.length > 0) {
-      task.progress = weighted(children);
-      task.status = groupStatus(children);
-      task.parts = weightedParts(children, task.progress, task.status);
+      const group = measureGroup(children);
+      task.progress = group.progress;
+      task.status = group.status;
+      task.parts = group.parts;
     }
   }
-  const status = root.length > 0 ? groupStatus(root) : 'pending';
-  const progress = weighted(root);
+  const measure = root.length > 0 ? measureGroup(root) : undefined;
   return { id: id, raw: raw, title: title, description: getString(raw, 'description') ?? '', tasks: tasks,
-    status: status, progress: progress, parts: weightedParts(root, progress, status) };
+    createdAt: createdAt, latestActivityAt: latestActivityAt, status: measure?.status ?? 'pending',
+    progress: measure?.progress ?? 0, parts: measure?.parts };
 }
 
 export function readDesktopTimelineActiveTree(value?: Object): DesktopTimelineTree | undefined {
