@@ -5,7 +5,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { desktopAttachmentUri, desktopDroppedFiles, packDesktopClipboardPicture } from '../desktop/DesktopAttachmentIntake';
 import type { DesktopDroppedFiles } from '../desktop/DesktopAttachmentIntake';
 import { StartupFrameCallback } from '../common/DesktopStartup';
-import { getRecord, getString, parseTarget } from 'connection';
+import { getArray, getRecord, getString, parseTarget } from 'connection';
 import { SESSION_PAGE_ENDPOINT, WORKSPACE_ARCHIVE_SESSION_ENDPOINT } from 'dshcompat';
 import type { DesktopInteraction, DesktopQuestionAnswer, DesktopQuestionProgress } from '../desktop/DesktopInteractions';
 import { DesktopTerminalPane } from '../desktop/DesktopTerminalPane';
@@ -53,6 +53,8 @@ import type { ModelSelection, QueueActionBody, SessionListItem } from 'appstate'
 import { DesktopConversationPane } from '../desktop/DesktopConversationPane';
 import { DesktopTimelinePane } from '../desktop/DesktopTimelinePane';
 import type { DesktopTimelineLocation } from '../desktop/DesktopTimelineModel';
+import { DEFAULT_DESKTOP_TIMELINE_PREFERENCES } from '../desktop/DesktopTimelinePreferences';
+import type { DesktopTimelinePreferences } from '../desktop/DesktopTimelinePreferences';
 import { DesktopDockChatPane } from '../desktop/DesktopDockChatPane';
 import { DesktopReplyMedia } from '../desktop/DesktopReplyMedia';
 import type { DesktopDockChatActions } from '../desktop/DesktopDockChatPane';
@@ -273,6 +275,11 @@ struct DesktopWorkspace {
   @State private timelineLocation?: DesktopTimelineLocation = undefined;
   private pendingTimelineLocation?: DesktopTimelineLocation;
   private timelineLocationRevision: number = 0;
+  @State private timelineRoot: string = '';
+  @State private timelinePreferences: DesktopTimelinePreferences = DEFAULT_DESKTOP_TIMELINE_PREFERENCES;
+  private timelinePreferencesReady: boolean = false;
+  private timelineObservedTree?: boolean;
+  private timelineAutoPending: boolean = false;
   @State private interactions: DesktopInteraction[] = [];
   @State private draft: DesktopComposerDraft = EMPTY_DESKTOP_DRAFT;
   @State private chatError: string = '';
@@ -516,6 +523,8 @@ struct DesktopWorkspace {
     this.error = '';
     this.chat = undefined;
     this.resetTimelineLocation();
+    this.timelinePreferencesReady = false;
+    this.timelinePreferences = DEFAULT_DESKTOP_TIMELINE_PREFERENCES;
     this.interactions = [];
     this.unreadSessions = new Map<string, DesktopUnreadSession>();
     this.runningSidebarChildren = new Map<string, number>();
@@ -565,6 +574,7 @@ struct DesktopWorkspace {
       } else {
         this.openPendingTimeline();
       }
+      this.observeTimelineTree(snapshot);
       if (snapshot.subagent !== undefined) { this.subagentAddresses.set(snapshot.subagent.id, snapshot.subagent); }
       this.syncReading();
     }, (items: DesktopInteraction[]): void => {
@@ -598,6 +608,11 @@ struct DesktopWorkspace {
       if (this.pageActive) { this.getUIContext().getPromptAction().showToast({ message: message }); }
     }, (notice?: DesktopQuotaNotice): void => {
       if (this.pageActive) { this.presentQuota(notice); }
+    }, (value: DesktopTimelinePreferences): void => {
+      if (!this.pageActive) { return; }
+      this.timelinePreferences = value;
+      this.timelinePreferencesReady = true;
+      this.openFirstTimelineTree();
     });
     const data = this.data;
     data.start(this.hostUrl).then((): void => { this.restoreTerminalHolds(data); });
@@ -3629,6 +3644,11 @@ struct DesktopWorkspace {
           filesOpen: this.dockShows(DesktopDockKind.FILES),
           rightDockOpen: this.rightDock.expanded,
           timelineOpen: this.dockShows(DesktopDockKind.TIMELINE),
+          timelineRoot: this.dockShows(DesktopDockKind.TIMELINE) ? this.timelineRoot : '',
+          timelineDecimals: this.timelinePreferences.decimals, timelineSegmented: this.timelinePreferences.segmentedProgress,
+          onTimelineDockToggle: (owner: string, tree: string): void => { this.toggleTimelineDock(owner, tree); },
+          onTimelineDockRemove: (owner: string, tree: string): Promise<boolean> =>
+            this.data?.conversation.removeTimelineDraft(owner, tree) ?? Promise.resolve(false),
           onTimeline: (): void => { this.showTimeline(true); },
           onRightDock: (): void => this.toggleRightDock(),
           onFiles: (): void => this.showWorkspaceFiles(true),
@@ -3664,6 +3684,40 @@ struct DesktopWorkspace {
   private resetTimelineLocation(): void {
     this.pendingTimelineLocation = undefined;
     this.timelineLocation = undefined;
+    this.timelineRoot = '';
+    this.timelineObservedTree = undefined;
+    this.timelineAutoPending = false;
+  }
+
+  private observeTimelineTree(snapshot: DesktopConversationSnapshot): void {
+    if (snapshot.sessionId !== this.sessionId || this.timelineObservedTree === true) { return; }
+    const trees = getArray(snapshot.timeline?.value, 'trees');
+    if (trees === undefined) { return; }
+    this.timelineAutoPending = this.timelineObservedTree === false && trees.length > 0;
+    this.timelineObservedTree = trees.length > 0;
+    this.openFirstTimelineTree();
+  }
+
+  private openFirstTimelineTree(): void {
+    if (!this.timelineAutoPending || !this.timelinePreferencesReady || this.workbenchBounds === undefined) { return; }
+    this.timelineAutoPending = false;
+    const trees = this.chat?.sessionId === this.sessionId ? getArray(this.chat?.timeline?.value, 'trees') : undefined;
+    if (this.timelinePreferences.autoOpenSidebar && this.workbenchWidth > 768 && this.panel === 'session' &&
+        !this.dockShows(DesktopDockKind.TIMELINE) && (trees?.length ?? 0) > 0) {
+      this.requestTimeline(this.sessionId, '', '');
+    }
+  }
+
+  private toggleTimelineDock(owner: string, tree: string): void {
+    if (owner !== this.sessionId || this.chat?.sessionId !== owner || this.chat?.timelineTree?.id !== tree) { return; }
+    if (tree !== this.timelineRoot || !this.dockShows(DesktopDockKind.TIMELINE)) {
+      this.requestTimeline(owner, tree, '');
+    } else if (this.rightDock.expanded && this.rightDock.panes.some((pane: DesktopDockPane): boolean =>
+      pane.active === DesktopDockKind.TIMELINE)) {
+      this.toggleRightDock();
+    } else {
+      this.hideDockTool(DesktopDockKind.TIMELINE);
+    }
   }
 
   private requestTimeline(owner: string, tree: string, task: string): void {
@@ -4049,6 +4103,12 @@ struct DesktopWorkspace {
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.TIMELINE) {
       DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId, location: this.timelineLocation,
+        progressDecimals: this.timelinePreferences.decimals, segmentedProgress: this.timelinePreferences.segmentedProgress,
+        linkLost: this.chat?.sessionId === this.sessionId && this.chat?.timelineLinkLost === true,
+        onRetry: (): void => { this.data?.conversation.retryTimeline(); },
+        onTaskRoot: (owner: string, tree: string): void => {
+          if (owner === this.sessionId && tree !== this.timelineRoot) { this.timelineRoot = tree; }
+        },
         opening: this.chat?.sessionId === this.sessionId ? this.chat?.timeline : undefined,
         active: this.hasTimeline() && (index < 0 || (this.rightDock.expanded && this.rightDock.panes[index]?.active === tab.id)),
         writable: this.hasTimeline() && (this.selectedSubagent === undefined || this.selectedSubagent.mode === 'continuable'),
@@ -4117,7 +4177,8 @@ struct DesktopWorkspace {
         title: tab.title, directory: this.dockChatDirectory(tab), shown: this.dockTabShown(index, tab.id),
         busy: this.busySessions.includes(tab.chat?.id ?? ''), forking: this.forking,
         stopping: this.stoppingSessions.includes(tab.chat?.id ?? ''),
-        appearance: this.appearance, typography: this.typography, summaries: this.sessionSummaries })
+        appearance: this.appearance, typography: this.typography, summaries: this.sessionSummaries,
+        timelineDecimals: this.timelinePreferences.decimals, timelineSegmented: this.timelinePreferences.segmentedProgress })
     } else if (tab.kind === DesktopDockKind.BROWSER) {
       DesktopBrowserPane({ address: tab.browserAddress ?? '', restore: tab.restoreBrowser ?? false,
         workspaceOrigin: this.browserOrigin(), onNavigated: (href: string, title: string): void => {
@@ -4506,6 +4567,7 @@ struct DesktopWorkspace {
         this.workbenchBounds = area;
         this.workbenchWidth = Number(area.width);
         this.workbenchHeight = Number(area.height);
+        this.openFirstTimelineTree();
         this.sidebarWidth = Math.max(160, Math.min(280, Number(area.width) * 0.48));
         this.defaultDockWidth = Math.max(DOCK_MIN_WIDTH, Math.min(520, (Number(area.width) - this.sidebarWidth) * 0.46));
       })

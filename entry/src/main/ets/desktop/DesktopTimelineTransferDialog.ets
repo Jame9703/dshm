@@ -1,4 +1,5 @@
 import { randomUuid } from 'connection';
+import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import { previewDesktopTimelineCheckpoint } from './DesktopTimelineCheckpoint';
 import type { DesktopTimelineCheckpointPreview } from './DesktopTimelineCheckpoint';
 import { pickDesktopTimelineCheckpoint } from './DesktopTimelineTransferIO';
@@ -10,9 +11,11 @@ export interface DesktopTimelineImportRequest {
   proceed: boolean;
 }
 
+
 @Component
 export struct DesktopTimelineTransferDialog {
   @Prop running: boolean = false;
+  @Prop progressDecimals: number = 2;
   readOnly: () => boolean = (): boolean => false;
   onBusy: (busy: boolean) => void = (_busy: boolean): void => {};
   onImport: (request: DesktopTimelineImportRequest) => Promise<string> =
@@ -117,7 +120,7 @@ export struct DesktopTimelineTransferDialog {
           Text(this.preview?.title ?? '').fontSize(15).fontWeight(FontWeight.Medium)
           Text(this.name).fontSize(12).fontColor($r('sys.color.font_secondary'))
           Text($r('app.string.desktop_timeline_transfer_preview', this.preview?.tasks ?? 0,
-            ((this.preview?.progress ?? 0) * 100).toFixed(2))).fontSize(13)
+            desktopTimelinePercent(this.preview?.progress ?? 0, this.progressDecimals))).fontSize(13)
         }.key('desktopTimelineTransferPreview').alignItems(HorizontalAlign.Start).width('100%')
       }
       Row({ space: 8 }) {

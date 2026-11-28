@@ -45,7 +45,8 @@ import type { DesktopTurnOutlineEntry } from './DesktopTurnOutlineModel';
 import type { DesktopTraceRow } from './DesktopTrajectoryLog';
 import { DesktopGoal, DesktopGoalAction, DesktopGoalRef, DesktopGoalState } from './DesktopGoal';
 import { DesktopHostActions } from './DesktopHostActions';
-import type { DesktopTimelineSource } from './DesktopTimelineModel';
+import { desktopTimelineValue, readDesktopTimelineActiveTree } from './DesktopTimelineModel';
+import type { DesktopTimelineSource, DesktopTimelineTree } from './DesktopTimelineModel';
 import { DesktopFeedback } from './DesktopFeedback';
 import { DesktopActionCardState, desktopHideActionCardFences } from './DesktopActionCards';
 import type { DesktopActionCard } from './DesktopActionCards';
@@ -130,6 +131,8 @@ export interface DesktopConversationSnapshot {
   continuationSequence: number;
   historyLoaded: boolean;
   timeline?: DesktopTimelineSource;
+  timelineTree?: DesktopTimelineTree;
+  timelineLinkLost: boolean;
   timelineCommandOpen: number;
   receivedTurn: number;
   waitingForInput: boolean;
@@ -279,6 +282,12 @@ export class DesktopConversation {
   private historyLoaded: boolean = false;
   private timeline?: DesktopTimelineSource;
   private timelineSequence: number = -2;
+  private timelineTree?: DesktopTimelineTree;
+  private timelineLinkLost: boolean = false;
+  private stopTimeline?: () => void;
+  private timelineRetryTimer: number = -1;
+  private timelineRetries: number = 0;
+  private timelineWatchVersion: number = 0;
   private timelineCommandOpen: number = 0;
   private receivedTurn: number = 0;
   private waitingForInput: boolean = false;
@@ -397,6 +406,9 @@ export class DesktopConversation {
     this.nextStepAsOf = -1;
     this.historyLoaded = false;
     this.timeline = undefined;
+    this.timelineTree = undefined;
+    this.timelineLinkLost = false;
+    this.timelineRetries = 0;
     this.timelineSequence = -2;
     this.timelineCommandOpen = 0;
     this.receivedTurn = 0;
@@ -417,6 +429,7 @@ export class DesktopConversation {
     if (!this.closed && this.sessionId && this.stopFollow === undefined) {
       this.openFollow(this.generation);
     }
+    if (!this.closed && this.timeline !== undefined && this.stopTimeline === undefined) { this.retryTimeline(); }
   }
 
   private openFollow(generation: number): void {
@@ -907,6 +920,7 @@ export class DesktopConversation {
   }
 
   private stopWatching(): void {
+    this.stopTimelineWatch();
     this.stopFollow?.();
     this.stopFollow = undefined;
     this.clearOpeningTimer();
@@ -1430,11 +1444,84 @@ export class DesktopConversation {
 
   private readTimeline(values: Object | undefined, sequence: number): boolean {
     if (values === undefined || !Number.isSafeInteger(sequence) || sequence <= this.timelineSequence) { return false; }
+    return this.acceptTimeline(getRecord(values, 'timeline'), sequence);
+  }
+
+  private acceptTimeline(view: Object | undefined, sequence: number): boolean {
+    if (sequence <= this.timelineSequence) { return false; }
     this.timelineSequence = sequence;
-    const view = getRecord(values, 'timeline');
-    const changed = this.timeline?.value !== view;
-    if (changed) { this.timeline = view === undefined ? undefined : { sequence: sequence, value: view }; }
-    return changed;
+    if (this.timeline?.value === view) { return false; }
+    this.timeline = view === undefined ? undefined : { sequence: sequence, value: view };
+    this.timelineTree = readDesktopTimelineActiveTree(view);
+    if (view === undefined) { this.stopTimelineWatch(); }
+    else { this.watchTimeline(this.generation); }
+    return true;
+  }
+
+  async removeTimelineDraft(owner: string, id: string): Promise<boolean> {
+    if (this.closed || owner !== this.sessionId || this.timelineTree?.id !== id || this.running ||
+        this.sending.has(owner) || this.queue.rows.length > 0 || this.latestTurn > 0) { return false; }
+    const generation = this.generation;
+    const payload: Record<string, Object> = { 'action': 'remove', 'sessionId': owner, 'tree': id, 'draft': true };
+    const reply = await this.host.editTimeline(payload);
+    if (!this.current(generation)) { return false; }
+    const ok = reply.ok && getString(reply.value, 'action') === 'remove' && getBoolean(reply.value, 'draft') === true;
+    if (reply.ok) { await this.loadSelection(generation); }
+    return ok;
+  }
+
+  retryTimeline(): void {
+    this.stopTimelineWatch();
+    this.timelineRetries = 0;
+    this.watchTimeline(this.generation);
+  }
+
+  private stopTimelineWatch(): void {
+    this.timelineWatchVersion++;
+    const stop = this.stopTimeline;
+    this.stopTimeline = undefined;
+    stop?.();
+    if (this.timelineRetryTimer >= 0) { clearTimeout(this.timelineRetryTimer); this.timelineRetryTimer = -1; }
+  }
+
+  private watchTimeline(generation: number): void {
+    if (!this.current(generation) || this.timeline === undefined || this.stopTimeline !== undefined ||
+        this.timelineRetryTimer >= 0 || this.timelineRetries > 3) { return; }
+    const owner = this.sessionId;
+    const version = ++this.timelineWatchVersion;
+    const current = (): boolean => this.current(generation) && version === this.timelineWatchVersion;
+    const ended = (): void => {
+      if (!current()) { return; }
+      this.stopTimelineWatch();
+      this.timelineLinkLost = true;
+      this.timelineRetries++;
+      if (this.timelineRetries <= 3) {
+        this.timelineRetryTimer = setTimeout((): void => {
+          this.timelineRetryTimer = -1;
+          this.watchTimeline(generation);
+        }, 1200 * this.timelineRetries);
+      }
+      this.publish();
+    };
+    const address: Record<string, Object> = { 'sessionId': owner };
+    const sink: StreamSink = {
+      onItem: (frame: Object): void => {
+        if (!current()) { return; }
+        if (getString(frame, 'type') === 'ready') {
+          this.timelineRetries = 0;
+          if (this.timelineLinkLost) { this.timelineLinkLost = false; this.publish(); }
+          // The projection stream starts after the opening snapshot. This read covers the intervening events.
+          this.loadSelection(generation);
+        } else {
+          const update = desktopTimelineValue(frame);
+          if (update !== undefined && this.acceptTimeline(update.value, update.sequence)) { this.publish(); }
+        }
+      },
+      onError: ended,
+      onEnd: ended
+    };
+    this.stopTimeline = this.host.watch('session/observeProjections', address, sink);
+    if (this.stopTimeline === undefined) { ended(); }
   }
 
   private readProjection(projection: Object | undefined): void {
@@ -1711,7 +1798,8 @@ export class DesktopConversation {
       runningStartedAt: openTurn && latestTurn.startTime > 0 ? latestTurn.startTime : undefined,
       runningHolding: !this.running && openTurn,
       continuationSequence: this.canContinue() && sending === undefined ? this.continuationSequence : -1,
-      historyLoaded: this.historyLoaded, timeline: this.timeline, timelineCommandOpen: this.timelineCommandOpen,
+      historyLoaded: this.historyLoaded, timeline: this.timeline, timelineTree: this.timelineTree,
+      timelineLinkLost: this.timelineLinkLost, timelineCommandOpen: this.timelineCommandOpen,
       receivedTurn: this.receivedTurn,
       models: this.modelCatalog?.models ?? [], modelsLoading: this.modelsLoading, modelCatalog: this.modelCatalog,
       modelError: this.modelError, selection: selection, error: this.error,

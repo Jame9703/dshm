@@ -1,8 +1,9 @@
 import { getArray, getNumber, getString } from 'connection';
+import { DESKTOP_TIMELINE_NS } from './DesktopTimelinePreferences';
 import type { DesktopPluginEdit } from './DesktopPluginSettingsModel';
 
 export const DESKTOP_TIMELINE_BUNDLE: string = '@deepseek-ai/dsh-timeline';
-export const DESKTOP_TIMELINE_NS: string = 'timeline-experimental';
+export { DESKTOP_TIMELINE_NS } from './DesktopTimelinePreferences';
 export const TIMELINE_MINUTE_MS: number = 60000;
 export const TIMELINE_HOUR_MS: number = 60 * TIMELINE_MINUTE_MS;
 export const TIMELINE_DAY_MS: number = 24 * TIMELINE_HOUR_MS;

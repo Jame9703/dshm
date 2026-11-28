@@ -12,6 +12,13 @@ export interface DesktopTimelineSource {
   value: Object;
 }
 
+export interface DesktopTimelineParts {
+  done: number;
+  active: number;
+  pending: number;
+  blocked: number;
+}
+
 export interface DesktopTimelineTask {
   id: string;
   parent: string;
@@ -24,6 +31,7 @@ export interface DesktopTimelineTask {
   ownPriority: string;
   share: number;
   progress: number;
+  parts: DesktopTimelineParts;
   depth: number;
   children: number;
   history: Object[];
@@ -37,6 +45,7 @@ export interface DesktopTimelineTree {
   tasks: DesktopTimelineTask[];
   status: string;
   progress: number;
+  parts: DesktopTimelineParts;
 }
 
 export interface DesktopTimelineReport {
@@ -89,19 +98,46 @@ function parseTask(item: Object): DesktopTimelineTask | undefined {
   if (!id || !title || status === 'retired') { return undefined; }
   const done = getArray(item, 'done') ?? [];
   const total = numeric(done[1]);
+  const progress = status === 'done' ? 1 : total > 0 ? Math.max(0, Math.min(1, numeric(done[0]) / total)) : 0;
   return { id: id, title: title, status: status, parent: getString(item, 'parent') ?? '',
     description: getString(item, 'description') ?? '', note: getString(item, 'note') ?? '',
     details: getString(item, 'details') ?? '', priority: getString(item, 'priority') ?? '',
     ownPriority: getString(item, 'priority') ?? '',
     share: Math.max(Number.EPSILON, getNumber(item, 'timeShare') ?? 1),
-    progress: status === 'done' ? 1 : total > 0 ? Math.max(0, Math.min(1, numeric(done[0]) / total)) : 0,
+    progress: progress, parts: leafParts(progress, status),
     depth: 0, children: 0, history: getArray(item, 'history') ?? [] };
+}
+
+function leafParts(progress: number, status: string): DesktopTimelineParts {
+  const remainder = 1 - progress;
+  return { done: progress, active: status === 'active' ? remainder : 0,
+    pending: status === 'active' || status === 'blocked' ? 0 : remainder,
+    blocked: status === 'blocked' ? remainder : 0 };
+}
+
+function weightedParts(rows: DesktopTimelineTask[], progress: number, status: string): DesktopTimelineParts {
+  if (rows.length === 0) { return leafParts(progress, status); }
+  let largest = 0;
+  for (const row of rows) { largest = Math.max(largest, row.share); }
+  let active = 0;
+  let pending = 0;
+  let blocked = 0;
+  for (const row of rows) {
+    const weight = row.share / largest;
+    active += weight * row.parts.active;
+    pending += weight * row.parts.pending;
+    blocked += weight * row.parts.blocked;
+  }
+  const rest = active + pending + blocked;
+  if (rest === 0) { return leafParts(progress, status); }
+  const fraction = (1 - progress) / rest;
+  return { done: progress, active: active * fraction, pending: pending * fraction, blocked: blocked * fraction };
 }
 
 function weighted(rows: DesktopTimelineTask[]): number {
   if (rows.length === 0) { return 0; }
   if (rows.every((row: DesktopTimelineTask): boolean => row.status === 'done')) { return 1; }
-  let largest = 1;
+  let largest = 0;
   for (const row of rows) { largest = Math.max(largest, row.share); }
   let sum = 0;
   let total = 0;
@@ -157,10 +193,20 @@ function parseTree(raw: Object): DesktopTimelineTree | undefined {
     if (children !== undefined && children.length > 0) {
       task.progress = weighted(children);
       task.status = groupStatus(children);
+      task.parts = weightedParts(children, task.progress, task.status);
     }
   }
+  const status = root.length > 0 ? groupStatus(root) : 'pending';
+  const progress = weighted(root);
   return { id: id, raw: raw, title: title, description: getString(raw, 'description') ?? '', tasks: tasks,
-    status: root.length > 0 ? groupStatus(root) : 'pending', progress: weighted(root) };
+    status: status, progress: progress, parts: weightedParts(root, progress, status) };
+}
+
+export function readDesktopTimelineActiveTree(value?: Object): DesktopTimelineTree | undefined {
+  const active = getString(value, 'activeTreeId');
+  if (!active) { return undefined; }
+  const tree = getArray(value, 'trees')?.find((row: Object): boolean => getString(row, 'id') === active);
+  return tree === undefined ? undefined : parseTree(tree);
 }
 
 function readSavedPeriod(report: Object, level: number): number | undefined {

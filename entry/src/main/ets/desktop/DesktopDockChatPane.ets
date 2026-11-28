@@ -64,6 +64,8 @@ export struct DesktopDockChatPane {
   @Prop directory: string = '';
   @Prop appearance: string = 'system';
   @Prop typography: DesktopTypography = DEFAULT_DESKTOP_TYPOGRAPHY;
+  @Prop timelineDecimals: number = 2;
+  @Prop timelineSegmented: boolean = true;
   @Prop @Watch('syncVisibility') shown: boolean = false;
   @Prop busy: boolean = false;
   @Prop stopping: boolean = false;
@@ -186,6 +188,13 @@ export struct DesktopDockChatPane {
       if (this.snapshot !== undefined && this.target !== undefined) {
         DesktopConversationPane({ host: this.data?.actions, cordis: this.data?.cordis, replyMedia: this.replyMedia,
           snapshot: this.snapshot, embedded: true,
+          timelineDecimals: this.timelineDecimals, timelineSegmented: this.timelineSegmented,
+          onTimelineDockToggle: (owner: string, tree: string): void => {
+            const target = this.target;
+            if (target !== undefined && owner === target.id) { this.actions?.openTimeline(target, this.title, tree, ''); }
+          },
+          onTimelineDockRemove: (owner: string, tree: string): Promise<boolean> =>
+            this.binding?.conversation.removeTimelineDraft(owner, tree) ?? Promise.resolve(false),
           onTimelineReceipt: (owner: string, tree: string, task: string): void => {
             const target = this.target;
             if (target !== undefined && target.id === owner) { this.actions?.openTimeline(target, this.title, tree, task); }

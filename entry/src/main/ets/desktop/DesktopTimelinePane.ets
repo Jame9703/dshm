@@ -1,4 +1,3 @@
-import type { StreamSink } from 'connection';
 import { dialogMaterial } from 'platform';
 import { getField, getNumber, getRecord, getString, randomUuid } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
@@ -14,7 +13,9 @@ import type { DesktopTimelinePlayback } from './DesktopTimelineControl';
 import { desktopTimelineDiscussionKey, desktopTimelineDiscussionNotice, desktopTimelineDiscussionPayload,
   desktopTimelineOwnAnnotation, TIMELINE_DISCUSSION_LIMIT, TIMELINE_PRIORITIES } from './DesktopTimelineActions';
 import type { DesktopTimelineDiscussionTarget, DesktopTimelineNoticeLabels } from './DesktopTimelineActions';
-import { desktopTimelineStatus, desktopTimelineValue, readDesktopTimeline } from './DesktopTimelineModel';
+import { desktopTimelineStatus, readDesktopTimeline } from './DesktopTimelineModel';
+import { desktopTimelinePercent } from './DesktopTimelinePreferences';
+import { DesktopTimelineProgressBar } from './DesktopTimelineProgressBar';
 import type { DesktopTimelineLocation, DesktopTimelineReport, DesktopTimelineSource, DesktopTimelineTask, DesktopTimelineTree,
   DesktopTimelineView } from './DesktopTimelineModel';
 
@@ -49,6 +50,11 @@ export struct DesktopTimelinePane {
   @Prop @Watch('activeChanged') active: boolean = false;
   @Prop writable: boolean = false;
   @Prop running: boolean = false;
+  @Prop progressDecimals: number = 2;
+  @Prop segmentedProgress: boolean = true;
+  @Prop linkLost: boolean = false;
+  onRetry: () => void = (): void => {};
+  onTaskRoot: (session: string, tree: string) => void = (): void => {};
   onWeb: () => void = (): void => {};
   onNotify: (sessionId: string, text: string) => Promise<string> =
     (_sessionId: string, _text: string): Promise<string> => Promise.resolve('unavailable');
@@ -62,7 +68,6 @@ export struct DesktopTimelinePane {
   @State private taskTrail: TimelineDetailTarget[] = [];
   @State private reportTrail: TimelineDetailTarget[] = [];
   @State private ready: boolean = false;
-  @State private updating: boolean = false;
   @State private failed: boolean = false;
   @State private editBusy: boolean = false;
   @State private transferStatus: string = '';
@@ -91,9 +96,6 @@ export struct DesktopTimelinePane {
   private mounted: boolean = false;
   private generation: number = 0;
   private sequence: number = -2;
-  private stopFollow?: () => void;
-  private retryTimer: number = -1;
-  private retries: number = 0;
   private scrollVersion: number = 0;
   private locationRevision: number = 0;
 
@@ -111,9 +113,9 @@ export struct DesktopTimelinePane {
 
   private activeChanged(): void {
     if (this.mounted && this.active) {
-      this.retries = 0;
       this.applyLocation();
-      this.connect();
+      this.scheduleControlTimer();
+      this.publishTaskRoot();
     } else {
       this.closeTransfer();
       this.stop();
@@ -138,9 +140,9 @@ export struct DesktopTimelinePane {
     for (const row of this.view.reports) { this.reportById.set(row.id, row); }
     this.viewRevision++;
     this.ready = true;
-    this.updating = false;
     this.failed = false;
     this.applyLocation();
+    this.publishTaskRoot();
   }
 
   private applyLocation(): void {
@@ -158,9 +160,6 @@ export struct DesktopTimelinePane {
 
   private stop(): void {
     this.generation++;
-    this.stopFollow?.();
-    this.stopFollow = undefined;
-    if (this.retryTimer >= 0) { clearTimeout(this.retryTimer); this.retryTimer = -1; }
     if (this.controlTimer >= 0) { clearTimeout(this.controlTimer); this.controlTimer = -1; }
   }
 
@@ -168,43 +167,16 @@ export struct DesktopTimelinePane {
     return this.mounted && this.active && generation === this.generation;
   }
 
-  private connect(): void {
-    this.stop();
-    const generation = this.generation;
-    const host = this.host;
-    if (!this.current(generation) || host === undefined || !this.sessionId) { return; }
-    this.scheduleControlTimer();
-    const address: Record<string, Object> = { 'sessionId': this.sessionId };
-    this.updating = true;
-    this.failed = false;
-    const sink: StreamSink = {
-      onItem: (frame: Object): void => {
-        if (!this.current(generation)) { return; }
-        if (getString(frame, 'type') === 'ready') {
-          this.retries = 0;
-          this.readBaseline(host, address, generation);
-        } else {
-          const update = desktopTimelineValue(frame);
-          if (update !== undefined) { this.accept(update); }
-        }
-      },
-      onError: (): void => { this.reconnect(generation); },
-      onEnd: (): void => { this.reconnect(generation); }
-    };
-    this.stopFollow = host.watch('session/observeProjections', address, sink);
-    if (this.stopFollow === undefined) { this.reconnect(generation); }
-  }
-
   private async readBaseline(host: DesktopHostActions, address: Record<string, Object>, generation: number): Promise<void> {
     const result = await host.call('session/projections', address);
     if (!this.current(generation)) { return; }
-    this.updating = false;
     const snapshot = getRecord(getRecord(result.value, 'values'), 'timeline');
     const sequence = getNumber(result.value, 'asOfSeq');
     if (!result.ok || sequence === undefined || !Number.isSafeInteger(sequence)) {
       this.failed = true;
       return;
     }
+    this.failed = false;
     if (snapshot !== undefined) {
       this.accept({ sequence: sequence, value: snapshot });
     } else if (sequence >= this.sequence) {
@@ -216,20 +188,15 @@ export struct DesktopTimelinePane {
       this.reportById.clear();
       this.viewRevision++;
       this.ready = true;
+      this.publishTaskRoot();
     }
   }
 
-  private reconnect(generation: number): void {
-    if (!this.current(generation)) { return; }
-    this.stop();
-    this.updating = false;
-    this.failed = true;
-    if (this.retries >= 3) { return; }
-    this.retries++;
-    this.retryTimer = setTimeout((): void => {
-      this.retryTimer = -1;
-      if (this.mounted && this.active) { this.connect(); }
-    }, 1200 * this.retries);
+  private publishTaskRoot(): void {
+    if (this.active && this.mounted) {
+      const tree = this.tab === 'tasks' && this.taskTrail.length === 0 ? this.selectedTree()?.id ?? '' : '';
+      this.onTaskRoot(this.sessionId, tree);
+    }
   }
 
   private selectedTree(): DesktopTimelineTree | undefined {
@@ -248,6 +215,7 @@ export struct DesktopTimelinePane {
     this.folded = [];
     this.taskTrail = [];
     this.moveScroll(0);
+    this.publishTaskRoot();
   }
 
   private isFolded(id: string): boolean { return this.folded.includes(id); }
@@ -303,6 +271,7 @@ export struct DesktopTimelinePane {
     this.tab = tab;
     this.scheduleControlTimer();
     this.moveScroll(tab === 'tasks' ? this.taskScroll : this.reportScroll);
+    this.publishTaskRoot();
   }
 
   private pushDetail(tree: string, id: string): void {
@@ -311,6 +280,7 @@ export struct DesktopTimelinePane {
     if (this.tab === 'tasks') { this.taskTrail = [...this.taskTrail, target]; }
     else { this.reportTrail = [...this.reportTrail, target]; }
     this.moveScroll(0);
+    this.publishTaskRoot();
   }
 
   private back(): void {
@@ -318,6 +288,7 @@ export struct DesktopTimelinePane {
     if (this.tab === 'tasks') { this.taskTrail = this.taskTrail.slice(0, -1); }
     else { this.reportTrail = this.reportTrail.slice(0, -1); }
     this.moveScroll(offset);
+    this.publishTaskRoot();
   }
 
   private controlAnnotations(): Object[] {
@@ -701,7 +672,7 @@ export struct DesktopTimelinePane {
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.layoutWeight(1).padding(3).borderRadius(6).key('desktopTimelineTask-' + task.id)
         .accessibilityText(task.title).onClick((): void => { this.pushDetail(tree.id, task.id); })
-      Text((task.progress * 100).toFixed(2) + '%').fontSize(11).fontColor($r('sys.color.font_secondary'))
+      Text(desktopTimelinePercent(task.progress, this.progressDecimals) + '%').fontSize(11).fontColor($r('sys.color.font_secondary'))
     }.width('100%').padding({ left: 8 + Math.min(5, task.depth) * 10 })
   }
 
@@ -888,7 +859,7 @@ export struct DesktopTimelinePane {
 
   @Builder
   private ImportContent(owner: string, version: number) {
-    DesktopTimelineTransferDialog({ running: this.running,
+    DesktopTimelineTransferDialog({ running: this.running, progressDecimals: this.progressDecimals,
       readOnly: (): boolean => !this.canImport() || owner !== this.sessionId || version !== this.transferVersion,
       onBusy: (busy: boolean): void => { if (this.transferVersion === version) { this.transferBusy = busy; } },
       onImport: (request: DesktopTimelineImportRequest): Promise<string> => this.importTree(owner, version, request),
@@ -958,9 +929,10 @@ export struct DesktopTimelinePane {
         Button('···', { buttonStyle: ButtonStyleMode.TEXTUAL }).width(30).height(30).padding(0)
           .key('desktopTimelineTreeMenu').accessibilityText($r('app.string.desktop_timeline_tree_options'))
           .bindMenu(this.treeTransferOptions(tree), desktopMenuOptions(Placement.BottomRight))
-        Text((tree.progress * 100).toFixed(2) + '%').fontSize(12).fontColor($r('sys.color.font_secondary'))
+        Text(desktopTimelinePercent(tree.progress, this.progressDecimals) + '%').fontSize(12).fontColor($r('sys.color.font_secondary'))
       }.width('100%')
-      Progress({ value: tree.progress * 100, total: 100, type: ProgressType.Linear }).width('100%')
+      DesktopTimelineProgressBar({ progress: tree.progress, status: tree.status,
+        parts: this.segmentedProgress ? tree.parts : undefined, decimals: this.progressDecimals })
       if (tree.description) { Text(tree.description).fontSize(13).width('100%') }
       this.TreeControl({ kind: 'tree', tree: tree.id, id: '' })
       ForEach(this.visibleTasks(tree), (task: DesktopTimelineTask): void => { this.TaskRow(tree, task) },
@@ -991,7 +963,8 @@ export struct DesktopTimelinePane {
       if (task !== undefined && target !== undefined) {
         Text(task.title).width('100%').fontSize(18).fontWeight(FontWeight.Medium)
         Text(desktopTimelineStatus(task.status)).fontSize(13).fontColor($r('sys.color.font_secondary'))
-        Progress({ value: task.progress * 100, total: 100, type: ProgressType.Linear }).width('100%')
+        DesktopTimelineProgressBar({ progress: task.progress, status: task.status,
+          parts: this.segmentedProgress ? task.parts : undefined, decimals: this.progressDecimals })
         if (task.description) { Text(task.description).width('100%').fontSize(14) }
         if (task.note) { Text(task.note).width('100%').fontSize(13).copyOption(CopyOptions.LocalDevice) }
         if (task.details) { Text(task.details).width('100%').fontSize(13).copyOption(CopyOptions.LocalDevice) }
@@ -1068,14 +1041,13 @@ export struct DesktopTimelinePane {
             .key('desktopTimelineDetailBack').height(32).onClick((): void => { this.back(); })
         }.width('100%')
       }
-      if (this.failed) {
+      if (this.failed || this.linkLost) {
         Row({ space: 6 }) {
           Text($r('app.string.desktop_timeline_link_lost')).fontSize(12).layoutWeight(1)
           Button($r('app.string.desktop_experiment_retry'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-            .key('desktopTimelineRetry').onClick((): void => { this.retries = 0; this.connect(); })
+            .key('desktopTimelineRetry').onClick((): void => { this.onRetry(); this.refreshEditedTimeline(); })
         }.width('100%')
       }
-      if (this.updating && !this.ready) { LoadingProgress().width(20).height(20) }
       if (this.view.error) { Text(this.view.error).fontSize(12).fontColor($r('app.color.workspace_status_error')) }
       if (this.transferStatus) {
         Text(this.transferStatus).key('desktopTimelineTransferStatus').width('100%')

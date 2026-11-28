@@ -4,6 +4,7 @@ import { DesktopProcessGroup, DesktopToolStep } from './DesktopToolLog';
 import { desktopFileName } from './DesktopArtifacts';
 import type { DesktopInteraction } from './DesktopInteractions';
 import { desktopTimelineStatus } from './DesktopTimelineModel';
+import { desktopTimelinePercent } from './DesktopTimelinePreferences';
 import type { DesktopTimelineReceipt, DesktopTimelineReceiptTask } from './DesktopTimelineReceipt';
 
 @Component
@@ -14,6 +15,7 @@ export struct DesktopProcessPane {
   @Prop liveProcessDetail: boolean = false;
   @Prop inspected: string = '';
   @Prop codeSize: number = 11;
+  @Prop timelineDecimals: number = 2;
   @Prop codeFamily: string = 'monospace';
   @Prop hiddenQuestions: DesktopInteraction[] = [];
   onToggle: () => void = (): void => {};
@@ -94,7 +96,7 @@ export struct DesktopProcessPane {
   }
 
   private percent(value: number): string {
-    return Math.min(value * 100, value < 1 ? 99.99 : 100).toFixed(2) + '%';
+    return desktopTimelinePercent(value, this.timelineDecimals) + '%';
   }
 
   private progressChange(before: number, after: number): string {

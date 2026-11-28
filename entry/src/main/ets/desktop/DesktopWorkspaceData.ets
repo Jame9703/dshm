@@ -31,6 +31,8 @@ import { DesktopQuotaNoticeModel } from './DesktopQuotaNoticeModel';
 import type { DesktopQuotaNotice } from './DesktopQuotaNoticeModel';
 import { DesktopTerminalRetentions } from './DesktopTerminalRetentions';
 import { DesktopTerminalRosters } from './DesktopTerminalRosters';
+import { DEFAULT_DESKTOP_TIMELINE_PREFERENCES, DESKTOP_TIMELINE_NS, desktopTimelinePreferences } from './DesktopTimelinePreferences';
+import type { DesktopTimelinePreferences } from './DesktopTimelinePreferences';
 
 export interface DesktopForkResult {
   id: string;
@@ -96,6 +98,8 @@ export class DesktopWorkspaceData {
   private readonly listener: (snapshot: DesktopWorkspaceSnapshot) => void;
   private readonly afterFrame: (run: () => void) => void;
   private readonly onTheme: (theme: DesktopTheme) => void;
+  private readonly onTimelinePreferences: (value: DesktopTimelinePreferences) => void;
+  private timelinePreferences?: DesktopTimelinePreferences;
   private readonly quota = new DesktopQuotaNoticeModel();
   private readonly onQuotaNotice: (notice?: DesktopQuotaNotice) => void;
   private readonly onLiveTurnEnd = (sessionId: string, frame: Object): void => {
@@ -133,11 +137,13 @@ export class DesktopWorkspaceData {
     onSidebarPending: (pending: Map<string, DesktopSidebarPending>) => void,
     onAccountNotices: (notices: DesktopAccountNotice[]) => void, onTheme: (theme: DesktopTheme) => void,
     openConnectorLink: (link: string) => Promise<boolean>, onConnectorNotice: (message: ResourceStr) => void,
-    onQuotaNotice: (notice?: DesktopQuotaNotice) => void) {
+    onQuotaNotice: (notice?: DesktopQuotaNotice) => void,
+    onTimelinePreferences: (value: DesktopTimelinePreferences) => void) {
     this.listener = listener;
     this.afterFrame = afterFrame;
     this.onTheme = onTheme;
     this.onQuotaNotice = onQuotaNotice;
+    this.onTimelinePreferences = onTimelinePreferences;
     this.connectorAccounts = new DesktopConnectorAccounts(this.actions, openConnectorLink, onConnectorNotice);
     this.accountNotices = new DesktopAccountNotices(this.actions, onAccountNotices,
       (state: Object): void => { this.completeAccountLogin(state); });
@@ -247,7 +253,7 @@ export class DesktopWorkspaceData {
         if (event === EVENT_SETTINGS_DOCUMENT_UPDATED) {
           const namespace = getArray(frame, 'args')?.[0];
           if (namespace === 'ui-conversation' || namespace === 'ui-chat' || namespace === 'locale' ||
-            namespace === DESKTOP_THEME_NS) {
+            namespace === DESKTOP_THEME_NS || namespace === DESKTOP_TIMELINE_NS) {
             this.readConversationPreferences();
           }
           if (typeof namespace === 'string' && (namespace.startsWith('llm-') || namespace === 'agent-default-model')) {
@@ -283,7 +289,11 @@ export class DesktopWorkspaceData {
   private async readConversationPreferences(): Promise<void> {
     const version = ++this.conversationPreferencesVersion;
     const result = await this.actions.call(SETTINGS_DESCRIBE_ENDPOINT, {});
-    if (!result.ok || !this.active || version !== this.conversationPreferencesVersion) { return; }
+    if (!this.active || version !== this.conversationPreferencesVersion) { return; }
+    if (!result.ok) {
+      if (this.timelinePreferences === undefined) { this.applyTimelinePreferences(DEFAULT_DESKTOP_TIMELINE_PREFERENCES); }
+      return;
+    }
     const namespaces = getArray(result.value, 'namespaces');
     const settings = namespaces?.find((row: Object): boolean =>
       getString(row, 'ns') === 'ui-conversation');
@@ -292,6 +302,8 @@ export class DesktopWorkspaceData {
     this.browserInDock = getString(chatValue, 'linkOpening') !== 'new-tab';
     this.compactUsage = getString(chatValue, 'performanceUsage') === 'compact';
     this.transcriptPolicy = readDesktopTranscriptPolicy(chatValue);
+    const timeline = namespaces?.find((row: Object): boolean => getString(row, 'ns') === DESKTOP_TIMELINE_NS);
+    this.applyTimelinePreferences(desktopTimelinePreferences(getRecord(timeline, 'value')));
     const locale = namespaces?.find((row: Object): boolean => getString(row, 'ns') === 'locale');
     const theme = namespaces?.find((row: Object): boolean => getString(row, 'ns') === DESKTOP_THEME_NS);
     const appearance = getRecord(theme, 'value');
@@ -306,6 +318,14 @@ export class DesktopWorkspaceData {
     this.dockConversations?.forEach((binding: DesktopDockConversation): void => {
       binding.conversation.setPreferences(this.busyEnterSteers, this.compactUsage, this.transcriptPolicy);
     });
+  }
+
+  private applyTimelinePreferences(value: DesktopTimelinePreferences): void {
+    const previous = this.timelinePreferences;
+    if (previous?.decimals === value.decimals && previous?.autoOpenSidebar === value.autoOpenSidebar &&
+        previous?.segmentedProgress === value.segmentedProgress) { return; }
+    this.timelinePreferences = value;
+    this.onTimelinePreferences(value);
   }
 
   private openWorkspaceStream(): void {

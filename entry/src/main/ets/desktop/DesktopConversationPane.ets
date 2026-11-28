@@ -55,6 +55,7 @@ import { activeDesktopReference, desktopReferenceChoices, desktopReferenceCrumbs
   desktopFileReferenceInsertion, desktopSettledReference } from './DesktopReferences';
 import type { DesktopReferenceChoice, DesktopReferenceCrumb, DesktopReferenceToken } from './DesktopReferences';
 import { DesktopGoalBar } from './DesktopGoalBar';
+import { DesktopTimelineDock } from './DesktopTimelineDock';
 import { DesktopGoalAction, DesktopGoalRef } from './DesktopGoal';
 import { DesktopRating } from './DesktopFeedback';
 import { DesktopReferenceMessage } from './DesktopReferenceMessage';
@@ -111,6 +112,11 @@ export struct DesktopConversationPane {
   @Prop filesOpen: boolean = false;
   @Prop rightDockOpen: boolean = false;
   @Prop timelineOpen: boolean = false;
+  @Prop timelineRoot: string = '';
+  @Prop timelineDecimals: number = 2;
+  @Prop timelineSegmented: boolean = true;
+  onTimelineDockToggle: (session: string, tree: string) => void = (): void => {};
+  onTimelineDockRemove: (session: string, tree: string) => Promise<boolean> = (): Promise<boolean> => Promise.resolve(false);
   onTimeline: () => void = (): void => {};
   @Prop commandError: string = '';
   @Prop menuOptions: MenuOptions | undefined = undefined;
@@ -265,6 +271,13 @@ export struct DesktopConversationPane {
   private teamDialogVersion: number = 0;
   private teamActionVersion: number = 0;
   private paneWidth: number = 472;
+
+  private canRemoveTimelineDraft(): boolean {
+    const snapshot = this.snapshot;
+    return snapshot?.historyLoaded === true && !snapshot.running && !snapshot.runningHolding &&
+      !this.busy && snapshot.submissionEchoes.length === 0 && snapshot.queue.length === 0 &&
+      this.sessionSummaries.some((row: SessionListItem): boolean => row.id === snapshot.sessionId && row.blank);
+  }
 
   private subagentCanSend(): boolean {
     return this.snapshot?.subagent === undefined ||
@@ -1498,7 +1511,7 @@ export struct DesktopConversationPane {
     } else if (item.process !== undefined) {
       DesktopProcessPane({ group: item.process, grouped: row.groupProcess, liveProcessDetail: row.liveProcessDetail,
         expanded: this.expandedProcesses.includes(item.id),
-        codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily,
+        codeSize: this.typography.codeSize, codeFamily: this.typography.codeFamily, timelineDecimals: this.timelineDecimals,
         inspected: this.inspectedTool, onFile: this.onArtifactFile,
         onTimelineReceipt: (tree: string, task: string): void => {
           this.onTimelineReceipt(this.snapshot?.sessionId ?? '', tree, task);
@@ -2049,6 +2062,14 @@ export struct DesktopConversationPane {
           }
           if (this.snapshot?.goal !== undefined && this.snapshot.goal.phase !== 'complete') {
             DesktopGoalBar({ goal: this.snapshot.goal, busy: this.busy, onAction: this.onGoalAction })
+          }
+          if (this.snapshot?.timelineTree !== undefined) {
+            ForEach([this.snapshot?.sessionId ?? ''], (_owner: string): void => {
+              DesktopTimelineDock({ owner: this.snapshot?.sessionId ?? '', tree: this.snapshot?.timelineTree,
+                showing: this.timelineRoot === this.snapshot?.timelineTree?.id, removable: this.canRemoveTimelineDraft(),
+                decimals: this.timelineDecimals, segmented: this.timelineSegmented,
+                onToggle: this.onTimelineDockToggle, onRemove: this.onTimelineDockRemove })
+            }, (owner: string): string => owner)
           }
           this.Composer()
         } else {
