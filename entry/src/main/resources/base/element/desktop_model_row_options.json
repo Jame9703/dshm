@@ -50,7 +50,7 @@
     },
     {
       "name": "desktop_model_option_reorder_help",
-      "value": "拖动调整模型顺序。"
+      "value": "拖动排序，或使用上下方向键调整顺序。"
     }
   ]
 }

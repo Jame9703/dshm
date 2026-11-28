@@ -1,4 +1,5 @@
 import { KeyCode } from '@kit.InputKit';
+import { LengthMetrics } from '@kit.ArkUI';
 import { StartupFrameCallback } from '../common/DesktopStartup';
 import { getArray, getRecord, getString } from 'connection';
 import { DesktopHostActions } from './DesktopHostActions';
@@ -6,8 +7,9 @@ import type { DesktopTimelineReport } from './DesktopTimelineModel';
 import type { DesktopTimelineRulerViewport } from './DesktopTimelineViewport';
 import { DESKTOP_TIMELINE_NS, desktopTimelineMilliseconds, desktopTimelinePeriods } from './DesktopTimelineSettingsModel';
 import { DesktopTimelineRulerIndex, DesktopTimelineScale, desktopTimelineLiveAnchor, desktopTimelineReportInWeek,
-  desktopTimelineRulerFit, desktopTimelineRulerTicks, desktopTimelineScale, desktopTimelineZoomOffset,
-  TIMELINE_RULER_DAY, TIMELINE_RULER_HOUR, TIMELINE_RULER_MAX_ZOOM, TIMELINE_RULER_MINUTE, TIMELINE_RULER_WEEK
+  desktopTimelineReportNeedsFit, desktopTimelineRulerFit, desktopTimelineRulerTicks, desktopTimelineScale,
+  desktopTimelineZoomOffset, TIMELINE_RULER_DAY, TIMELINE_RULER_HOUR, TIMELINE_RULER_MAX_ZOOM, TIMELINE_RULER_MINUTE,
+  TIMELINE_RULER_REPORT_FONT_SIZE, TIMELINE_RULER_WEEK
 } from './DesktopTimelineRulerModel';
 import type { DesktopTimelineRulerBlock, DesktopTimelineRulerTick } from './DesktopTimelineRulerModel';
 
@@ -22,6 +24,7 @@ export struct DesktopTimelineRuler {
   onViewport: (value: DesktopTimelineRulerViewport) => void = (): void => {};
   @Prop @Watch('reportsChanged') reports: DesktopTimelineReport[] = [];
   @Prop @Watch('activeChanged') active: boolean = false;
+  @Prop @Watch('wheelModifierChanged') wheelModifierHeld: boolean = false;
   onOpen: (id: string) => void = (_id: string): void => {};
 
   @State private levels: number[] = [];
@@ -56,6 +59,9 @@ export struct DesktopTimelineRuler {
   private readCadenceRequested: boolean = false;
   private newest: string = '';
   private priorPinch: number = 1;
+  @State private axisZooming: boolean = false;
+  private axisTimer: number = -1;
+  private viewportWindowY?: number;
 
   aboutToAppear(): void {
     this.mounted = true;
@@ -77,6 +83,7 @@ export struct DesktopTimelineRuler {
 
   aboutToDisappear(): void {
     this.mounted = false;
+    this.clearZoomInput();
     this.moveVersion++;
     this.leftVersion++;
     this.stopClock();
@@ -95,7 +102,7 @@ export struct DesktopTimelineRuler {
       this.restoreMeasuredViewport();
       if (this.measuredHeight && this.pendingViewport === undefined) { this.seek(this.scrollTop); }
       this.restoreHorizontal();
-    }
+    } else { this.clearZoomInput(); }
   }
 
   private tick(): void {
@@ -299,7 +306,8 @@ export struct DesktopTimelineRuler {
 
   private fit(level: number, target?: DesktopTimelineReport, pin: boolean = true): void {
     const near = this.timeScale().time(this.scrollTop + this.viewport * 0.35);
-    const window = desktopTimelineRulerFit(this.reports, level, this.span(level), this.anchor, this.viewport, near, target);
+    const window = desktopTimelineRulerFit(this.reports, level, this.span(level), this.anchor, this.viewport, near,
+      target, this.reportFontSize());
     this.firstFit = false;
     this.focusLevel = level;
     this.zoom = window.zoom;
@@ -315,13 +323,49 @@ export struct DesktopTimelineRuler {
     } else { this.fit(level); }
   }
 
+  private clearZoomInput(): void {
+    clearTimeout(this.axisTimer);
+    this.axisZooming = false;
+  }
+
+  private wheelModifierChanged(): void {
+    if (!this.wheelModifierHeld) { this.clearZoomInput(); }
+  }
+
+  private rulerKey(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down) { return false; }
+    if (event.keyCode === KeyCode.KEYCODE_EQUALS || event.keyCode === KeyCode.KEYCODE_MINUS) {
+      this.adjustZoom(event.keyCode === KeyCode.KEYCODE_MINUS ? -1 : 1, this.viewport / 2);
+      return true;
+    }
+    return false;
+  }
+
+  private rulerWheel(event: AxisEvent): void {
+    const delta = event.getVerticalAxisValue();
+    if (!this.active || delta === 0) { return; }
+    clearTimeout(this.axisTimer);
+    this.axisZooming = event.getModifierKeyState?.(['Ctrl']) === true || this.wheelModifierHeld;
+    if (!this.axisZooming) { return; }
+    // The native Scroll also animates a wheel event over subsequent frames.
+    this.axisTimer = setTimeout((): void => { this.axisZooming = false; }, 260);
+    const pointer = this.viewportWindowY !== undefined && Number.isFinite(event.windowY) ?
+      event.windowY - this.viewportWindowY : event.y;
+    this.adjustZoom(-Math.max(-240, Math.min(240, delta)) / 300, pointer);
+  }
+
+  private rulerScrollOffset(offset: number): number {
+    return this.axisZooming || this.wheelModifierHeld ? 0 : offset;
+  }
+
   private adjustZoom(delta: number, pointer: number): void {
     const next = Math.max(0, Math.min(TIMELINE_RULER_MAX_ZOOM, this.zoom + delta));
     if (Math.abs(next - this.zoom) < 0.001) { return; }
     const prior = this.timeScale();
+    const actual = this.incomingTop < 0 ? this.vertical.currentOffset().yOffset : this.scrollTop;
     this.firstFit = false;
     this.zoom = next;
-    const offset = desktopTimelineZoomOffset(prior, this.timeScale(), this.scrollTop,
+    const offset = desktopTimelineZoomOffset(prior, this.timeScale(), Number.isFinite(actual) ? actual : this.scrollTop,
       Math.max(0, Math.min(this.viewport, pointer)), this.viewport);
     if (offset > 0) { this.pinned = true; }
     this.seek(offset);
@@ -385,8 +429,14 @@ export struct DesktopTimelineRuler {
     return this.clockText(time);
   }
 
+  private reportFontSize(): number {
+    const ui = this.getUIContext();
+    return ui.px2vp(ui.fp2px(TIMELINE_RULER_REPORT_FONT_SIZE));
+  }
+
   private needsFocus(block: DesktopTimelineRulerBlock): boolean {
-    return block.report.level !== this.focusLevel || (block.height <= 12 && this.zoom < TIMELINE_RULER_MAX_ZOOM);
+    return block.report.level !== this.focusLevel || desktopTimelineReportNeedsFit(block.report, this.timeScale(),
+      this.scrollTop, this.viewport, this.zoom, this.reportFontSize());
   }
 
   private activate(block: DesktopTimelineRulerBlock): void {
@@ -420,7 +470,7 @@ export struct DesktopTimelineRuler {
             Text(this.clockText(block.report.end) + ' · ' + this.periodText(block.report.end - block.report.start))
               .fontSize(10).fontColor($r('sys.color.font_secondary')).width('100%')
           }
-          Text(block.report.progress[0] ?? '').fontSize(12).maxLines(block.height > 70 ? 3 : 1)
+          Text(block.report.progress[0] ?? '').fontSize(TIMELINE_RULER_REPORT_FONT_SIZE).maxLines(block.height > 70 ? 3 : 1)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         } else if (block.height > 15) {
           Text('↗').fontSize(11).fontColor($r('sys.color.font_secondary'))
@@ -486,33 +536,32 @@ export struct DesktopTimelineRuler {
             Text($r('app.string.desktop_timeline_time_axis')).width(RULER_WIDTH).textAlign(TextAlign.Center).fontSize(11)
             ForEach(this.levels, (level: number): void => { this.Level(level) }, (level: number): string => String(level))
           }.height(36).width(this.rulerWidth()).borderWidth({ bottom: 0.5 }).borderColor($r('sys.color.comp_divider'))
-          Scroll(this.vertical) { this.Canvas() }
-            .key('desktopTimelineRulerViewport').width(this.rulerWidth()).layoutWeight(1)
-            .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None).focusable(true)
-            .onDidScroll((_offset: number, _state: ScrollState): void => { this.didScroll(); })
-            .onAreaChange((_old: Area, area: Area): void => { this.measureHeight(Number(area.height)); })
-            .onKeyEvent((event: KeyEvent): boolean => {
-              if (event.type !== KeyType.Down) { return false; }
-              if (event.keyCode === KeyCode.KEYCODE_EQUALS || event.keyCode === KeyCode.KEYCODE_MINUS) {
-                this.adjustZoom(event.keyCode === KeyCode.KEYCODE_MINUS ? -1 : 1, this.viewport / 2);
-                return true;
-              }
-              return false;
+          Stack() {
+            Scroll(this.vertical) { this.Canvas() }
+              .key('desktopTimelineRulerViewport').width('100%').height('100%')
+              .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None)
+              .enableScrollInteraction(!this.wheelModifierHeld && !this.axisZooming)
+              .onScrollFrameBegin((offset: number, _state: ScrollState): OnScrollFrameBeginHandlerResult =>
+                ({ offsetRemain: this.rulerScrollOffset(offset) }))
+              .onDidScroll((_offset: number, _state: ScrollState): void => { this.didScroll(); })
+              .onAxisEvent((event: AxisEvent): void => { this.rulerWheel(event); })
+              .parallelGesture(PinchGesture({ fingers: 2 })
+                .onActionStart((): void => { this.priorPinch = 1; })
+                .onActionUpdate((event: PinchGestureEvent): void => {
+                  if (event.scale <= 0) { return; }
+                  const change = Math.log(event.scale / this.priorPinch);
+                  if (Math.abs(change) < 0.03) { return; }
+                  this.priorPinch = event.scale;
+                  this.adjustZoom(change * 1.3, event.pinchCenterY);
+                }))
+          }.width(this.rulerWidth()).layoutWeight(1).focusable(true).focusOnTouch(true)
+            .focusBox({ strokeWidth: LengthMetrics.vp(0) })
+            .onAreaChange((_old: Area, area: Area): void => {
+              const location = Number(area.globalPosition.y);
+              if (Number.isFinite(location)) { this.viewportWindowY = location; }
+              this.measureHeight(Number(area.height));
             })
-            .onAxisEvent((event: AxisEvent): void => {
-              if (event.getModifierKeyState?.(['Ctrl']) !== true && event.getModifierKeyState?.(['Meta']) !== true) { return; }
-              const delta = event.getVerticalAxisValue();
-              if (delta !== 0) { this.adjustZoom(Math.max(-0.8, Math.min(0.8, -delta / 300)), event.y); }
-            })
-            .parallelGesture(PinchGesture({ fingers: 2 })
-              .onActionStart((): void => { this.priorPinch = 1; })
-              .onActionUpdate((event: PinchGestureEvent): void => {
-                if (event.scale <= 0) { return; }
-                const change = Math.log(event.scale / this.priorPinch);
-                if (Math.abs(change) < 0.03) { return; }
-                this.priorPinch = event.scale;
-                this.adjustZoom(change * 1.3, event.pinchCenterY);
-              }))
+            .onKeyEvent((event: KeyEvent): boolean => this.rulerKey(event))
         }.width(this.rulerWidth()).height('100%')
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).width('100%').layoutWeight(1)
         .key('desktopTimelineRulerHorizontalViewport')

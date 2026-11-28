@@ -27,6 +27,8 @@ import { emptyDesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSe
 import type { DesktopAccountSettingsIdentity } from '../desktop/DesktopAccountSettingsModel';
 import type { DesktopPresetDefaultSync } from '../desktop/DesktopPresetDefaults';
 import { desktopPiAiReasoningLabel } from '../desktop/DesktopPiAiReasoning';
+import { isDesktopPiAiCatalogRoute } from '../desktop/DesktopPiAiInheritance';
+import type { SettingsNamespaceState, SettingsPathWrite } from 'appstate';
 import { emptyDesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 import type { DesktopCodingToolsSnapshot } from '../desktop/DesktopCodingTools';
 
@@ -179,6 +181,7 @@ import {
   deriveKeyRef,
   emptyModelRow,
   emptyProviderView,
+  invalidPiAiCapacity,
   modelsDiffer,
   modelsPayload,
   piAiFieldPath,
@@ -668,6 +671,13 @@ export struct IndexContent {
   /** 正在编辑的表单草稿（真值在此；浮层只渲染） */
   @State piAiDraft: PiAiProviderView = emptyProviderView('');
   @State private piAiModelKeys: number[] = [];
+  @State private piAiCatalogStandard: boolean = false;
+  @State private piAiCatalogWritable: boolean = false;
+  @State private piAiModelsOverridden: boolean = false;
+  private piAiModelsStoredOverride: boolean = false;
+  private piAiRestoreRequested: boolean = false;
+  private piAiEditRevision: number = -1;
+  private piAiCatalogEpoch: number = 0;
   private piAiNextModelKey: number = 0;
   /** 进入编辑时的**原始值**：用来算"哪些字段真的变了"，避免无脑全量写回 */
   private piAiOriginal: PiAiProviderView | undefined = undefined;
@@ -2441,6 +2451,10 @@ export struct IndexContent {
         mode: this.piAiMode,
         draft: this.piAiDraft,
         modelKeys: this.piAiModelKeys,
+        catalogStandard: this.piAiCatalogStandard,
+        catalogWritable: this.piAiCatalogWritable,
+        modelsOverridden: this.piAiModelsOverridden,
+        onRestoreModels: (): void => { this.restorePiAiModels(); },
         protocols: this.piAiProtocols,
         reasoningLevels: this.piAiReasoningLevels,
         baseURLPlaceholder: baseURLPlaceholder(this.piAiDraft.api),
@@ -2480,23 +2494,27 @@ export struct IndexContent {
           if (index >= 0 && index < this.piAiDraft.models.length) {
             this.piAiDraft.models = this.piAiDraft.models.map((model: PiAiModelRow, position: number): PiAiModelRow =>
               position === index ? row : model);
+            this.updatePiAiModelLayer();
             this.clearPiAiFieldError();
           }
         },
         onAddModel: () => {
           this.piAiDraft.models = [...this.piAiDraft.models, emptyModelRow()];
+          this.updatePiAiModelLayer();
           this.piAiModelKeys = [...this.piAiModelKeys, ++this.piAiNextModelKey];
         },
         onAdoptModels: (models: PiAiModelRow[]): void => {
           this.piAiModelKeys = desktopPiAiAdoptedKeys(this.piAiDraft.models, this.piAiModelKeys, models,
             (): number => ++this.piAiNextModelKey);
           this.piAiDraft.models = models;
+          this.updatePiAiModelLayer();
           this.clearPiAiFieldError();
         },
         onRemoveModel: (index: number) => {
           // 守卫：官方要求 ≥1 个模型，删空会让表单永远不可提交
           if (this.piAiDraft.models.length > 1 && index >= 0 && index < this.piAiDraft.models.length) {
             this.piAiDraft.models = this.piAiDraft.models.filter((_model: PiAiModelRow, at: number): boolean => at !== index);
+            this.updatePiAiModelLayer();
             this.piAiModelKeys = this.piAiModelKeys.filter((_key: number, at: number): boolean => at !== index);
           }
         },
@@ -3154,6 +3172,7 @@ export struct IndexContent {
     models.splice(to, 0, model);
     keys.splice(to, 0, source);
     this.piAiDraft.models = models;
+    this.updatePiAiModelLayer();
     this.piAiModelKeys = keys;
     this.clearPiAiFieldError();
   }
@@ -3161,6 +3180,14 @@ export struct IndexContent {
   /** Keep the original provider so saving can submit only the fields edited in the draft. */
   private openPiAiSheet(mode: string, route: string): void {
     const hub: SessionHub = SessionHub.shared();
+    const snapshot = hub.snapshot();
+    const epoch = ++this.piAiCatalogEpoch;
+    this.piAiCatalogStandard = false;
+    this.piAiCatalogWritable = false;
+    this.piAiModelsOverridden = false;
+    this.piAiModelsStoredOverride = false;
+    this.piAiRestoreRequested = false;
+    this.piAiEditRevision = -1;
     this.sheetNoteOwner = 'piai';
     this.credentialNote = '';
     this.piAiFieldError = '';
@@ -3171,7 +3198,7 @@ export struct IndexContent {
     this.piAiMode = mode;
     if (mode === PiAiSheetMode.EDIT) {
       let found: PiAiProviderView | undefined = undefined;
-      const list: PiAiProviderView[] = hub.snapshot().piAiProviders;
+      const list: PiAiProviderView[] = snapshot.piAiProviders;
       for (let i = 0; i < list.length; i++) {
         if (list[i].route === route) {
           found = list[i];
@@ -3186,6 +3213,12 @@ export struct IndexContent {
       this.piAiDraft = { route: found.route, displayName: found.displayName, baseURL: found.baseURL,
         api: found.api, apiKeyEnv: found.apiKeyEnv, defaultInput: found.defaultInput, models: found.models.slice() };
       this.piAiOriginal = found;
+      this.piAiModelsOverridden = found.modelLayer?.userOverride === true;
+      this.piAiModelsStoredOverride = this.piAiModelsOverridden;
+      const namespace = snapshot.settingsStates.find((state: SettingsNamespaceState): boolean => state.ns === PIAI_SETTINGS_NS);
+      this.piAiEditRevision = namespace?.revision ?? -1;
+      this.piAiCatalogWritable = namespace?.writable === true && this.piAiEditRevision >= 0;
+      if (found.modelLayer !== undefined) { this.readPiAiCatalogIdentity(route, epoch); }
       this.piAiKeyRef = this.piAiKeyRefOf(found.route, found.apiKeyEnv);
     } else {
       // 新建：协议预选 schema 的第一个候选（官方 `protocols[0]`）；
@@ -3198,6 +3231,37 @@ export struct IndexContent {
     this.piAiModelKeys = this.piAiDraft.models.map((_row: PiAiModelRow): number => ++this.piAiNextModelKey);
     // 密钥状态：界面要显示 Host 的**实际**状态，而不是"我们以为写过"
     this.piAiKeyConfigured = this.credentialConfiguredOf(this.piAiKeyRef);
+  }
+
+  private async readPiAiCatalogIdentity(route: string, epoch: number): Promise<void> {
+    const url = this.desktopSettingsUrl;
+    try {
+      const providers = await SessionHub.shared().configurableModelProviders();
+      if (epoch === this.piAiCatalogEpoch && this.desktopSettingsUrl === url &&
+          this.piAiMode === PiAiSheetMode.EDIT && this.piAiDraft.route === route) {
+        this.piAiCatalogStandard = isDesktopPiAiCatalogRoute(providers, route);
+      }
+    } catch (_) {}
+  }
+
+  private restorePiAiModels(): void {
+    const inherited = this.piAiOriginal?.modelLayer?.inherited;
+    if (this.piAiMode !== PiAiSheetMode.EDIT || !this.piAiCatalogStandard || !this.piAiCatalogWritable ||
+        !this.piAiModelsOverridden || this.piAiBusy || inherited === undefined) { return; }
+    this.piAiRestoreRequested = true;
+    this.piAiModelsOverridden = false;
+    this.piAiDraft.models = inherited.slice();
+    this.piAiModelKeys = inherited.map((_row: PiAiModelRow): number => ++this.piAiNextModelKey);
+    this.clearPiAiFieldError();
+  }
+
+  private updatePiAiModelLayer(): void {
+    const inherited = this.piAiOriginal?.modelLayer?.inherited;
+    const models = this.piAiDraft.models;
+    // Rebinding the inputs can report the displayed values without any user edit.
+    this.piAiModelsOverridden = (this.piAiModelsStoredOverride && !this.piAiRestoreRequested) ||
+      inherited === undefined || modelsDiffer(inherited, models) || models.some((row: PiAiModelRow): boolean =>
+        invalidPiAiCapacity(row.contextWindow) || invalidPiAiCapacity(row.maxTokens));
   }
 
   /** 某个引用当前是否已配置（读中枢快照；找不到就是未配置，不猜） */
@@ -3215,6 +3279,7 @@ export struct IndexContent {
   }
 
   private closePiAiSheet(): void {
+    this.piAiCatalogEpoch++;
     this.piAiMode = '';
     this.piAiKeyDraft = '';
     this.piAiFieldError = '';
@@ -3252,25 +3317,32 @@ export struct IndexContent {
       }
     }
     // ② 端点
-    const urlCheck: PiAiFieldCheck = checkBaseURL(this.piAiDraft.baseURL);
-    if (!urlCheck.ok) {
-      this.piAiFieldError = urlCheck.message;
-      return;
+    if (!this.piAiCatalogStandard || this.piAiOriginal?.baseURL !== this.piAiDraft.baseURL) {
+      const urlCheck: PiAiFieldCheck = checkBaseURL(this.piAiDraft.baseURL);
+      if (!urlCheck.ok) {
+        this.piAiFieldError = urlCheck.message;
+        return;
+      }
     }
     // ③ 协议（必须来自 Host 报告的候选）
-    const apiCheck: PiAiFieldCheck = checkProtocol(this.piAiDraft.api, hub.snapshot().piAiProtocols);
-    if (!apiCheck.ok) {
-      this.piAiFieldError = apiCheck.message;
-      return;
+    if (!this.piAiCatalogStandard || this.piAiOriginal?.api !== this.piAiDraft.api) {
+      const apiCheck: PiAiFieldCheck = checkProtocol(this.piAiDraft.api, hub.snapshot().piAiProtocols);
+      if (!apiCheck.ok) {
+        this.piAiFieldError = apiCheck.message;
+        return;
+      }
     }
     // ④ 模型目录
-    const modelCheck: PiAiFieldCheck = checkModels(this.piAiDraft.models);
-    if (!modelCheck.ok) {
-      this.piAiFieldError = modelCheck.message;
-      return;
+    const inheritsModels = this.piAiCatalogStandard && !this.piAiModelsOverridden;
+    if (!inheritsModels) {
+      const modelCheck: PiAiFieldCheck = checkModels(this.piAiDraft.models);
+      if (!modelCheck.ok) {
+        this.piAiFieldError = modelCheck.message;
+        return;
+      }
     }
     const reasoning = piAiReasoningProtocol(this.piAiDraft.api, hub.snapshot().piAiReasoningLevels);
-    for (let index = 0; index < this.piAiDraft.models.length; index++) {
+    for (let index = 0; (!inheritsModels || reasoning.levelsOnly) && index < this.piAiDraft.models.length; index++) {
       const problem = checkPiAiModelReasoning(this.piAiDraft.models[index], reasoning);
       if (problem === '') { continue; }
       const label = desktopPiAiReasoningLabel(problem);
@@ -3318,23 +3390,54 @@ export struct IndexContent {
         return;
       }
       const changed: string[] = changedScalarFields(before, this.piAiDraft);
-      for (let i = 0; i < changed.length; i++) {
-        const res: SettingsWriteResult = await hub.writeSettingPath(PIAI_SETTINGS_NS,
-          piAiFieldPath(route, changed[i]), scalarFieldValue(this.piAiDraft, changed[i]));
-        if (res.outcome !== SettingsWriteOutcome.OK) {
+      if (inheritsModels && this.piAiModelsStoredOverride) {
+        if (!this.piAiCatalogWritable || this.piAiEditRevision < 0) {
           this.piAiBusy = false;
-          this.credentialNote = res.message;
           return;
+        }
+        const epoch = this.piAiCatalogEpoch;
+        const writes = changed.map((field: string): SettingsPathWrite => ({
+          path: piAiFieldPath(route, field), value: scalarFieldValue(this.piAiDraft, field)
+        }));
+        const result = await hub.unsetSettingPath(PIAI_SETTINGS_NS, piAiModelsPath(route), this.piAiEditRevision, writes);
+        if (epoch !== this.piAiCatalogEpoch) { return; }
+        if (result.outcome !== SettingsWriteOutcome.OK) {
+          this.piAiBusy = false;
+          this.credentialNote = result.message;
+          return;
+        }
+        this.piAiModelsStoredOverride = false;
+        this.piAiRestoreRequested = false;
+        this.piAiEditRevision = result.actualRevision;
+        this.piAiOriginal = { route: before.route, displayName: this.piAiDraft.displayName, baseURL: this.piAiDraft.baseURL,
+          api: this.piAiDraft.api, apiKeyEnv: before.apiKeyEnv, defaultInput: before.defaultInput,
+          models: this.piAiDraft.models.slice(), modelLayer: before.modelLayer };
+      } else {
+        for (let i = 0; i < changed.length; i++) {
+          const res: SettingsWriteResult = await hub.writeSettingPath(PIAI_SETTINGS_NS,
+            piAiFieldPath(route, changed[i]), scalarFieldValue(this.piAiDraft, changed[i]));
+          if (res.outcome !== SettingsWriteOutcome.OK) {
+            this.piAiBusy = false;
+            this.credentialNote = res.message;
+            return;
+          }
+          if (this.piAiCatalogStandard) { this.piAiEditRevision = res.actualRevision; }
         }
       }
       // 模型目录：**整值写**（数组元素无法按路径寻址，见 PiAiProviders 的实测表）
-      if (modelsDiffer(before.models, this.piAiDraft.models)) {
+      if (!inheritsModels && (modelsDiffer(before.models, this.piAiDraft.models) ||
+        (this.piAiCatalogStandard && !this.piAiModelsStoredOverride))) {
         const res: SettingsWriteResult = await hub.writeSettingPath(PIAI_SETTINGS_NS,
           piAiModelsPath(route), modelsPayload(this.piAiDraft.models) as Object);
         if (res.outcome !== SettingsWriteOutcome.OK) {
           this.piAiBusy = false;
           this.credentialNote = res.message;
           return;
+        }
+        if (this.piAiCatalogStandard) {
+          this.piAiModelsStoredOverride = true;
+          this.piAiRestoreRequested = false;
+          this.piAiEditRevision = res.actualRevision;
         }
       }
       writeOk = true;

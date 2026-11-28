@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_catalog_restore",
+      "value": "Restore defaults"
+    },
+    {
+      "name": "desktop_model_catalog_inherited",
+      "value": "Using the adapter defaults"
+    },
+    {
+      "name": "desktop_model_catalog_customized",
+      "value": "Customized model catalog"
+    },
+    {
+      "name": "desktop_model_catalog_empty",
+      "value": "No models will be shown in the selector. Unlisted IDs can still be sent directly."
+    }
+  ]
+}

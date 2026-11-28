@@ -5,6 +5,7 @@ export const TIMELINE_RULER_MINUTE: number = 60000;
 export const TIMELINE_RULER_DAY: number = 24 * TIMELINE_RULER_HOUR;
 export const TIMELINE_RULER_WEEK: number = 7 * TIMELINE_RULER_DAY;
 export const TIMELINE_RULER_MAX_ZOOM: number = 6;
+export const TIMELINE_RULER_REPORT_FONT_SIZE: number = 13;
 const CHUNK_SIZE: number = 64;
 const MIN_BAR: number = 8;
 
@@ -105,8 +106,22 @@ export function desktopTimelineReportInWeek(row: DesktopTimelineReport, anchor: 
   return row.end > anchor - TIMELINE_RULER_WEEK && row.start < anchor;
 }
 
+function readableReportDensity(report: DesktopTimelineReport, fontSize: number): number {
+  return fontSize * 8 * TIMELINE_RULER_HOUR / Math.max(1, report.end - report.start);
+}
+
+export function desktopTimelineReportNeedsFit(report: DesktopTimelineReport, scale: DesktopTimelineScale,
+  offset: number, viewport: number, zoom: number, fontSize: number): boolean {
+  // Use the report's time span, before the hit target is enlarged or trimmed for rendering.
+  const top = scale.position(report.end);
+  const size = Math.max(1, scale.position(report.start) - top);
+  const visible = Math.max(0, Math.min(top + size, offset + viewport) - Math.max(top, offset));
+  return visible < fontSize * 1.5 + 4 && zoom < zoomFor(readableReportDensity(report, fontSize), viewport) - 0.001;
+}
+
 export function desktopTimelineRulerFit(reports: DesktopTimelineReport[], level: number, span: number, anchor: number,
-  viewport: number, near: number, target?: DesktopTimelineReport): DesktopTimelineRulerWindow {
+  viewport: number, near: number, target?: DesktopTimelineReport,
+  fontSize: number = TIMELINE_RULER_REPORT_FONT_SIZE): DesktopTimelineRulerWindow {
   const rows = reports.filter((row: DesktopTimelineReport): boolean =>
     row.level === level && desktopTimelineReportInWeek(row, anchor));
   let nearest = target;
@@ -124,7 +139,7 @@ export function desktopTimelineRulerFit(reports: DesktopTimelineReport[], level:
   const duration = Math.max(TIMELINE_RULER_MINUTE, target === undefined ?
     (durations[Math.floor(durations.length / 2)] ?? span) : target.end - target.start);
   const fit = viewport * TIMELINE_RULER_HOUR / (duration * (target === undefined ? (durations.length || 3) + 0.5 : 1.25));
-  const readable = target === undefined ? 0 : 92 * TIMELINE_RULER_HOUR / Math.max(1, target.end - target.start);
+  const readable = target === undefined ? 0 : readableReportDensity(target, fontSize);
   const zoom = zoomFor(Math.max(viewport / 168, Math.min(viewport * 60, Math.max(fit, readable))), viewport);
   const scale = desktopTimelineScale(anchor, zoom, viewport);
   return { zoom: zoom, offset: scale.offset(scale.position(nearest?.end ?? anchor) - viewport * 0.08, viewport) };

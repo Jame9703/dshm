@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_catalog_restore",
+      "value": "恢复默认模型"
+    },
+    {
+      "name": "desktop_model_catalog_inherited",
+      "value": "正在使用适配器默认模型"
+    },
+    {
+      "name": "desktop_model_catalog_customized",
+      "value": "已自定义模型目录"
+    },
+    {
+      "name": "desktop_model_catalog_empty",
+      "value": "模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。"
+    }
+  ]
+}

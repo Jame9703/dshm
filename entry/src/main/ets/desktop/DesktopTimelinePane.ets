@@ -62,6 +62,7 @@ export struct DesktopTimelinePane {
   @Prop progressDecimals: number = 2;
   @Prop segmentedProgress: boolean = true;
   @Prop linkLost: boolean = false;
+  @Prop wheelModifierHeld: boolean = false;
   onRetry: () => void = (): void => {};
   onTaskRoot: (session: string, tree: string) => void = (): void => {};
   onWeb: () => void = (): void => {};
@@ -1420,6 +1421,7 @@ export struct DesktopTimelinePane {
       }
       if (this.rulerVisited) {
         DesktopTimelineRuler({ host: this.host, active: this.active && this.rulerShown(), reports: this.view.reports,
+          wheelModifierHeld: this.wheelModifierHeld,
           savedViewport: this.viewportMemory.ruler,
           onViewport: (value: DesktopTimelineRulerViewport): void => {
             if (this.active && this.ownsViewport()) { this.viewportMemory.ruler = value; }

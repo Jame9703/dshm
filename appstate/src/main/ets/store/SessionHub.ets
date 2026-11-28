@@ -142,6 +142,7 @@ import {
   PIAI_SETTINGS_NS,
   piAiProtocolChoices,
   piAiReasoningLevelChoices,
+  piAiSchemaDefaultModels,
   projectPiAiProviders
 } from '../model/PiAiProviders';
 import type { PiAiProviderView } from '../model/PiAiProviders';
@@ -1850,9 +1851,11 @@ export class SessionHub {
    * `unset` 的语义是**回落 schema 默认**，不是"设为 null"（`null` 在若干 schema 里
    * 是合法取值）。界面上必须说成"恢复默认"——把两者混为一谈会让用户以为自己清空了、
    * 实际只是回到默认（或反过来）。
+   * 同一个草稿里明确编辑的其他路径可随 `writes` 一起提交，所有操作共用一个版本围栏。
    */
-  async unsetSettingPath(ns: string, path: string[]): Promise<SettingsWriteResult> {
-    if (ns.length === 0 || path.length === 0) {
+  async unsetSettingPath(ns: string, path: string[], expectedRevision?: number,
+    writes: SettingsPathWrite[] = []): Promise<SettingsWriteResult> {
+    if (ns.length === 0 || path.length === 0 || writes.some((write: SettingsPathWrite): boolean => write.path.length === 0)) {
       return { outcome: SettingsWriteOutcome.FAILED, actualRevision: -1, message: '删除路径为空，已拒绝。' };
     }
     const state: SettingsNamespaceState | undefined = this.namespaceState(ns);
@@ -1877,16 +1880,21 @@ export class SessionHub {
     const op: Record<string, Object> = {};
     op['op'] = 'unset';
     op['path'] = path;
+    const operations: Object[] = [op];
+    for (const write of writes) {
+      const set: Record<string, Object> = { 'op': 'set', 'path': write.path, 'value': write.value };
+      operations.push(set);
+    }
     const args: Record<string, Object> = {};
     args['ns'] = ns;
-    args['ops'] = [op as Object];
-    args['expectedRevision'] = state.revision;
+    args['ops'] = operations;
+    args['expectedRevision'] = expectedRevision ?? state.revision;
     const result: RpcResult = await this.conn.call(SETTINGS_MUTATE_ENDPOINT, args as Object);
     if (result.ok) {
       await this.refreshSettings();
       this.record(`settings/unset ok ${ns} ${path.join('.')}`);
       this.notify();
-      return { outcome: SettingsWriteOutcome.OK, actualRevision: state.revision,
+      return { outcome: SettingsWriteOutcome.OK, actualRevision: getNumber(result.value, 'revision') ?? state.revision,
         message: `已恢复 ${ns} ${path.join('.')} 的默认值。` };
     }
     const failure: RemoteFailure | undefined = result.error;
@@ -2050,8 +2058,11 @@ export class SessionHub {
       return;
     }
     const providers: Object | undefined = fieldOf(fieldOf(ns, 'value'), 'providers');
-    this.piAiViews = projectPiAiProviders(providers);
     const schema: Object | undefined = fieldOf(ns, 'schema');
+    const refs = fieldOf(schema, 'refs');
+    const uid = getNumber(schema, 'uid') ?? 0;
+    this.piAiViews = projectPiAiProviders(providers, { baseProviders: fieldOf(fieldOf(ns, 'base'), 'providers'),
+      userProviders: fieldOf(fieldOf(ns, 'user'), 'providers'), schemaDefaultModels: piAiSchemaDefaultModels(refs, uid) });
     this.piAiProtocolList = schema === undefined
       ? [] : piAiProtocolChoices(fieldOf(schema, 'refs'), getNumber(schema, 'uid') ?? 0);
     this.piAiReasoningLevelList = schema === undefined
@@ -3581,10 +3592,14 @@ export class SessionHub {
     return notice('feedback.withdrawn');
   }
 
-  /** 从"提供方目录"类端点取名字数组；形状不识别时返回空数组并记账（不猜） */
-  private async providerNamesFrom(endpoint: string): Promise<string[]> {
+  async configurableModelProviders(): Promise<Object[]> {
+    return this.providerEntriesFrom(LLM_LIST_CONFIGURABLE_PROVIDERS_ENDPOINT);
+  }
+
+  /** 读取 Host 的提供方目录条目。 */
+  private async providerEntriesFrom(endpoint: string): Promise<Object[]> {
     const inner: Record<string, Object> = {};
-    const args: Object | undefined = argsFor(endpoint, inner as Object);
+    const args: Object | undefined = argsFor(endpoint, inner);
     if (args === undefined) {
       this.record(`${endpoint} 缺少参数契约`);
       return [];
@@ -3599,18 +3614,17 @@ export class SessionHub {
     if (value === undefined) {
       return [];
     }
-    let raw: Object[] | undefined = getArray(value, 'providers');
+    const envelope: Record<string, Object> = { 'items': value };
+    const raw = getArray(value, 'providers') ?? getArray(value, 'items') ?? getArray(envelope, 'items');
     if (raw === undefined) {
-      raw = getArray(value, 'items');
-    }
-    if (raw === undefined && Array.isArray(value)) {
-      raw = value as Object[];
-    }
-    if (raw === undefined) {
-      const keys: string = Object.keys(value as Record<string, Object>).join(', ');
-      this.record(`${endpoint} shape unknown keys=${keys}`);
+      this.record(`${endpoint} 返回的目录形状不受支持`);
       return [];
     }
+    return raw;
+  }
+
+  private async providerNamesFrom(endpoint: string): Promise<string[]> {
+    const raw = await this.providerEntriesFrom(endpoint);
     const out: string[] = [];
     for (let i = 0; i < raw.length; i++) {
       const one: Object = raw[i];
@@ -4515,6 +4529,11 @@ export interface AgentPresetRow {
   trust: string;
   isDefault: boolean;
   broken?: string;
+}
+
+export interface SettingsPathWrite {
+  path: string[];
+  value: Object;
 }
 
 /** 是否随附（只读）预设 */

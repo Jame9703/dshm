@@ -88,6 +88,7 @@ export type { AgentPresetRow } from './store/SessionHub';
 /** E253：消息反馈行（供界面按 messageId 取用） */
 export type { FeedbackCategory, FeedbackRow } from './store/SessionHub';
 export { presetIsBundled } from './store/SessionHub';
+export type { SettingsPathWrite } from './store/SessionHub';
 /** E135：技能清单行 */
 export type { SkillRow } from './store/SessionHub';
 /** E145：结构化操作回执（中枢产出码+参数，视图层本地化） */
@@ -148,6 +149,7 @@ export {
   piAiModelsPath,
   piAiProtocolChoices,
   piAiReasoningLevelChoices,
+  piAiSchemaDefaultModels,
   piAiReasoningProtocol,
   readPiAiReasoningEntries,
   piAiReasoningWireValid,

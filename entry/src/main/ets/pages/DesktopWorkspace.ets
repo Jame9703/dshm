@@ -422,6 +422,9 @@ struct DesktopWorkspace {
   @State private pageVisible: boolean = false;
   private readingWindow?: window.Window;
   private readingFocused: boolean = false;
+  // A zoom can rebuild the focused report while the modifier remains pressed in this window.
+  private readonly timelineZoomKeys = new Set<number>();
+  @State private timelineWheelModifier: boolean = false;
   private readonly readingWindowEvent = (event: window.WindowEventType): void => {
     if (event === window.WindowEventType.WINDOW_HIDDEN) {
       this.accountNoticesWindowShown = false;
@@ -429,6 +432,7 @@ struct DesktopWorkspace {
       this.accountNoticesWindowShown = true;
     }
     if (event === window.WindowEventType.WINDOW_HIDDEN || event === window.WindowEventType.WINDOW_INACTIVE) {
+      this.resetTimelineWheelModifier();
       this.noteQuotaBrowserFocus(false);
       this.noteOnboardingBrowserFocus(false);
     } else if (event === window.WindowEventType.WINDOW_ACTIVE) {
@@ -512,12 +516,26 @@ struct DesktopWorkspace {
 
   onPageHide(): void {
     this.pageVisible = false;
+    this.resetTimelineWheelModifier();
     this.noteQuotaBrowserFocus(false);
     this.noteOnboardingBrowserFocus(false);
     this.shortcutsOpen = false;
     this.clearSessionDrag();
     this.clearWorkspaceDrag();
     this.syncReading();
+  }
+
+  private resetTimelineWheelModifier(): void {
+    this.timelineZoomKeys.clear();
+    this.timelineWheelModifier = false;
+  }
+
+  private updateTimelineWheelModifier(event: KeyEvent): void {
+    if (event.keyCode !== KeyCode.KEYCODE_CTRL_LEFT && event.keyCode !== KeyCode.KEYCODE_CTRL_RIGHT &&
+      event.keyCode !== KeyCode.KEYCODE_META_LEFT && event.keyCode !== KeyCode.KEYCODE_META_RIGHT) { return; }
+    if (event.type === KeyType.Down) { this.timelineZoomKeys.add(event.keyCode); }
+    else { this.timelineZoomKeys.delete(event.keyCode); }
+    this.timelineWheelModifier = this.timelineZoomKeys.size > 0;
   }
 
   private syncReading(): void {
@@ -4839,6 +4857,7 @@ struct DesktopWorkspace {
   private DockBody(index: number, tab: DesktopDockTab) {
     if (tab.kind === DesktopDockKind.TIMELINE) {
       DesktopTimelinePane({ host: this.data?.actions, sessionId: this.sessionId, location: this.timelineLocation,
+        wheelModifierHeld: this.timelineWheelModifier,
         savedBrowse: this.timelineBrowse, draftBook: this.data?.timelineDrafts, viewportMemory: this.timelineViewport,
         onBrowse: (owner: string, state: DesktopTimelineBrowseState): void => {
           if (owner === this.sessionId && this.pageActive && this.dockTabShown(index, tab.id)) {
@@ -5383,6 +5402,7 @@ struct DesktopWorkspace {
           })
         }
       }.width('100%').height('100%')
+      .onKeyEvent((event: KeyEvent): void => { this.updateTimelineWheelModifier(event); })
       .onAreaChange((_, area: Area): void => {
         this.workbenchBounds = area;
         this.workbenchWidth = Number(area.width);

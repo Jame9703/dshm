@@ -17,6 +17,7 @@ export struct PiAiModelSettingsRow {
   @Prop reasoning: PiAiReasoningProtocol = { levels: [], levelsOnly: false };
   onChange: (row: PiAiModelRow) => void = (_row: PiAiModelRow): void => {};
   onRemove: () => void = (): void => {};
+  onOrderStep: (direction: number) => void = (): void => {};
   onOrderHold: (pressed: boolean) => void = (): void => {};
   onOrderBegin: (event: GestureEvent, handle: Area) => void = (): void => {};
   onOrderUpdate: (event: GestureEvent) => void = (): void => {};
@@ -90,7 +91,7 @@ export struct PiAiModelSettingsRow {
     Column({ space: Sp.XS }) {
       Row({ space: Sp.XS }) {
         DesktopPiAiReorderHandle({ handleId: this.reorderHandleId, rowPosition: this.rowIndex + 1,
-          enabledForEdit: this.editingEnabled, onDragBegin: this.onOrderBegin,
+          enabledForEdit: this.editingEnabled, onStep: this.onOrderStep, onDragBegin: this.onOrderBegin,
           onPointerHold: this.onOrderHold,
           onDragUpdate: this.onOrderUpdate, onPanFinished: this.onOrderEnd, onDragCancel: this.onOrderCancel })
         TextInput({ text: this.model.id, placeholder: $r('app.string.desktop_model_option_id') })

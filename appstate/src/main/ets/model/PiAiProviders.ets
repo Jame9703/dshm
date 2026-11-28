@@ -62,6 +62,18 @@ export interface PiAiProviderView {
   apiKeyEnv: string;
   defaultInput?: string[];
   models: PiAiModelRow[];
+  modelLayer?: PiAiModelLayer;
+}
+
+export interface PiAiModelLayer {
+  userOverride: boolean;
+  inherited: PiAiModelRow[];
+}
+
+export interface PiAiProviderLayers {
+  baseProviders?: Object;
+  userProviders?: Object;
+  schemaDefaultModels?: Object;
 }
 
 /** 一个字段的编辑结果：合法性与原因 */
@@ -209,12 +221,20 @@ function piAiSchemaNode(refs: Object | undefined, source?: Object): Object | und
   return typeof source === 'number' ? recOf(refs, source.toString()) : source;
 }
 
-/** Read `reasoningEfforts` dict keys from the serialized provider-model schema. */
-export function piAiReasoningLevelChoices(refs: Object | undefined, rootUid: number): string[] {
+function piAiModelsSchemaNode(refs: Object | undefined, rootUid: number): Object | undefined {
   const root = piAiSchemaNode(refs, rootUid);
   const providers = piAiSchemaNode(refs, recOf(recOf(root, 'dict'), 'providers'));
   const profile = piAiSchemaNode(refs, recOf(providers, 'inner'));
-  const models = piAiSchemaNode(refs, recOf(recOf(profile, 'dict'), 'models'));
+  return piAiSchemaNode(refs, recOf(recOf(profile, 'dict'), 'models'));
+}
+
+export function piAiSchemaDefaultModels(refs: Object | undefined, rootUid: number): Object | undefined {
+  return recOf(recOf(piAiModelsSchemaNode(refs, rootUid), 'meta'), 'default');
+}
+
+/** Read `reasoningEfforts` dict keys from the serialized provider-model schema. */
+export function piAiReasoningLevelChoices(refs: Object | undefined, rootUid: number): string[] {
+  const models = piAiModelsSchemaNode(refs, rootUid);
   const model = piAiSchemaNode(refs, recOf(models, 'inner'));
   const effort = piAiSchemaNode(refs, recOf(recOf(model, 'dict'), 'reasoningEfforts'));
   const branches = recOf(effort, 'list');
@@ -284,7 +304,7 @@ export function checkPiAiModelReasoning(model: PiAiModelRow, protocol: PiAiReaso
  * `api` 缺就是空串（界面显示"未选择"，与官方 `customApiUnset` 同语义）。
  * 编一个默认协议出来会让"用户没配"与"配了 openai-completions"两件事长得一样。
  */
-export function projectPiAiProviders(providers: Object | undefined): PiAiProviderView[] {
+export function projectPiAiProviders(providers: Object | undefined, layers?: PiAiProviderLayers): PiAiProviderView[] {
   const out: PiAiProviderView[] = [];
   if (!isRec(providers)) {
     return out;
@@ -307,6 +327,12 @@ export function projectPiAiProviders(providers: Object | undefined): PiAiProvide
     };
     const input = routeInputOf(profile);
     if (input !== undefined) { provider.defaultInput = input; }
+    if (layers !== undefined) {
+      const baseModels = recOf(recOf(layers.baseProviders, route), 'models');
+      const userModels = recOf(recOf(layers.userProviders, route), 'models');
+      provider.modelLayer = { userOverride: userModels !== undefined,
+        inherited: projectPiAiModels(baseModels ?? layers.schemaDefaultModels) };
+    }
     out.push(provider);
   }
   return out;
@@ -596,10 +622,10 @@ export function emptyProviderView(api: string): PiAiProviderView {
 export function changedScalarFields(before: PiAiProviderView,
   after: PiAiProviderView): string[] {
   const out: string[] = [];
-  if (before.displayName !== after.displayName.trim()) {
+  if (before.displayName !== after.displayName && before.displayName !== after.displayName.trim()) {
     out.push('displayName');
   }
-  if (before.baseURL !== after.baseURL.trim()) {
+  if (before.baseURL !== after.baseURL && before.baseURL !== after.baseURL.trim()) {
     out.push('baseURL');
   }
   if (before.api !== after.api) {

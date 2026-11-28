@@ -54,6 +54,10 @@ export struct PiAiProviderSheet {
   /** 正在编辑的表单值（真值在宿主） */
   @Prop draft: PiAiProviderView;
   @Prop modelKeys: number[] = [];
+  @Prop catalogStandard: boolean = false;
+  @Prop catalogWritable: boolean = false;
+  @Prop modelsOverridden: boolean = false;
+  onRestoreModels: () => void = (): void => {};
   /** 可声明的 API 协议（来自 Host schema；空 ⇒ 禁用选择并如实说明） */
   @Prop protocols: string[];
   @Prop reasoningLevels: string[] = [];
@@ -115,6 +119,7 @@ export struct PiAiProviderSheet {
   private dragWindowX: number = 0;
   private dragWindowY: number = 0;
   private dragVersion: number = 0;
+  private focusTimer: number = -1;
   private sheetArea?: Area;
   private formArea?: Area;
   private readonly formScroller = new Scroller();
@@ -122,6 +127,7 @@ export struct PiAiProviderSheet {
 
   aboutToDisappear(): void {
     this.cancelModelDrag();
+    clearTimeout(this.focusTimer);
   }
 
   build() {
@@ -227,6 +233,18 @@ export struct PiAiProviderSheet {
 
   private modelBody(key: number): string { return 'desktopPiAiModelReorderBody-' + key; }
 
+  private stepModel(key: number, direction: number): void {
+    if (this.busy || this.draggedModel >= 0) { return; }
+    const from = this.modelIndex(key);
+    const target = this.modelKeys[from + direction];
+    if (from < 0 || target === undefined) { return; }
+    this.onMoveModel(key, target, direction > 0);
+    clearTimeout(this.focusTimer);
+    this.focusTimer = setTimeout((): void => {
+      try { this.getUIContext().getFocusController().requestFocus(this.modelHandle(key)); } catch (_) {}
+    }, 16);
+  }
+
   private rememberModelBand(key: number, area: Area): void {
     this.modelBands.set(key, { key: key, left: Number(area.globalPosition.x), top: Number(area.globalPosition.y),
       width: Number(area.width), height: Number(area.height) });
@@ -328,6 +346,7 @@ export struct PiAiProviderSheet {
           removable: this.modelKeys.length > 1, editingEnabled: !this.busy,
           onChange: (value: PiAiModelRow): void => { this.onModelChange(this.modelIndex(key), value); },
           onRemove: (): void => { this.onRemoveModel(this.modelIndex(key)); },
+          onOrderStep: (step: number): void => { this.stepModel(key, step); },
           onOrderHold: (pressed: boolean): void => { this.holdModel(key, pressed); },
           onOrderBegin: (event: GestureEvent, handle: Area): void => { this.beginModelDrag(key, event, handle); },
           onOrderUpdate: (event: GestureEvent): void => { this.updateModelDrag(event); },
@@ -349,7 +368,7 @@ export struct PiAiProviderSheet {
   }
 
   private capacitiesValid(): boolean {
-    return this.draft.models.every((row: PiAiModelRow): boolean =>
+    return (this.catalogStandard && !this.modelsOverridden) || this.draft.models.every((row: PiAiModelRow): boolean =>
       !invalidPiAiCapacity(row.contextWindow) && !invalidPiAiCapacity(row.maxTokens));
   }
 
@@ -357,7 +376,8 @@ export struct PiAiProviderSheet {
 
   private reasoningValid(): boolean {
     const protocol = this.reasoningProtocol();
-    return this.draft.models.every((row: PiAiModelRow): boolean => checkPiAiModelReasoning(row, protocol) === '');
+    return (this.catalogStandard && !this.modelsOverridden && !protocol.levelsOnly) ||
+      this.draft.models.every((row: PiAiModelRow): boolean => checkPiAiModelReasoning(row, protocol) === '');
   }
 
   /** Provider ID / 显示名 */
@@ -463,10 +483,26 @@ export struct PiAiProviderSheet {
   /** 模型目录（官方 `ModelListEditor`） */
   @Builder
   modelsField() {
-    Text(`模型目录（${this.draft.models.length} 个）`)
-      .fontSize(Fs.CAPTION)
-      .fontColor($r('sys.color.font_secondary'))
-      .width('100%')
+    Row({ space: Sp.S }) {
+      Column({ space: 4 }) {
+        Text(`模型目录（${this.draft.models.length} 个）`).fontSize(Fs.CAPTION)
+          .fontColor($r('sys.color.font_secondary'))
+        if (this.catalogStandard) {
+          Text(this.modelsOverridden ? $r('app.string.desktop_model_catalog_customized') :
+            $r('app.string.desktop_model_catalog_inherited')).key('desktopPiAiModelsLayer')
+            .fontSize(Fs.CAPTION).fontColor($r('sys.color.font_tertiary'))
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      if (this.catalogStandard && this.modelsOverridden) {
+        Button($r('app.string.desktop_model_catalog_restore'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPiAiRestoreModels').fontSize(Fs.CAPTION).height(32)
+          .enabled(this.catalogWritable && !this.busy && !this.discovering).onClick(this.onRestoreModels)
+      }
+    }.width('100%')
+    if (this.catalogStandard && this.draft.models.length === 0) {
+      Text($r('app.string.desktop_model_catalog_empty')).fontSize(Fs.CAPTION).width('100%')
+        .fontColor($r('sys.color.font_tertiary'))
+    }
     if (this.retryHost !== undefined) {
       DesktopPiAiModelDiscovery({ host: this.retryHost, provider: this.isCreate() ? '' : this.draft.route,
         endpoint: this.draft.baseURL, api: this.draft.api, keyReference: this.isCreate() ? '' : this.draft.apiKeyEnv,
