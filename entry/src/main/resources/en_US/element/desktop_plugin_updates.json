@@ -1,0 +1,12 @@
+{
+  "string": [
+    { "name": "desktop_plugin_updates_refresh", "value": "Refresh" },
+    { "name": "desktop_plugin_updates_badge", "value": "Update available" },
+    { "name": "desktop_plugin_updates_available", "value": "Updates available: %1$s" },
+    { "name": "desktop_plugin_updates_current", "value": "All plugins are up to date" },
+    { "name": "desktop_plugin_updates_failed", "value": "Some plugins could not be checked" },
+    { "name": "desktop_plugin_updates_omitted", "value": "%1$s more versions newer than the installed version are not listed" },
+    { "name": "desktop_plugin_updates_progress", "value": "Checking for updates, %1$s of %2$s checked" },
+    { "name": "desktop_plugin_updates_stale", "value": "The plugin changed. Check for updates again." }
+  ]
+}

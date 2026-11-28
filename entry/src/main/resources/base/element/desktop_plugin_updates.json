@@ -1,0 +1,12 @@
+{
+  "string": [
+    { "name": "desktop_plugin_updates_refresh", "value": "刷新" },
+    { "name": "desktop_plugin_updates_badge", "value": "可更新" },
+    { "name": "desktop_plugin_updates_available", "value": "%1$s 个插件可更新" },
+    { "name": "desktop_plugin_updates_current", "value": "所有插件均为最新版本" },
+    { "name": "desktop_plugin_updates_failed", "value": "部分插件检查更新失败" },
+    { "name": "desktop_plugin_updates_omitted", "value": "另有 %1$s 个比已安装版本新的版本未列出" },
+    { "name": "desktop_plugin_updates_progress", "value": "正在检查更新，已检查 %1$s 个，共 %2$s 个" },
+    { "name": "desktop_plugin_updates_stale", "value": "插件状态已变化，请重新检查更新" }
+  ]
+}

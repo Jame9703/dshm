@@ -1,4 +1,4 @@
-import { getArray, getBoolean, getField, getNumber, getRecord, getString } from 'connection';
+import { getArray, getBoolean, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
 import { SETTINGS_DESCRIBE_ENDPOINT } from 'dshcompat';
 import { dialogMaterial } from 'platform';
@@ -17,6 +17,9 @@ import type { DesktopPluginCatalogTarget } from './DesktopPluginInstall';
 import { DesktopPluginInstallDialog } from './DesktopPluginInstallDialog';
 import { DesktopPluginMaintenance } from './DesktopPluginMaintenance';
 import { DesktopPluginMaintenanceDialog } from './DesktopPluginMaintenanceDialog';
+import { DesktopPluginVersionScan, emptyDesktopPluginVersionScanSnapshot } from './DesktopPluginVersionScan';
+import type { DesktopPluginVersionEntry, DesktopPluginVersionResult, DesktopPluginVersionScanSnapshot,
+  DesktopPluginVersionTarget } from './DesktopPluginVersionScan';
 import { DesktopPluginMarketDetail } from './DesktopPluginMarketDetail';
 import { DesktopTimelineSettings } from './DesktopTimelineSettings';
 import { DESKTOP_TIMELINE_BUNDLE, DESKTOP_TIMELINE_NS } from './DesktopTimelineSettingsModel';
@@ -38,19 +41,13 @@ interface DesktopPluginRow {
   availability: string;
   unsupportedPlatform: boolean;
   version: string;
+  source: string;
   update: string;
   installSpec: string;
   installVersion: string;
   phase: string;
   diagnostic: string;
   components: DesktopPluginComponent[];
-}
-
-interface DesktopPluginVersion {
-  version: string;
-  prerelease: boolean;
-  deprecated: string | undefined;
-  installable: boolean;
 }
 
 interface DesktopMarketSource {
@@ -84,6 +81,7 @@ function pluginRows(result: RpcResult, bundle: boolean): DesktopPluginRow[] {
         description: bundle ? desktopLocalizedText(meta, 'description') || getString(value, 'description') || '' :
           getString(value, 'fiberPhase') ?? getString(value, 'phase') ?? '',
         version: getString(value, 'version') ?? '',
+        source: bundle ? getString(value, 'source') ?? '' : '',
         installed: installed,
         availability: availability,
         unsupportedPlatform: unsupportedPlatform,
@@ -143,10 +141,13 @@ export struct DesktopPluginsPane {
   @State private paneWidth: number = 500;
   @State private busy: boolean = false;
   @State private versionOwner: string = '';
-  @State private versions: DesktopPluginVersion[] = [];
+  @State private versions: DesktopPluginVersionEntry[] = [];
   @State private recommendedVersion: string = '';
   @State private versionStatus: string = '';
   @State private versionInstalled: string = '';
+  @State private versionOmitted: number = 0;
+  @State private versionScanState: DesktopPluginVersionScanSnapshot = emptyDesktopPluginVersionScanSnapshot();
+  private versionScan?: DesktopPluginVersionScan;
   private versionRegistry?: string | null;
   private maintenanceDialog: number = -1;
   private maintenanceOpening: boolean = false;
@@ -168,6 +169,14 @@ export struct DesktopPluginsPane {
 
   aboutToAppear(): void {
     this.active = true;
+    this.versionScanState = emptyDesktopPluginVersionScanSnapshot();
+    const host = this.host;
+    if (host !== undefined) {
+      this.versionScan = new DesktopPluginVersionScan((name: string): Promise<RpcResult> =>
+        host.call('pluginManager/listVersions', { 'name': name }), (snapshot: DesktopPluginVersionScanSnapshot): void => {
+        if (this.active && this.host === host) { this.versionScanState = snapshot; }
+      });
+    }
     this.stopCatalog = this.installer.watchCatalog((): void => { this.refresh(); });
     this.stopAccounts = this.connectorAccounts.watch((): void => { this.updateActivation(); });
     this.refresh();
@@ -176,6 +185,8 @@ export struct DesktopPluginsPane {
 
   aboutToDisappear(): void {
     this.active = false;
+    this.versionScan?.dispose();
+    this.versionScan = undefined;
     this.stopCatalog?.();
     this.stopCatalog = undefined;
     this.stopAccounts?.();
@@ -205,6 +216,8 @@ export struct DesktopPluginsPane {
     this.marketDetail = undefined;
     this.resetVersions();
     this.detailName = name;
+    const cached = this.versionScan?.result(name);
+    if (cached !== undefined) { this.showVersionResult(cached); }
     this.componentDetail = false;
     this.worktreeVisited = false;
     this.detailText = '';
@@ -218,16 +231,34 @@ export struct DesktopPluginsPane {
     else if (getString(result.value, 'status') === 'found') { this.detailText = getString(result.value, 'markdown') ?? ''; }
   }
 
-  private async refresh(): Promise<void> {
+  private async refresh(): Promise<boolean> {
     const host = this.host;
-    if (host === undefined || !this.active) { return; }
-    if (this.catalogBusy) { this.refreshAgain = true; return; }
+    if (host === undefined || !this.active) { return false; }
+    if (this.catalogBusy) { this.refreshAgain = true; return false; }
     this.catalogBusy = true;
-    do {
-      this.refreshAgain = false;
-      await this.loadCatalog(host);
-    } while (this.active && this.refreshAgain);
-    this.catalogBusy = false;
+    let loaded = false;
+    try {
+      do {
+        this.refreshAgain = false;
+        loaded = await this.loadCatalog(host);
+      } while (this.active && this.host === host && this.refreshAgain);
+    } finally {
+      this.catalogBusy = false;
+    }
+    return loaded;
+  }
+
+  private async refreshInstalledPlugins(): Promise<void> {
+    const scan = this.versionScan;
+    const onBundleList = this.onBundleList();
+    this.connectorAccounts.reconnect();
+    if (await this.refresh() && onBundleList && this.active && this.versionScan === scan) {
+      await scan?.scan();
+    }
+  }
+
+  private onBundleList(): boolean {
+    return this.tab === 'bundles' && !this.detailName && !this.settingsDetail && this.marketDetail === undefined;
   }
 
   private async loadBasicScopes(host: DesktopHostActions): Promise<void> {
@@ -241,20 +272,27 @@ export struct DesktopPluginsPane {
     }
   }
 
-  private async loadCatalog(host: DesktopHostActions): Promise<void> {
+  private async loadCatalog(host: DesktopHostActions): Promise<boolean> {
     this.loadBasicScopes(host);
     const results = await Promise.all([
       host.call('pluginManager/listBundles'),
       host.call('pluginManager/listPlugins'),
       host.call('pluginMarket/listIndexes')
     ]);
-    if (!this.active) {
-      return;
+    if (!this.active || this.host !== host) { return false; }
+    if (results[0].ok) {
+      this.bundles = pluginRows(results[0], true);
+      this.versionScan?.replaceTargets(this.bundles.filter((row: DesktopPluginRow): boolean => this.canCheckVersions(row))
+        .map((row: DesktopPluginRow): DesktopPluginVersionTarget => ({
+          name: row.id, version: row.version, update: row.update, source: row.source
+        })));
+      const checked = this.bundles.find((row: DesktopPluginRow): boolean => row.id === this.versionOwner);
+      const cached = this.versionScan?.result(this.versionOwner);
+      if (this.versionInstalled && (checked?.version !== this.versionInstalled || cached === undefined)) {
+        this.resetVersions();
+      }
     }
-    this.bundles = pluginRows(results[0], true);
-    const checked = this.bundles.find((row: DesktopPluginRow): boolean => row.id === this.versionOwner);
-    if (this.versionInstalled && results[0].ok && checked?.version !== this.versionInstalled) { this.resetVersions(); }
-    this.plugins = pluginRows(results[1], false);
+    if (results[1].ok) { this.plugins = pluginRows(results[1], false); }
     this.marketError = desktopHostProblem(results[2]);
     if (results[2].ok) {
       const sources: DesktopMarketSource[] = [];
@@ -273,6 +311,7 @@ export struct DesktopPluginsPane {
     }
     this.catalogError = desktopHostProblem(results[0]) || desktopHostProblem(results[1]);
     this.updateActivation();
+    return results[0].ok && results[1].ok;
   }
 
   private async saveSources(urls: string[]): Promise<void> {
@@ -526,45 +565,53 @@ export struct DesktopPluginsPane {
     this.recommendedVersion = '';
     this.versionStatus = '';
     this.versionRegistry = undefined;
+    this.versionOmitted = 0;
   }
 
-  private async listVersions(row: DesktopPluginRow): Promise<void> {
-    if (this.host === undefined || this.busy || this.maintenance.phase === 'running') { return; }
-    this.busy = true;
+  private canCheckVersions(row: DesktopPluginRow): boolean {
+    return row.update === 'registry' && row.installed && row.removable && !row.unsupportedPlatform &&
+      row.availability !== 'installation' && row.availability !== 'missing';
+  }
+
+  private hasAvailableUpdate(row: DesktopPluginRow): boolean {
+    return this.canCheckVersions(row) && this.versionScanState.results.some((result: DesktopPluginVersionResult): boolean =>
+      result.name === row.id && result.installed === row.version && result.recommendedVersion.length > 0);
+  }
+
+  private showVersionResult(result: DesktopPluginVersionResult): void {
     this.resetVersions();
-    this.versionOwner = row.id;
-    const result = await this.host.call('pluginManager/listVersions', { 'name': row.id });
-    if (!this.active) { return; }
-    this.busy = false;
-    if (this.versionOwner !== row.id || this.detailName !== row.id) { return; }
-    if (!result.ok || getString(result.value, 'status') !== 'listed') {
-      this.versionStatus = desktopHostProblem(result) || getString(result.value, 'reason') || '无法检查更新';
-      return;
-    }
-    this.versionInstalled = getString(result.value, 'installed') ?? '';
-    this.versionRegistry = getField(result.value, 'registry') === null ? null : getString(result.value, 'registry');
-    const versions: DesktopPluginVersion[] = [];
-    for (const value of getArray(result.value, 'versions') ?? []) {
-      const version = getString(value, 'version');
-      if (!version || version === this.versionInstalled) { continue; }
-      const info: DesktopPluginVersion = { version: version, prerelease: getBoolean(value, 'prerelease') === true,
-        deprecated: getString(value, 'deprecated'), installable: getBoolean(value, 'bundle') === true &&
-          getRecord(value, 'incompatible') === undefined };
-      if (!this.recommendedVersion && info.installable && !info.prerelease && info.deprecated === undefined) {
-        this.recommendedVersion = info.version;
-      }
-      versions.push(info);
-    }
-    this.versions = versions;
-    if (!versions.some((info: DesktopPluginVersion): boolean => info.installable)) {
+    this.versionOwner = result.name;
+    this.versionInstalled = result.installed;
+    this.versionRegistry = result.registry;
+    this.versions = result.versions;
+    this.recommendedVersion = result.recommendedVersion;
+    this.versionOmitted = result.omitted;
+    if (result.status === 'refused') { this.versionStatus = result.reason || '无法检查更新'; }
+    else if (!result.versions.some((entry: DesktopPluginVersionEntry): boolean => entry.installable)) {
       this.versionStatus = '没有可用更新';
     }
   }
 
+  private async listVersions(row: DesktopPluginRow): Promise<void> {
+    const scan = this.versionScan;
+    if (scan === undefined || !this.canCheckVersions(row) || this.busy || this.maintenance.phase === 'running') { return; }
+    this.busy = true;
+    try {
+      const result = await scan.check(row.id);
+      if (this.active && this.versionScan === scan && this.detailName === row.id && result !== undefined) {
+        this.showVersionResult(result);
+      }
+    } finally {
+      if (this.active && this.versionScan === scan) { this.busy = false; }
+    }
+  }
+
   private offerRegistryUpdate(row: DesktopPluginRow, version: string): void {
+    const current = this.bundles.find((item: DesktopPluginRow): boolean => item.id === row.id);
     if (this.maintenanceOpening || this.maintenanceDialog >= 0 || this.installer.busy() || this.busy ||
+      current === undefined || !this.canCheckVersions(current) || current.source !== row.source || current.version !== row.version ||
       this.versionOwner !== row.id || this.versionInstalled !== row.version ||
-      !this.versions.some((info: DesktopPluginVersion): boolean => info.version === version && info.installable)) { return; }
+      !this.versions.some((info: DesktopPluginVersionEntry): boolean => info.version === version && info.installable)) { return; }
     if (this.maintenance.offerUpdate(row.id, row.title, this.versionInstalled, version, this.versionRegistry)) {
       this.openMaintenance();
     }
@@ -610,18 +657,32 @@ export struct DesktopPluginsPane {
   }
 
   private async confirmMaintenance(): Promise<void> {
-    if (!await this.maintenance.confirm() || !this.active) { return; }
     const name = this.maintenance.name;
-    const removed = this.maintenance.action === 'remove' && this.maintenance.application === 'applied';
-    if (this.versionOwner === name && this.maintenance.action === 'update' &&
+    const update = this.maintenance.action === 'update';
+    const registry = update && this.bundles.some((row: DesktopPluginRow): boolean =>
+      row.id === name && this.canCheckVersions(row));
+    if (update && this.detailName === name && (!registry || this.versionOwner !== name ||
+      this.versionInstalled !== this.maintenance.fromVersion || !this.versions.some((entry: DesktopPluginVersionEntry): boolean =>
+        entry.installable && entry.version === this.maintenance.toVersion))) {
+      this.closeMaintenance();
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_plugin_updates_stale') });
+      return;
+    }
+    if (!await this.maintenance.confirm() || !this.active) { return; }
+    const removed = !update && this.maintenance.application === 'applied';
+    if (this.versionOwner === name && update &&
       (this.maintenance.application === 'applied' || this.maintenance.application === 'restart-required')) {
       this.resetVersions();
     }
-    await this.refresh();
+    const loaded = await this.refresh();
     if (!this.active) { return; }
     if (removed && this.detailName === name && !this.catalogError &&
       !this.bundles.some((row: DesktopPluginRow): boolean => row.id === name && row.installed)) {
       this.closeBundle();
+    }
+    if (loaded && registry && !this.maintenance.connectionLost) {
+      const row = this.bundles.find((item: DesktopPluginRow): boolean => item.id === name);
+      if (row !== undefined) { await this.listVersions(row); }
     }
     if (this.tab === 'market') { this.searchMarket(false); }
   }
@@ -707,6 +768,11 @@ export struct DesktopPluginsPane {
       }
       .alignItems(HorizontalAlign.Start).layoutWeight(1)
       if (navigable) {
+        if (this.hasAvailableUpdate(row)) {
+          Button($r('app.string.desktop_plugin_updates_badge'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .key('desktopPluginAvailableUpdate-' + row.id).fontSize(12).fontColor($r('sys.color.brand'))
+            .onClick((): void => { this.openBundle(row.id); })
+        }
         Button($r('app.string.desktop_plugin_maintenance_view'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopPluginBundle-' + row.id).onClick((): void => { this.openBundle(row.id); })
       }
@@ -723,7 +789,7 @@ export struct DesktopPluginsPane {
   @Builder
   private BundleActions(row: DesktopPluginRow) {
     Row({ space: 8 }) {
-      if (row.update === 'registry' && row.removable) {
+      if (this.canCheckVersions(row)) {
         Button($r('app.string.desktop_plugin_maintenance_check'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopPluginCheckVersions-' + row.id).enabled(!this.busy && this.maintenance.phase !== 'running')
           .onClick((): void => { this.listVersions(row); })
@@ -739,7 +805,7 @@ export struct DesktopPluginsPane {
       if (this.versionStatus) {
         Text(this.versionStatus).fontSize(13).fontColor($r('sys.color.font_secondary'))
       }
-      ForEach(this.versions, (version: DesktopPluginVersion): void => {
+      ForEach(this.versions, (version: DesktopPluginVersionEntry): void => {
         Row({ space: 8 }) {
           Column({ space: 4 }) {
             Text(version.version).key('desktopPluginListedVersion-' + version.version).fontSize(14)
@@ -763,7 +829,11 @@ export struct DesktopPluginsPane {
               .onClick((): void => { this.offerRegistryUpdate(row, version.version); })
           }
         }.width('100%').padding(8)
-      }, (version: DesktopPluginVersion): string => version.version)
+      }, (version: DesktopPluginVersionEntry): string => version.version)
+      if (this.versionOmitted > 0) {
+        Text($r('app.string.desktop_plugin_updates_omitted', String(this.versionOmitted)))
+          .fontSize(12).fontColor($r('sys.color.font_secondary'))
+      }
     }
   }
 
@@ -1054,8 +1124,28 @@ export struct DesktopPluginsPane {
     Column({ space: 14 }) {
       Row({ space: 8 }) {
         Text('插件').fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
-        Button('刷新', { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.busy && !this.catalogBusy)
-          .onClick((): void => { this.connectorAccounts.reconnect(); this.refresh(); })
+        if (this.onBundleList() && this.versionScanState.finished && !this.versionScanState.scanning && !this.catalogBusy) {
+          Text(this.versionScanState.available > 0 ?
+            $r('app.string.desktop_plugin_updates_available', String(this.versionScanState.available)) :
+            (this.versionScanState.refused > 0 ? $r('app.string.desktop_plugin_updates_failed') :
+              $r('app.string.desktop_plugin_updates_current')))
+            .key('desktopPluginVersionScanStatus').fontSize(12).fontColor($r('sys.color.font_secondary'))
+        }
+        Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          Row({ space: 5 }) {
+            if (this.catalogBusy || this.versionScanState.scanning) {
+              LoadingProgress().width(14).height(14).accessibilityLevel('no')
+            } else {
+              Image($r('app.media.dsh_browser_refresh_outline')).width(14).height(14).supportSvg2(true)
+                .draggable(false).accessibilityLevel('no')
+            }
+            Text($r('app.string.desktop_plugin_updates_refresh')).fontSize(14)
+          }
+        }.key('desktopPluginRefresh').accessibilityText(this.versionScanState.scanning ?
+          $r('app.string.desktop_plugin_updates_progress', String(this.versionScanState.completed),
+            String(this.versionScanState.total)) : $r('app.string.desktop_plugin_updates_refresh'))
+          .enabled(!this.busy && !this.catalogBusy && !this.versionScanState.scanning)
+          .onClick((): void => { this.refreshInstalledPlugins(); })
         Button('在 WebUI 打开', { buttonStyle: ButtonStyleMode.TEXTUAL }).key('desktopPluginOpenWeb')
           .enabled(!this.busy).onClick((): void => { this.onWeb(this.detailName); })
       }
@@ -1089,7 +1179,7 @@ export struct DesktopPluginsPane {
             }.height(34).borderRadius(8).padding({ left: 10, right: 10 }).key('desktopPluginOpenInstall')
             .onClick((): void => { this.openInstall(); })
           }
-          if (this.busy || this.catalogBusy) {
+          if (this.busy) {
             LoadingProgress().width(24).height(24)
           }
         }.width('100%')
