@@ -10,12 +10,21 @@ import { DesktopTerminalSelection } from './DesktopTerminalSelection';
 import type { DesktopTerminalSelectionSpan } from './DesktopTerminalSelection';
 import type { DesktopShell, DesktopTerminalRetentionObserver, DesktopTerminalRosterObserver, DesktopTerminalRow,
   DesktopTerminalState } from './DesktopTerminalClient';
-import type { TerminalCellPaint, TerminalPaintFrame } from './terminal/TerminalEmulator';
+import type { TerminalCellPaint, TerminalMouseInput, TerminalMouseTracking, TerminalPaintFrame } from './terminal/TerminalEmulator';
 
 const INSET: number = 10;
 const INPUT_ID: string = 'desktopNativeTerminalInput';
 const MULTI_CLICK_MS: number = 400;
 const SCROLL_INTERVAL_MS: number = 70;
+const NO_BUTTON: number = -1;
+const MOUSE_LEFT: number = 0;
+const MOUSE_MIDDLE: number = 1;
+const MOUSE_RIGHT: number = 2;
+const MOUSE_HOVER: number = 3;
+const MOUSE_WHEEL: number = 4;
+const MOUSE_RELEASE: number = 0;
+const MOUSE_PRESS: number = 1;
+const MOUSE_MOVE: number = 32;
 const ESC: string = '\x1b';
 const CANVAS_FONT_FAMILIES: Set<string> = new Set(['monospace', 'sans-serif', 'serif']);
 const FUNCTION_KEYS: string[] = ['OP', 'OQ', 'OR', 'OS', '[15~', '[17~',
@@ -25,6 +34,14 @@ let nextTerminalInput: number = 0;
 interface TerminalHit {
   column: number;
   row: number;
+}
+
+interface TerminalPointer {
+  x: number;
+  y: number;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
 }
 
 @Component
@@ -57,6 +74,9 @@ export struct DesktopTerminalPane {
   private readonly selection: DesktopTerminalSelection = new DesktopTerminalSelection();
   private readonly inputFocusId: string = `${INPUT_ID}:${nextTerminalInput++}`;
   private mouseSelecting: boolean = false;
+  private reportedButton: number = NO_BUTTON;
+  private localButton: number = NO_BUTTON;
+  private lastPointer?: TerminalPointer;
   private dragX: number = 0;
   private dragY: number = 0;
   private dragRow: number = -1;
@@ -78,6 +98,8 @@ export struct DesktopTerminalPane {
   private canvasFontFamily: string = 'monospace';
   private scrollY: number = 0;
   private ctrl: boolean = false;
+  private shiftLeft: boolean = false;
+  private shiftRight: boolean = false;
   private createIssued: boolean = false;
   private closeDialogId: number = -1;
   private closeDialogOpening: boolean = false;
@@ -90,6 +112,7 @@ export struct DesktopTerminalPane {
   }
 
   aboutToDisappear(): void {
+    this.resetMouse(true);
     this.active = false;
     this.clearSelection();
     this.dismissCloseDialog();
@@ -98,6 +121,7 @@ export struct DesktopTerminalPane {
   }
 
   private reloadSession(): void {
+    this.resetMouse(true);
     this.clearSelection();
     this.dismissCloseDialog();
     this.client?.dispose();
@@ -117,7 +141,8 @@ export struct DesktopTerminalPane {
       const previous = this.state?.selected ?? '';
       const previousTitle = this.selected()?.title ?? '';
       this.state = state;
-      if (state.selected !== previous) { this.clearSelection(); }
+      if (state.selected !== previous) { this.resetMouse(false); this.clearSelection(); }
+      else if (!state.writable && this.reportedButton !== NO_BUTTON) { this.resetMouse(false); }
       const title = this.selected()?.title ?? '';
       if (state.selected !== previous || title !== previousTitle) {
         this.onTerminalSelected(id, state.selected, title);
@@ -138,7 +163,7 @@ export struct DesktopTerminalPane {
 
   private visibilityChanged(): void {
     if (!this.active) { return; }
-    if (!this.shown) { this.clearSelection(); }
+    if (!this.shown) { this.resetMouse(true); this.clearSelection(); }
     if (this.shown && this.client === undefined) { this.reloadSession(); }
     else { this.client?.setShown(this.shown); }
   }
@@ -324,7 +349,7 @@ export struct DesktopTerminalPane {
     if (repaint) { this.draw(); }
   }
 
-  private startMouseSelection(event: MouseEvent): void {
+  private startMouseSelection(event: MouseEvent, shift: boolean): void {
     const frame = this.frame;
     if (frame === undefined) { return; }
     const point = this.hit(event.x, event.y);
@@ -335,7 +360,7 @@ export struct DesktopTerminalPane {
     this.lastClickAt = time;
     this.lastClickRow = point.row;
     this.lastClickColumn = point.column;
-    if (event.getModifierKeyState?.(['Shift']) === true && this.selectionActive) {
+    if (shift && this.selectionActive) {
       this.selection.extend(frame, point.column, point.row);
     } else if (this.clickCount === 2) {
       this.selection.selectWord(frame, point.column, point.row);
@@ -393,16 +418,136 @@ export struct DesktopTerminalPane {
     this.setSelectionScroll(0);
   }
 
+  private terminalMouseButton(button: MouseButton): number {
+    switch (button) {
+      case MouseButton.Left: return MOUSE_LEFT;
+      case MouseButton.Middle: return MOUSE_MIDDLE;
+      case MouseButton.Right: return MOUSE_RIGHT;
+      default: return NO_BUTTON;
+    }
+  }
+
+  private pointer(x: number, y: number, event: BaseEvent): TerminalPointer {
+    return { x: x, y: y, ctrl: event.getModifierKeyState?.(['Ctrl']) === true,
+      alt: event.getModifierKeyState?.(['Alt']) === true,
+      shift: this.shiftLeft || this.shiftRight || event.getModifierKeyState?.(['Shift']) === true };
+  }
+
+  private mouseTracking(): TerminalMouseTracking {
+    return this.state?.writable === true ? this.client?.mouseModes()?.tracking ?? 'none' : 'none';
+  }
+
+  private sendPointer(point: TerminalPointer, button: number, action: number): void {
+    const frame = this.frame;
+    if (frame === undefined || this.state?.writable !== true) { return; }
+    const hit = this.hit(point.x, point.y);
+    const x = Math.min(Math.max(0, frame.selection.columns * this.charWidth - 1), Math.max(0, point.x - INSET));
+    const y = Math.min(Math.max(0, frame.rows.length * this.lineHeight() - 1), Math.max(0, point.y - INSET));
+    const report: TerminalMouseInput = { column: Math.min(frame.selection.columns - 1, hit.column), row: hit.row,
+      x: x, y: y, button: button, action: action, ctrl: point.ctrl, alt: point.alt, shift: point.shift };
+    this.client?.reportMouse(report);
+  }
+
+  private finishReportedMouse(point?: TerminalPointer): void {
+    const button = this.reportedButton;
+    this.reportedButton = NO_BUTTON;
+    const position = point ?? this.lastPointer;
+    this.lastPointer = undefined;
+    if (button !== NO_BUTTON && position !== undefined) { this.sendPointer(position, button, MOUSE_RELEASE); }
+  }
+
+  private resetMouse(release: boolean): void {
+    if (release) { this.finishReportedMouse(); }
+    else {
+      this.reportedButton = NO_BUTTON;
+      this.lastPointer = undefined;
+    }
+    this.localButton = NO_BUTTON;
+    this.endSelectionDrag();
+  }
+
   private terminalMouse(event: MouseEvent): void {
-    if (event.button === MouseButton.Right) {
-      this.endSelectionDrag();
-    } else if (event.button === MouseButton.Left && event.action === MouseAction.Press) {
-      this.startMouseSelection(event);
+    if (!this.active || !this.shown) { return; }
+    const button = this.terminalMouseButton(event.button);
+    if (event.action === MouseAction.Press && button !== NO_BUTTON) {
+      const point = this.pointer(event.x, event.y, event);
+      if (!point.shift && this.mouseTracking() !== 'none') {
+        this.clearSelection();
+        this.localButton = NO_BUTTON;
+        this.reportedButton = button;
+        this.lastPointer = point;
+        this.focusInput();
+        this.sendPointer(point, button, MOUSE_PRESS);
+      } else {
+        this.localButton = button;
+        if (button === MOUSE_LEFT) { this.startMouseSelection(event, point.shift); }
+      }
     } else if (event.action === MouseAction.Move) {
-      this.moveMouseSelection(event.x, event.y);
-    } else if (event.button === MouseButton.Left && event.action === MouseAction.Release) {
-      this.moveMouseSelection(event.x, event.y);
-      this.endSelectionDrag();
+      if (this.reportedButton !== NO_BUTTON) {
+        const point = this.pointer(event.x, event.y, event);
+        this.lastPointer = point;
+        this.sendPointer(point, this.reportedButton, MOUSE_MOVE);
+      } else if (this.localButton === MOUSE_LEFT) {
+        this.moveMouseSelection(event.x, event.y);
+      } else if (this.localButton === NO_BUTTON && this.mouseTracking() === 'any') {
+        this.sendPointer(this.pointer(event.x, event.y, event), MOUSE_HOVER, MOUSE_MOVE);
+      }
+    } else if (event.action === MouseAction.Release) {
+      if (this.reportedButton !== NO_BUTTON && (button === this.reportedButton || button === NO_BUTTON)) {
+        this.finishReportedMouse(this.pointer(event.x, event.y, event));
+      } else if (button === this.localButton) {
+        this.localButton = NO_BUTTON;
+        if (button === MOUSE_LEFT) {
+          this.moveMouseSelection(event.x, event.y);
+          this.endSelectionDrag();
+        } else if (button === MOUSE_RIGHT) {
+          this.openSelectionMenu(event.x, event.y);
+        }
+      }
+    }
+  }
+
+  private terminalMousePan(event: GestureEvent): void {
+    const point = event.fingerList[0];
+    if (point === undefined) { return; }
+    if (this.reportedButton === NO_BUTTON) {
+      this.moveMouseSelection(point.localX, point.localY);
+      return;
+    }
+    if (this.lastPointer !== undefined && (point.localX < 0 || point.localX >= this.canvasWidth ||
+      point.localY < 0 || point.localY >= this.canvasHeight)) {
+      const last = this.lastPointer;
+      const current: TerminalPointer = { x: point.localX, y: point.localY, ctrl: last.ctrl,
+        alt: last.alt, shift: last.shift };
+      this.lastPointer = current;
+      this.sendPointer(current, this.reportedButton, MOUSE_MOVE);
+    }
+  }
+
+  private terminalWheel(event: AxisEvent): void {
+    const client = this.client;
+    if (client === undefined || !this.shown) { return; }
+    const vertical = event.getVerticalAxisValue();
+    const horizontal = event.getHorizontalAxisValue();
+    const delta = vertical === 0 ? horizontal : vertical;
+    const point = this.pointer(event.x, event.y, event);
+    if (delta === 0 || point.shift) { return; }
+    const modes = client.mouseModes();
+    const hasWheelReport = this.state?.writable === true && modes !== undefined &&
+      modes.tracking !== 'none' && modes.tracking !== 'x10';
+    const discrete = event.sourceTool === SourceTool.MOUSE || (event.scrollStep ?? 0) > 0;
+    const units = discrete ? Math.sign(delta) * Math.max(1, Math.min(40, event.scrollStep || 3)) : delta;
+    const steps = client.wheelSteps(units, discrete ? 1 : 0, this.lineHeight(), point.ctrl, point.alt, false);
+    if (steps === 0) { return; }
+    if (hasWheelReport) {
+      this.sendPointer(point, MOUSE_WHEEL, (vertical === 0 ? 2 : 0) + (steps > 0 ? 1 : 0));
+    } else if (vertical !== 0) {
+      if (modes?.alternateWheel && this.state?.writable) {
+        const prefix = client.applicationCursor() ? 'O' : '[';
+        client.write(ESC + prefix + (steps > 0 ? 'B' : 'A'), false);
+      } else {
+        client.scroll(steps);
+      }
     }
   }
 
@@ -452,13 +597,19 @@ export struct DesktopTerminalPane {
       this.ctrl = down;
       return false;
     }
+    if (code === KeyCode.KEYCODE_SHIFT_LEFT || code === KeyCode.KEYCODE_SHIFT_RIGHT) {
+      // The focused keyboard can report Shift even when a separate pointer omits it.
+      if (code === KeyCode.KEYCODE_SHIFT_LEFT) { this.shiftLeft = down; }
+      else { this.shiftRight = down; }
+      return false;
+    }
     if (this.onShortcut(event)) { return true; }
     if (!down) { return false; }
     const control = event.getModifierKeyState?.(['Ctrl']) ?? this.ctrl;
     const shift = event.getModifierKeyState?.(['Shift']) === true;
     if (control && shift && code === KeyCode.KEYCODE_C) { this.copySelection(); return true; }
     if (control && shift && code === KeyCode.KEYCODE_V) { this.pasteScreen().catch((): void => {}); return true; }
-    if (shift && !control && (code === KeyCode.KEYCODE_PAGE_UP || code === KeyCode.KEYCODE_PAGE_DOWN)) {
+    if (shift && (code === KeyCode.KEYCODE_PAGE_UP || code === KeyCode.KEYCODE_PAGE_DOWN)) {
       const lines = Math.max(1, (this.frame?.rows.length ?? 1) - 1);
       this.client?.scroll(code === KeyCode.KEYCODE_PAGE_UP ? -lines : lines);
       return true;
@@ -652,15 +803,7 @@ export struct DesktopTerminalPane {
         .accessibilitySelected(this.selectionActive)
         .onClick((): void => { this.focusInput(); })
         .onMouse((event: MouseEvent): void => { this.terminalMouse(event); })
-        .bindContextMenu(this.SelectionMenu(), ResponseType.RightClick, {
-          systemMaterial: desktopMenuOptions(Placement.BottomLeft).systemMaterial
-        })
-        .onAxisEvent((event: AxisEvent): void => {
-          const vertical = event.getVerticalAxisValue();
-          if (vertical !== 0) {
-            this.client?.scroll(vertical > 0 ? 3 : -3);
-          }
-        })
+        .onAxisEvent((event: AxisEvent): void => { this.terminalWheel(event); })
         .gesture(PanGesture({ direction: PanDirection.Vertical }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
           .onActionStart((): void => { this.scrollY = 0; })
           .onActionUpdate((event: GestureEvent): void => {
@@ -671,11 +814,9 @@ export struct DesktopTerminalPane {
             }
           }))
         .parallelGesture(PanGesture({ direction: PanDirection.All, distance: 3 }).allowedTypes([SourceTool.MOUSE])
-          .onActionUpdate((event: GestureEvent): void => {
-            const point = event.fingerList[0];
-            if (point !== undefined) { this.moveMouseSelection(point.localX, point.localY); }
-          }).onActionEnd((): void => { this.endSelectionDrag(); })
-          .onActionCancel((): void => { this.endSelectionDrag(); }))
+          .onActionUpdate((event: GestureEvent): void => { this.terminalMousePan(event); })
+          .onActionEnd((): void => { this.resetMouse(true); })
+          .onActionCancel((): void => { this.resetMouse(true); }))
         .parallelGesture(LongPressGesture({ duration: 450 }).allowedTypes([SourceTool.Finger, SourceTool.Pen])
           .onAction((event: GestureEvent): void => {
             const point = event.fingerList[0];
@@ -701,7 +842,13 @@ export struct DesktopTerminalPane {
         .enablePreviewText(false)
         .enterKeyType(EnterKeyType.Done)
         .onFocus((): void => { this.inputFocused = true; this.draw(); })
-        .onBlur((): void => { this.inputFocused = false; this.ctrl = false; this.draw(); })
+        .onBlur((): void => {
+          this.inputFocused = false;
+          this.ctrl = false;
+          this.shiftLeft = false;
+          this.shiftRight = false;
+          this.draw();
+        })
         .onKeyPreIme((event: KeyEvent): boolean => this.handleTerminalKey(event))
         .onSubmit((): void => { this.writeInput('\r'); })
         .onPaste((value: string, event: PasteEvent): void => {

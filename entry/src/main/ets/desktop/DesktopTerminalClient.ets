@@ -3,6 +3,7 @@ import type { DuplexStream } from 'connection';
 import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './DesktopHostActions';
 import { loadTerminalEmulator } from './terminal/TerminalEmulator';
 import type { TerminalEmulator, TerminalEmulatorFactory, TerminalPaintFrame } from './terminal/TerminalEmulator';
+import type { TerminalMouseInput, TerminalMouseModes } from './terminal/TerminalEmulator';
 import type { DesktopTerminalRosterSink } from './DesktopTerminalRosters';
 
 export interface DesktopShell {
@@ -440,6 +441,20 @@ export class DesktopTerminalClient {
     return this.emulator?.isApplicationCursor() === true;
   }
 
+  mouseModes(): TerminalMouseModes | undefined { return this.emulator?.mouseModes(); }
+
+  reportMouse(event: TerminalMouseInput): void {
+    const emulator = this.emulator;
+    if (!this.writable || emulator === undefined) { return; }
+    const top = emulator.viewportTop();
+    emulator.mouse(event);
+    if (top !== emulator.viewportTop()) { this.draw(); }
+  }
+
+  wheelSteps(delta: number, mode: number, lineHeight: number, ctrl: boolean, alt: boolean, shift: boolean): number {
+    return this.emulator?.wheelSteps(delta, mode, lineHeight, ctrl, alt, shift) ?? 0;
+  }
+
   dispose(): void {
     this.live = false;
     this.stopObservingRetention();
@@ -530,6 +545,9 @@ export class DesktopTerminalClient {
       this.emulator?.dispose();
       this.emulator = this.createEmulator?.(this.cols, this.rows, this.scrollback, (reply: string): void => {
         this.write(reply, false);
+      }, (report: string, binary: boolean, pressed: boolean): void => {
+        // The Web client sends onData only, and this Host protocol carries UTF-8 text.
+        if (!binary) { this.write(report, pressed); }
       });
       this.paintText(getString(value, 'screen') ?? '', true);
       this.publish();

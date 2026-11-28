@@ -2,7 +2,8 @@ let selectionEpoch = 0;
 
 export async function loadTerminalEmulator() {
   const { Terminal } = await import('./xterm-headless.js');
-  return (cols, rows, scrollback, onReply) => new TerminalEmulator(Terminal, cols, rows, scrollback, onReply);
+  return (cols, rows, scrollback, onReply, onMouseReport) =>
+    new TerminalEmulator(Terminal, cols, rows, scrollback, onReply, onMouseReport);
 }
 
 const ANSI = [
@@ -38,9 +39,21 @@ function colors(cell) {
 }
 
 class TerminalEmulator {
-  constructor(Terminal, cols, rows, scrollback, onReply) {
+  constructor(Terminal, cols, rows, scrollback, onReply, onMouseReport) {
     this.terminal = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
-    this.terminal.onData(onReply);
+    // Headless xterm uses the same mouse service as the browser but exposes no DOM event adapter.
+    this.mouseService = this.terminal._core.coreMouseService;
+    this.reportingMouse = undefined;
+    this.partialWheel = 0;
+    this.terminal.onData(data => {
+      if (this.reportingMouse) onMouseReport?.(data, false,
+        this.reportingMouse.button < 4 && this.reportingMouse.action === 1);
+      else onReply(data);
+    });
+    this.terminal.onBinary(data => {
+      if (this.reportingMouse) onMouseReport?.(data, true,
+        this.reportingMouse.button < 4 && this.reportingMouse.action === 1);
+    });
     this.selectionEpoch = ++selectionEpoch;
     this.selectionActive = true;
     this.terminal.buffer.onBufferChange(() => {
@@ -82,8 +95,57 @@ class TerminalEmulator {
     return true;
   }
 
+  viewportTop() { return this.terminal.buffer.active.viewportY; }
+
   isApplicationCursor() {
     return this.terminal.modes.applicationCursorKeysMode;
+  }
+
+  mouseModes() {
+    const encoding = this.mouseService.activeEncoding;
+    return {
+      tracking: this.terminal.modes.mouseTrackingMode,
+      encoding: encoding === 'SGR' ? 'sgr' : encoding === 'SGR_PIXELS' ? 'sgr-pixels' : 'default',
+      alternateWheel: !this.terminal._core.buffer.hasScrollback,
+    };
+  }
+
+  mouse(event) {
+    if (!Number.isInteger(event.column) || !Number.isInteger(event.row) ||
+        !Number.isFinite(event.x) || !Number.isFinite(event.y) ||
+        !Number.isInteger(event.button) || event.button < 0 || event.button > 4 ||
+        ![0, 1, 2, 3, 32].includes(event.action)) return false;
+    const reporting = this.reportingMouse;
+    this.reportingMouse = event;
+    try {
+      return this.mouseService.triggerMouseEvent({
+        col: event.column,
+        row: event.row,
+        x: Math.max(0, Math.floor(event.x)),
+        y: Math.max(0, Math.floor(event.y)),
+        button: event.button,
+        action: event.action,
+        ctrl: event.ctrl === true,
+        alt: event.alt === true,
+        shift: event.shift === true,
+      });
+    } finally {
+      this.reportingMouse = reporting;
+    }
+  }
+
+  wheelSteps(deltaY, deltaMode, lineHeight, ctrl, alt, shift) {
+    if (!Number.isFinite(deltaY) || deltaY === 0 || shift) return 0;
+    const options = this.terminal.options;
+    const amount = deltaY * options.scrollSensitivity * (ctrl || alt ? options.fastScrollSensitivity : 1);
+    if (deltaMode === 1) return amount;
+    if (deltaMode === 2) return amount * this.terminal.rows;
+    if (deltaMode !== 0 || !Number.isFinite(lineHeight) || lineHeight <= 0) return 0;
+    // Mirror consumeWheelEvent without its DOM WheelEvent constants in this headless runtime.
+    this.partialWheel += (amount / lineHeight) * (Math.abs(deltaY) < 50 ? 0.3 : 1);
+    const steps = Math.trunc(this.partialWheel);
+    this.partialWheel %= 1;
+    return steps;
   }
 
   paste(value) {
