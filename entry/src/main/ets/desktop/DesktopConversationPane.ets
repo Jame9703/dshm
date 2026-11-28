@@ -167,6 +167,7 @@ export struct DesktopConversationPane {
   onQuestionProgress: (id: string, progress: DesktopQuestionProgress, engage: boolean) => void =
     (_id: string, _progress: DesktopQuestionProgress, _engage: boolean): void => {};
   onQuestionHold: (id: string) => void = (_id: string): void => {};
+  onQuestionFocus: (id: string, focused: boolean) => void = (_id: string, _focused: boolean): void => {};
   onQuestionClose: (id: string) => void = (_id: string): void => {};
   onQuestionResume: (id: string) => void = (_id: string): void => {};
   onPlanMode: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -2033,6 +2034,7 @@ export struct DesktopConversationPane {
               typography: this.typography,
               onPlanDecision: this.onPlanDecision, onPlanPreview: this.onPlanPreview, onLink: this.onLink,
               onQuestionProgress: this.onQuestionProgress, onQuestionHold: this.onQuestionHold,
+              onQuestionFocus: this.onQuestionFocus,
               onQuestionClose: this.onQuestionClose
             })
           }, (row: DesktopInteraction): string => row.sessionId + ':' + row.id)

@@ -3548,6 +3548,9 @@ struct DesktopWorkspace {
             this.data?.interactions.saveQuestion(id, progress, engage);
           },
           onQuestionHold: (id: string): void => { this.data?.interactions.holdQuestion(id); },
+          onQuestionFocus: (id: string, focused: boolean): void => {
+            this.data?.interactions.setQuestionFocus(id, focused);
+          },
           onQuestionClose: (id: string): void => {
             const interactions = this.data?.interactions;
             if (interactions !== undefined) { this.chatAction((): Promise<string> => interactions.closeQuestion(id)); }

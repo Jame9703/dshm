@@ -627,6 +627,7 @@
     { "name": "desktop_question_continued", "value": "已继续工作，仍可回答" },
     { "name": "desktop_question_held", "value": "会一直等你回答" },
     { "name": "desktop_question_countdown", "value": "%d 秒后继续工作" },
+    { "name": "desktop_question_paused", "value": "已暂停 · 剩余 %d 秒" },
     { "name": "desktop_question_hold", "value": "慢慢回答" },
     { "name": "desktop_question_expand_card", "value": "展开问题卡片" },
     { "name": "desktop_question_collapse_card", "value": "收起问题卡片" },

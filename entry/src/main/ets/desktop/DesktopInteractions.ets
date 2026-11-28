@@ -66,6 +66,7 @@ export interface DesktopInteraction {
   questionHidden?: boolean;
   questionHeld?: boolean;
   waitDeadline?: number;
+  waitPausedMs?: number;
 }
 
 const RECOMMENDED = new RegExp('\\s*(?:\\((?:recommended|推荐)\\)|（(?:recommended|推荐)）)\\s*$', 'i');
@@ -144,6 +145,9 @@ export class DesktopInteractions {
   private claimEvent: string = '';
   private claimDeadline: number = 0;
   private claimTimer: number = -1;
+  private claimFocused: boolean = false;
+  private claimPausedMs?: number;
+  private questionFocus: string = '';
   private onSidebarPending?: (pending: Map<string, DesktopSidebarPending>) => void;
   private sidebarPending: Map<string, DesktopSidebarPending> = new Map<string, DesktopSidebarPending>();
 
@@ -187,13 +191,15 @@ export class DesktopInteractions {
 
   closeView(): void {
     this.releaseClaim();
-    this.claimEvent = '';
+    this.questionFocus = '';
     this.selected = '';
     if (this.owner?.views?.delete(this)) { this.owner.publish(); }
   }
 
   select(sessionId: string): void {
     if (sessionId !== this.selected) {
+      this.questionFocus = '';
+      this.releaseClaim();
       this.selected = sessionId;
       this.publish();
     }
@@ -206,6 +212,8 @@ export class DesktopInteractions {
 
   resetEvents(): void {
     this.eventClientId = '';
+    this.questionFocus = '';
+    this.views?.forEach((view: DesktopInteractions): void => { view.questionFocus = ''; });
     if (this.events.size === 0) { return; }
     this.events.clear();
     this.publish();
@@ -441,11 +449,26 @@ export class DesktopInteractions {
     this.publish();
   }
 
+  setQuestionFocus(id: string, focused: boolean): void {
+    if (focused) {
+      const row = this.events.get(id);
+      if (id === this.questionFocus || row?.sessionId !== this.selected || !row.timed || !row.callId) { return; }
+      const state = this.readQuestionState(row);
+      if (state?.held || state?.hidden) { return; }
+      this.questionFocus = id;
+    } else {
+      if (this.questionFocus !== id) { return; }
+      this.questionFocus = '';
+    }
+    this.publish();
+  }
+
   async closeQuestion(id: string): Promise<string> {
     const row = this.questionRow(id);
     if (row === undefined) { return '这项提问已结束'; }
     if (row.callId) {
       this.questionState(row).hidden = true;
+      if (this.questionFocus === id) { this.questionFocus = ''; }
       this.publish();
       return '';
     }
@@ -530,9 +553,14 @@ export class DesktopInteractions {
   private publish(): void {
     if (this.owner !== undefined) { this.owner.publish(); return; }
     const all = Array.from(this.events.values());
-    const claimed = new Set<string>();
-    this.publishView(all, claimed);
-    this.views?.forEach((view: DesktopInteractions): void => { view.publishView(all, claimed); });
+    const claims = new Map<string, DesktopInteractions>();
+    const focused = new Set<string>();
+    this.reserveClaim(claims, focused);
+    this.views?.forEach((view: DesktopInteractions): void => { view.reserveClaim(claims, focused); });
+    this.syncClaim(all, claims, focused);
+    this.views?.forEach((view: DesktopInteractions): void => { view.syncClaim(all, claims, focused); });
+    this.publishView(all, claims);
+    this.views?.forEach((view: DesktopInteractions): void => { view.publishView(all, claims); });
     this.publishSidebarPending(all);
   }
 
@@ -554,17 +582,28 @@ export class DesktopInteractions {
     this.onSidebarPending(pending);
   }
 
-  private publishView(all: DesktopInteraction[], claimed: Set<string>): void {
-    const claim = all.find((row: DesktopInteraction): boolean =>
-      row.sessionId === this.selected && row.timed && row.callId.length > 0 && !claimed.has(row.id));
-    if (claim !== undefined) { claimed.add(claim.id); }
+  private reserveClaim(claims: Map<string, DesktopInteractions>, focused: Set<string>): void {
+    if (this.questionFocus) { focused.add(this.questionFocus); }
+    if (this.claimEvent && this.events.has(this.claimEvent)) { claims.set(this.claimEvent, this); }
+  }
+
+  private syncClaim(all: DesktopInteraction[], claims: Map<string, DesktopInteractions>, focused: Set<string>): void {
+    const claim = this.events.get(this.claimEvent) ?? all.find((row: DesktopInteraction): boolean =>
+      row.sessionId === this.selected && row.timed && row.callId.length > 0 && !claims.has(row.id));
     if ((claim?.id ?? '') !== this.claimEvent) {
       this.releaseClaim();
-      if (claim !== undefined) { this.attachClaim(claim); }
     }
-    if (claim !== undefined && this.readQuestionState(claim)?.held === true) {
-      this.clearCountdown();
+    if (claim !== undefined) {
+      claims.set(claim.id, this);
+      const state = this.readQuestionState(claim);
+      const shouldPause = !state?.held && !state?.hidden && focused.has(claim.id);
+      if (state?.held) { this.clearCountdown(); }
+      this.updateCountdownFocus(claim, shouldPause);
+      if (!this.claimEvent) { this.attachClaim(claim); }
     }
+  }
+
+  private publishView(all: DesktopInteraction[], claims: Map<string, DesktopInteractions>): void {
     const active = all.filter((row: DesktopInteraction): boolean => row.sessionId === this.selected);
     const continued = this.answerableQuestions(this.questionProjections.get(this.selected)).filter((row: DesktopInteraction): boolean =>
       !active.some((event: DesktopInteraction): boolean => event.callId === row.callId));
@@ -579,10 +618,12 @@ export class DesktopInteractions {
       }
       if (row.kind !== 'question' || row.planReview !== undefined) { return row; }
       const state = this.readQuestionState(row);
+      const claim = claims.get(row.id);
       return { id: row.id, sessionId: row.sessionId, callId: row.callId, tool: row.tool, reason: row.reason,
         kind: row.kind, questions: row.questions, continued: row.continued, timed: row.timed,
         questionProgress: state?.progress, questionHidden: state?.hidden, questionHeld: state?.held,
-        waitDeadline: row.id === this.claimEvent ? this.claimDeadline : undefined };
+        waitDeadline: claim?.claimDeadline,
+        waitPausedMs: claim?.claimPausedMs };
     }));
   }
 
@@ -590,6 +631,7 @@ export class DesktopInteractions {
     clearTimeout(this.claimTimer);
     this.claimTimer = -1;
     this.claimDeadline = 0;
+    this.claimPausedMs = undefined;
   }
 
   private releaseClaim(): void {
@@ -597,7 +639,41 @@ export class DesktopInteractions {
     const stop = this.stopClaim;
     this.stopClaim = undefined;
     this.claimEvent = '';
+    this.claimFocused = false;
     stop?.();
+  }
+
+  private updateCountdownFocus(row: DesktopInteraction, focused: boolean): void {
+    if (focused === this.claimFocused) { return; }
+    this.claimFocused = focused;
+    if (focused && this.claimDeadline > 0) {
+      const remaining = Math.max(0, this.claimDeadline - Date.now());
+      this.setCountdown(row, remaining);
+    } else if (!focused && this.claimPausedMs !== undefined) {
+      this.setCountdown(row, this.claimPausedMs);
+    }
+  }
+
+  private setCountdown(row: DesktopInteraction, remaining: number): void {
+    this.clearCountdown();
+    if (this.claimFocused) {
+      this.claimPausedMs = remaining;
+      return;
+    }
+    this.claimDeadline = Date.now() + remaining;
+    this.claimTimer = setTimeout((): void => {
+      if (this.events.get(row.id) !== row || this.claimEvent !== row.id || this.claimFocused ||
+        this.readQuestionState(row)?.held === true) { return; }
+      this.rejectQuestion(row.id, 'ASK_TIMED_OUT', 'ask_user_question timed out before the user answered')
+        .then((error: string): void => {
+          if (error && this.claimEvent === row.id) {
+            this.clearCountdown();
+            this.stopClaim?.();
+            this.stopClaim = undefined;
+            this.publish();
+          }
+        });
+    }, remaining);
   }
 
   private attachClaim(row: DesktopInteraction): void {
@@ -607,20 +683,7 @@ export class DesktopInteractions {
         const remaining = getNumber(frame, 'remainingMs');
         if (this.claimEvent !== row.id || remaining === undefined ||
           this.readQuestionState(row)?.held === true) { return; }
-        this.clearCountdown();
-        this.claimDeadline = Date.now() + remaining;
-        this.claimTimer = setTimeout((): void => {
-          if (this.events.get(row.id) !== row || this.claimEvent !== row.id) { return; }
-          this.rejectQuestion(row.id, 'ASK_TIMED_OUT', 'ask_user_question timed out before the user answered')
-            .then((error: string): void => {
-              if (error && this.claimEvent === row.id) {
-                this.clearCountdown();
-                this.stopClaim?.();
-                this.stopClaim = undefined;
-                this.publish();
-              }
-            });
-        }, Math.max(0, remaining));
+        this.setCountdown(row, Math.max(0, remaining));
         this.publish();
       },
       onError: (): void => { this.endCountdown(row.id); },
@@ -629,7 +692,7 @@ export class DesktopInteractions {
   }
 
   private endCountdown(id: string): void {
-    if (this.claimEvent !== id || this.claimDeadline === 0) { return; }
+    if (this.claimEvent !== id || (this.claimDeadline === 0 && this.claimPausedMs === undefined)) { return; }
     this.clearCountdown();
     this.publish();
   }

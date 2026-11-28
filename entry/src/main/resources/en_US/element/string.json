@@ -586,6 +586,7 @@
     { "name": "desktop_question_continued", "value": "Work continued — you can still answer" },
     { "name": "desktop_question_held", "value": "Waiting until you answer" },
     { "name": "desktop_question_countdown", "value": "Continuing in %ds" },
+    { "name": "desktop_question_paused", "value": "Paused · %ds remaining" },
     { "name": "desktop_question_hold", "value": "Take time" },
     { "name": "desktop_question_expand_card", "value": "Expand the question card" },
     { "name": "desktop_question_collapse_card", "value": "Collapse the question card" },

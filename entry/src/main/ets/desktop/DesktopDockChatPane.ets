@@ -259,6 +259,9 @@ export struct DesktopDockChatPane {
             this.binding?.interactions.saveQuestion(request, progress, engage);
           },
           onQuestionHold: (request: string): void => { this.binding?.interactions.holdQuestion(request); },
+          onQuestionFocus: (request: string, focused: boolean): void => {
+            this.binding?.interactions.setQuestionFocus(request, focused);
+          },
           onQuestionClose: (request: string): void => {
             this.run((binding): Promise<string> => binding.interactions.closeQuestion(request));
           },

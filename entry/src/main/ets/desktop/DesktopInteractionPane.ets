@@ -1,10 +1,14 @@
 import { KeyCode } from '@kit.InputKit';
+import { window } from '@kit.ArkUI';
+import { StartupFrameCallback } from '../common/DesktopStartup';
 import { MarkdownRenderer } from '../view/MarkdownRenderer';
 import { DesktopApprovalCard } from './DesktopApprovalCard';
 import type { DesktopInteraction, DesktopQuestion, DesktopQuestionAnswer, DesktopQuestionOption } from './DesktopInteractions';
 import type { DesktopQuestionDraft, DesktopQuestionProgress } from './DesktopQuestionDrafts';
 import type { DesktopPlanDocument } from './DesktopPlan';
 import type { DesktopTypography } from './DesktopTheme';
+
+let nextQuestionFocusInstance: number = 0;
 
 @Component
 export struct DesktopInteractionPane {
@@ -20,6 +24,7 @@ export struct DesktopInteractionPane {
   onQuestionProgress: (id: string, progress: DesktopQuestionProgress, engage: boolean) => void =
     (_id: string, _progress: DesktopQuestionProgress, _engage: boolean): void => {};
   onQuestionHold: (id: string) => void = (_id: string): void => {};
+  onQuestionFocus: (id: string, focused: boolean) => void = (_id: string, _focused: boolean): void => {};
   onQuestionClose: (id: string) => void = (_id: string): void => {};
   onLink: (url: string) => void = (_url: string): void => {};
   @State private drafts: DesktopQuestionDraft[] = [];
@@ -29,10 +34,25 @@ export struct DesktopInteractionPane {
   @State private incomplete: boolean = false;
   @State private now: number = 0;
   private clock: number = -1;
+  private mounted: boolean = false;
   private composingCustom: boolean = false;
+  private readonly focusInstance: number = nextQuestionFocusInstance++;
+  private readonly focusedQuestions: Set<number> = new Set<number>();
   private readonly customController: TextAreaController = new TextAreaController();
+  private focusedAnswer: string = '';
+  private answerWindow?: window.Window;
+  private readonly answerWindowEvent = (event: window.WindowEventType): void => {
+    if (!this.focusedAnswer) { return; }
+    if (event === window.WindowEventType.WINDOW_INACTIVE || event === window.WindowEventType.WINDOW_HIDDEN ||
+      event === window.WindowEventType.WINDOW_DESTROYED) {
+      this.onQuestionFocus(this.focusedAnswer, false);
+    } else if (this.answerWindow?.isFocused() && this.answerWindow.isWindowShowing()) {
+      this.onQuestionFocus(this.focusedAnswer, true);
+    }
+  };
 
   aboutToAppear(): void {
+    this.mounted = true;
     const request = this.request;
     if (request?.kind !== 'question' || request.planReview !== undefined) { return; }
     const savedProgress = request.questionProgress;
@@ -65,7 +85,38 @@ export struct DesktopInteractionPane {
     if (this.clock === -1) { this.clock = setInterval((): void => { this.now = Date.now(); }, 1000); }
   }
 
-  aboutToDisappear(): void { clearInterval(this.clock); }
+  aboutToDisappear(): void {
+    this.mounted = false;
+    this.releaseAnswerFocus();
+    clearInterval(this.clock);
+  }
+
+  private enterAnswerFocus(): void {
+    const request = this.request;
+    if (!this.mounted || this.collapsed || !request?.timed || !request.callId || request.questionHeld || this.focusedAnswer) {
+      return;
+    }
+    this.focusedAnswer = request.id;
+    try {
+      const name = this.getUIContext().getWindowName();
+      if (name !== undefined) {
+        const owner = window.findWindow(name);
+        owner.on('windowEvent', this.answerWindowEvent);
+        this.answerWindow = owner;
+      }
+    } catch (_) {}
+    if (this.answerWindow === undefined || (this.answerWindow.isFocused() && this.answerWindow.isWindowShowing())) {
+      this.onQuestionFocus(request.id, true);
+    }
+  }
+
+  private releaseAnswerFocus(): void {
+    const focused = this.focusedAnswer;
+    this.focusedAnswer = '';
+    try { this.answerWindow?.off('windowEvent', this.answerWindowEvent); } catch (_) {}
+    this.answerWindow = undefined;
+    if (focused) { this.onQuestionFocus(focused, false); }
+  }
 
   @Builder
   private PlanReview() {
@@ -106,6 +157,7 @@ export struct DesktopInteractionPane {
 
   private save(index: number, engage: boolean = false): void {
     if (this.questionIndex !== index) {
+      this.releaseAnswerFocus();
       this.expanded = [];
       this.composingCustom = false;
     }
@@ -137,6 +189,26 @@ export struct DesktopInteractionPane {
     if (draft?.id !== question.id || draft.custom === text) { return; }
     this.update({ id: question.id, selected: question.multi ? this.drafts[this.questionIndex]?.selected ?? [] : [],
       custom: text, skipped: false }, this.questionIndex);
+  }
+
+  private customFocusId(): string {
+    return `desktopQuestionCustom:${this.focusInstance}:${this.questionIndex}`;
+  }
+
+  private canFocusCustom(question: DesktopQuestion): boolean {
+    const request = this.request;
+    return this.mounted && !this.collapsed && !this.busy && request?.kind === 'question' &&
+      request.planReview === undefined && !request.timed && question.custom && question.options.length === 0 &&
+      question.id === request.questions[this.questionIndex]?.id && !this.focusedQuestions.has(this.questionIndex);
+  }
+
+  private focusCustom(question: DesktopQuestion): void {
+    if (!this.canFocusCustom(question)) { return; }
+    const target = this.customFocusId();
+    this.getUIContext().postFrameCallback(new StartupFrameCallback((): void => {
+      if (target !== this.customFocusId() || !this.canFocusCustom(question)) { return; }
+      try { this.getUIContext().getFocusController().requestFocus(target); } catch (_) {}
+    }));
   }
 
   private customKey(question: DesktopQuestion, event: KeyEvent): boolean {
@@ -196,7 +268,10 @@ export struct DesktopInteractionPane {
       [...this.expanded, id];
   }
 
-  private waitSeconds(): number { return Math.max(0, Math.ceil(((this.request?.waitDeadline ?? 0) - this.now) / 1000)); }
+  private waitSeconds(): number {
+    const remaining = this.request?.waitPausedMs ?? ((this.request?.waitDeadline ?? 0) - this.now);
+    return Math.max(0, Math.ceil(remaining / 1000));
+  }
 
   private selected(label: string): boolean {
     return this.drafts[this.questionIndex]?.selected.includes(label) === true;
@@ -221,8 +296,9 @@ export struct DesktopInteractionPane {
         Text($r('app.string.desktop_question_continued')).fontSize(12).fontColor($r('sys.color.font_secondary'))
       } else if (this.request?.timed && this.request?.questionHeld) {
         Text($r('app.string.desktop_question_held')).fontSize(12).fontColor($r('sys.color.font_secondary'))
-      } else if (this.waitSeconds() > 0) {
-        Text($r('app.string.desktop_question_countdown', this.waitSeconds())).fontSize(12)
+      } else if (this.request?.waitPausedMs !== undefined || this.waitSeconds() > 0) {
+        Text(this.request?.waitPausedMs !== undefined ? $r('app.string.desktop_question_paused', this.waitSeconds()) :
+          $r('app.string.desktop_question_countdown', this.waitSeconds())).key('desktopQuestionCountdown').fontSize(12)
           .fontColor($r('sys.color.font_secondary'))
         Button($r('app.string.desktop_question_hold'), { buttonStyle: ButtonStyleMode.NORMAL }).key('desktopQuestionHold')
           .height(28).enabled(!this.busy).onClick((): void => { this.onQuestionHold(this.request?.id ?? ''); })
@@ -230,7 +306,10 @@ export struct DesktopInteractionPane {
       this.IconButton(this.collapsed ? $r('app.media.dsh_queue_chevron_up_outline') :
         $r('app.media.dsh_queue_chevron_down_outline'), this.collapsed ? $r('app.string.desktop_question_expand_card') :
         $r('app.string.desktop_question_collapse_card'), 'desktopQuestionCollapse', !this.busy,
-        (): void => { this.collapsed = !this.collapsed; })
+        (): void => {
+          if (!this.collapsed) { this.releaseAnswerFocus(); }
+          this.collapsed = !this.collapsed;
+        })
       this.IconButton($r('app.media.dsh_dock_close'), this.request?.callId ? $r('app.string.desktop_question_hide') :
         $r('app.string.desktop_question_cancel'), 'desktopQuestionClose', !this.busy,
         (): void => { this.onQuestionClose(this.request?.id ?? ''); })
@@ -302,7 +381,11 @@ export struct DesktopInteractionPane {
             TextArea({ text: this.drafts[this.questionIndex]?.custom ?? '',
               placeholder: $r('app.string.desktop_question_input'), controller: this.customController })
               .width('100%').constraintSize({ minHeight: 42, maxHeight: 120 }).fontSize(14)
-              .borderRadius(8).key('desktopQuestionCustom').enabled(!this.busy)
+              .borderRadius(8).key('desktopQuestionCustom').id(this.customFocusId()).enabled(!this.busy)
+              .onAppear((): void => { this.focusCustom(question); })
+              .onFocus((): void => {
+                if (question.options.length === 0) { this.focusedQuestions.add(this.questionIndex); }
+              })
               .onChange((value: string, preview?: PreviewText): void => {
                 this.composingCustom = (preview?.value ?? '').length > 0;
                 if (!this.composingCustom) { this.updateText(question, value); }
@@ -311,7 +394,9 @@ export struct DesktopInteractionPane {
               .onKeyPreIme((event: KeyEvent): boolean => this.customKey(question, event))
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
-      }.width('100%').constraintSize({ maxHeight: 260 }).align(Alignment.TopStart)
+      }.key('desktopQuestionAnswerSurface').initialOffset({ xOffset: 0, yOffset: 0 })
+      .width('100%').constraintSize({ maxHeight: 260 }).align(Alignment.TopStart)
+      .onFocus((): void => { this.enterAnswerFocus(); }).onBlur((): void => { this.releaseAnswerFocus(); })
       if (this.incomplete) {
         Text($r('app.string.desktop_question_incomplete')).key('desktopQuestionIncomplete')
           .fontSize(12).fontColor($r('sys.color.warning'))
@@ -353,7 +438,8 @@ export struct DesktopInteractionPane {
             this.PlanReview()
           } else {
             ForEach(this.request?.questions.slice(this.questionIndex, this.questionIndex + 1) ?? [],
-              (question: DesktopQuestion) => { this.Question(question) }, (question: DesktopQuestion): string => question.id)
+              (question: DesktopQuestion) => { this.Question(question) },
+              (question: DesktopQuestion): string => `${this.questionIndex}:${question.id}`)
           }
         }.padding(14).width('100%').alignItems(HorizontalAlign.Start)
           .borderRadius(16).backgroundColor($r('app.color.workspace_panel'))
