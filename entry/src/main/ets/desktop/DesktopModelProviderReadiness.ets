@@ -1,5 +1,5 @@
 import { deriveKeyRef } from 'appstate';
-import { getArray, getBoolean, getField, getRecord, getString, isStringArray, RpcResult, toStringArray } from 'connection';
+import { getArray, getBoolean, getField, getNumber, getRecord, getString, isStringArray, RpcResult, toStringArray } from 'connection';
 import { CREDENTIALS_DESCRIBE_ENDPOINT, LLM_LIST_CONFIGURABLE_PROVIDERS_ENDPOINT,
   LLM_LIST_PROVIDERS_ENDPOINT, SETTINGS_DESCRIBE_ENDPOINT } from 'dshcompat';
 import { DEEPSEEK_ACCOUNT_ROUTE, DEEPSEEK_API_ROUTE, DesktopDeepSeekCredential,
@@ -13,6 +13,9 @@ export interface DesktopModelProviderReadinessRow {
   path: string[];
   configured: boolean;
   active: boolean;
+  declared: boolean;
+  removable: boolean;
+  revision: number;
   /** An empty string means the effective profile does not name a credential. */
   credentialRef: string;
   credential?: DesktopDeepSeekCredential;
@@ -42,8 +45,8 @@ function providerList(value: Object | undefined): Object[] {
   return getArray(value, 'providers') ?? getArray(value, 'items') ?? getArray(wrapped, 'items') ?? [];
 }
 
-function effectiveProfile(document: Object | undefined, path: string[]): Object | undefined {
-  let value = getField(document, 'value');
+function providerProfile(document: Object | undefined, path: string[], layer: string): Object | undefined {
+  let value = getField(document, layer);
   for (const part of path) {
     if (value !== undefined && Array.isArray(value)) {
       const wrapped: Record<string, Object> = { 'items': value };
@@ -96,16 +99,19 @@ export async function readDesktopModelProviderReadiness(
   for (const entry of directory) {
     const provider = getString(entry, 'provider') ?? '';
     const rawPath = getArray(entry, 'settingsPath');
-    if (!provider || rawPath === undefined || !isStringArray(rawPath)) { continue; }
+    if (!provider || joined.has(provider) || rawPath === undefined || !isStringArray(rawPath)) { continue; }
     const namespace = getString(entry, 'settingsNs') ?? '';
     const path = toStringArray(rawPath);
     const document = documents.get(namespace);
-    const profile = effectiveProfile(document, path);
+    const profile = providerProfile(document, path, 'value');
     const credentialRef = provider === DEEPSEEK_ACCOUNT_ROUTE ? '' : getString(profile, 'apiKeyEnv') ?? '';
     const env = getArray(getRecord(entry, 'nativeAuth'), 'env');
     rows.push({
       provider: provider, displayName: getString(entry, 'displayName') || provider, namespace: namespace, path: path,
       configured: document !== undefined && (path.length === 0 || profile !== undefined), active: active.has(provider),
+      declared: getBoolean(entry, 'declared') === true, revision: getNumber(document, 'revision') ?? -1,
+      removable: path.length > 0 && providerProfile(document, path, 'user') !== undefined &&
+        providerProfile(document, path, 'base') === undefined,
       credentialRef: credentialRef, nativeAuthEnv: env !== undefined && isStringArray(env) ? toStringArray(env) : [],
       accountAvailable: false, error: getString(entry, 'error') ?? ''
     });
@@ -115,7 +121,8 @@ export async function readDesktopModelProviderReadiness(
     if (joined.has(provider)) { continue; }
     rows.push({
       provider: provider, displayName: getString(active.get(provider), 'name') || provider, namespace: '', path: [],
-      configured: false, active: true, credentialRef: '', nativeAuthEnv: [], accountAvailable: false, error: ''
+      configured: false, active: true, declared: false, removable: false, revision: -1,
+      credentialRef: '', nativeAuthEnv: [], accountAvailable: false, error: ''
     });
   }
   rows.sort((a: DesktopModelProviderReadinessRow, b: DesktopModelProviderReadinessRow): number =>

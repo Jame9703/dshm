@@ -9,6 +9,9 @@ import { DesktopPiAiAddProfile } from './DesktopPiAiAddProfile';
 export struct DesktopModelProviderAddFlow {
   host?: DesktopHostActions;
   @Prop availableDocument: DesktopAddProviderDocument = desktopAddProviderDocument(undefined, []);
+  @Prop @Watch('dismissFromPage') dismissRequest: number = 0;
+  onBeforeOpen: () => boolean = (): boolean => true;
+  onBusy: (busy: boolean) => void = (): void => {};
   onSaved: () => void = (): void => {};
   @State private document: DesktopAddProviderDocument = desktopAddProviderDocument(undefined, []);
   @State private open: boolean = false;
@@ -18,7 +21,7 @@ export struct DesktopModelProviderAddFlow {
   @State private catalogBusy: boolean = false;
   @State private customBusy: boolean = false;
   private show(): void {
-    if (this.open || !this.availableDocument.writable) { return; }
+    if (this.open || !this.availableDocument.writable || !this.onBeforeOpen()) { return; }
     // The open draft keeps its original write revision through background refreshes.
     this.document = this.availableDocument;
     this.saved = false;
@@ -37,7 +40,12 @@ export struct DesktopModelProviderAddFlow {
     this.catalogBusy = false;
     this.customBusy = false;
     this.selected = undefined;
+    this.onBusy(false);
     if (saved) { this.saved = true; this.onSaved(); }
+  }
+
+  private dismissFromPage(): void {
+    if (this.open && !this.catalogBusy && !this.customBusy) { this.close(false); }
   }
 
   private options(): DesktopAddModelProviderOption[] {
@@ -52,7 +60,7 @@ export struct DesktopModelProviderAddFlow {
     if (this.selected !== undefined) {
       ForEach([this.selected], (candidate: DesktopCatalogCandidate): void => {
         DesktopPiAiAddProfile({ document: this.document, candidate: candidate, host: this.host,
-          onBusy: (value: boolean): void => { this.catalogBusy = value; },
+          onBusy: (value: boolean): void => { this.catalogBusy = value; this.onBusy(value || this.customBusy); },
           onCancel: (): void => { this.close(false); }, onSaved: (): void => { this.close(true); } })
       }, (candidate: DesktopCatalogCandidate): string => candidate.provider)
     }
@@ -61,7 +69,7 @@ export struct DesktopModelProviderAddFlow {
   @Builder
   private CustomEditor() {
     DesktopPiAiAddProfile({ document: this.document, host: this.host,
-      onBusy: (value: boolean): void => { this.customBusy = value; },
+      onBusy: (value: boolean): void => { this.customBusy = value; this.onBusy(value || this.catalogBusy); },
       onCancel: (): void => { this.close(false); }, onSaved: (): void => { this.close(true); } })
   }
 

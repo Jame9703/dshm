@@ -1,0 +1,17 @@
+{
+  "string": [
+    { "name": "desktop_model_provider_removal_title", "value": "Delete %1$s?" },
+    { "name": "desktop_model_provider_removal_description", "value": "Deleting %1$s removes its configuration. Any credential it uses is managed elsewhere and will be kept." },
+    { "name": "desktop_model_provider_removal_description_with_key", "value": "Deleting %1$s removes its configuration and stored API key." },
+    { "name": "desktop_model_provider_removal_close", "value": "Close" },
+    { "name": "desktop_model_provider_removal_cancel", "value": "Cancel" },
+    { "name": "desktop_model_provider_removal_confirm", "value": "Delete %1$s" },
+    { "name": "desktop_model_provider_removal_deleting", "value": "Deleting %1$s…" },
+    { "name": "desktop_model_provider_removal_unavailable", "value": "This provider cannot be deleted right now. Check the Host connection and settings permissions." },
+    { "name": "desktop_model_provider_removal_stale", "value": "The provider configuration has changed. Close this dialog and confirm again." },
+    { "name": "desktop_model_provider_removal_credential_changed", "value": "This credential could not be confirmed for removal. Close this dialog and confirm again." },
+    { "name": "desktop_model_provider_removal_partial", "value": "The key removal request completed. Provider configuration removal has not been confirmed." },
+    { "name": "desktop_model_provider_removal_failed", "value": "Deletion failed. Try again." },
+    { "name": "desktop_model_provider_removal_open_failed", "value": "Could not open the deletion confirmation." }
+  ]
+}

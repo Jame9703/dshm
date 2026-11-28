@@ -1,0 +1,112 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_provider_row_edit",
+      "value": "编辑"
+    },
+    {
+      "name": "desktop_model_provider_row_edit_named",
+      "value": "编辑 %1$s"
+    },
+    {
+      "name": "desktop_model_provider_row_remove",
+      "value": "删除"
+    },
+    {
+      "name": "desktop_model_provider_row_remove_named",
+      "value": "删除 %1$s"
+    },
+    {
+      "name": "desktop_model_provider_row_signed_in",
+      "value": "已登录"
+    },
+    {
+      "name": "desktop_model_provider_row_credential_missing",
+      "value": "API 密钥缺失"
+    },
+    {
+      "name": "desktop_model_provider_row_credential_configured",
+      "value": "API 密钥已配置"
+    },
+    {
+      "name": "desktop_model_provider_row_custom",
+      "value": "自定义"
+    },
+    {
+      "name": "desktop_model_provider_editor_advanced",
+      "value": "自定义设置"
+    },
+    {
+      "name": "desktop_model_provider_editor_display_name",
+      "value": "显示名称"
+    },
+    {
+      "name": "desktop_model_provider_editor_endpoint",
+      "value": "API 地址"
+    },
+    {
+      "name": "desktop_model_provider_editor_protocol",
+      "value": "API 协议"
+    },
+    {
+      "name": "desktop_model_provider_editor_protocol_unset",
+      "value": "未选择"
+    },
+    {
+      "name": "desktop_model_provider_editor_models",
+      "value": "模型目录"
+    },
+    {
+      "name": "desktop_model_provider_editor_add_model",
+      "value": "添加模型"
+    },
+    {
+      "name": "desktop_model_provider_editor_key",
+      "value": "API 密钥"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_placeholder",
+      "value": "输入 API 密钥"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_fallback",
+      "value": "留空使用环境认证（%1$s）"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear",
+      "value": "清除已保存的 API 密钥"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear_pending",
+      "value": "保存以清除已保存的 API key，并改用环境认证。"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear_env",
+      "value": "保存以清除已保存的 API key。之后使用环境认证（%1$s）。"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear_applied",
+      "value": "密钥已清除，请重试保存以完成配置更新；此删除无法撤销"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_saved",
+      "value": "使用已保存的 API key。"
+    },
+    {
+      "name": "desktop_model_provider_editor_close",
+      "value": "关闭"
+    },
+    {
+      "name": "desktop_model_provider_editor_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "desktop_model_provider_editor_apply",
+      "value": "保存"
+    },
+    {
+      "name": "desktop_model_provider_editor_applying",
+      "value": "保存中…"
+    }
+  ]
+}

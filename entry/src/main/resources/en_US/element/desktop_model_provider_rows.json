@@ -1,0 +1,112 @@
+{
+  "string": [
+    {
+      "name": "desktop_model_provider_row_edit",
+      "value": "Edit"
+    },
+    {
+      "name": "desktop_model_provider_row_edit_named",
+      "value": "Edit %1$s"
+    },
+    {
+      "name": "desktop_model_provider_row_remove",
+      "value": "Delete"
+    },
+    {
+      "name": "desktop_model_provider_row_remove_named",
+      "value": "Delete %1$s"
+    },
+    {
+      "name": "desktop_model_provider_row_signed_in",
+      "value": "Signed in"
+    },
+    {
+      "name": "desktop_model_provider_row_credential_missing",
+      "value": "API key missing"
+    },
+    {
+      "name": "desktop_model_provider_row_credential_configured",
+      "value": "API key configured"
+    },
+    {
+      "name": "desktop_model_provider_row_custom",
+      "value": "Custom"
+    },
+    {
+      "name": "desktop_model_provider_editor_advanced",
+      "value": "Customized settings"
+    },
+    {
+      "name": "desktop_model_provider_editor_display_name",
+      "value": "Display name"
+    },
+    {
+      "name": "desktop_model_provider_editor_endpoint",
+      "value": "Base URL"
+    },
+    {
+      "name": "desktop_model_provider_editor_protocol",
+      "value": "API protocol"
+    },
+    {
+      "name": "desktop_model_provider_editor_protocol_unset",
+      "value": "Not selected"
+    },
+    {
+      "name": "desktop_model_provider_editor_models",
+      "value": "Models"
+    },
+    {
+      "name": "desktop_model_provider_editor_add_model",
+      "value": "Add model"
+    },
+    {
+      "name": "desktop_model_provider_editor_key",
+      "value": "API key"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_placeholder",
+      "value": "Enter your API key"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_fallback",
+      "value": "Leave blank to use env as auth (%1$s)"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear",
+      "value": "Clear saved API key"
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear_pending",
+      "value": "Apply to clear the saved API key and use environment authentication."
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear_env",
+      "value": "Apply to clear the saved API key. Environment authentication will be used (%1$s)."
+    },
+    {
+      "name": "desktop_model_provider_editor_key_clear_applied",
+      "value": "Key cleared. Apply again to finish settings; this deletion cannot be undone."
+    },
+    {
+      "name": "desktop_model_provider_editor_key_saved",
+      "value": "Use the existing saved API key."
+    },
+    {
+      "name": "desktop_model_provider_editor_close",
+      "value": "Close"
+    },
+    {
+      "name": "desktop_model_provider_editor_cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "desktop_model_provider_editor_apply",
+      "value": "Apply"
+    },
+    {
+      "name": "desktop_model_provider_editor_applying",
+      "value": "Applying…"
+    }
+  ]
+}

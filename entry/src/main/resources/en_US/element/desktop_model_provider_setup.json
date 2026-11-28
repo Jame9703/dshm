@@ -2,6 +2,9 @@
   "string": [
     { "name": "desktop_model_provider_read_only", "value": "The settings document is read-only in this deployment." },
     { "name": "desktop_model_provider_saved", "value": "Saved %1$s." },
-    { "name": "desktop_model_providers_unavailable", "value": "Could not load the model providers." }
+    { "name": "desktop_model_providers_unavailable", "value": "Could not load the model providers." },
+    { "name": "desktop_model_provider_intro", "value": "Enter your API keys to use models from the following providers." },
+    { "name": "desktop_model_provider_advanced_file", "value": "Other fields live in cordis.patch.yml; edit that section directly. (%1$s)" },
+    { "name": "desktop_model_provider_edit_conflict", "value": "The provider settings changed while editing. Close and reopen the editor." }
   ]
 }

@@ -2,6 +2,9 @@
   "string": [
     { "name": "desktop_model_provider_read_only", "value": "当前部署的设置文档为只读。" },
     { "name": "desktop_model_provider_saved", "value": "已保存 %1$s。" },
-    { "name": "desktop_model_providers_unavailable", "value": "暂时无法读取模型提供方。" }
+    { "name": "desktop_model_providers_unavailable", "value": "暂时无法读取模型提供方。" },
+    { "name": "desktop_model_provider_intro", "value": "填入各提供商的 API 密钥即可使用其模型。" },
+    { "name": "desktop_model_provider_advanced_file", "value": "其余字段在 cordis.patch.yml 中，请直接编辑对应段。(%1$s)" },
+    { "name": "desktop_model_provider_edit_conflict", "value": "提供方设置在编辑期间发生变化。请关闭编辑器并重新打开。" }
   ]
 }

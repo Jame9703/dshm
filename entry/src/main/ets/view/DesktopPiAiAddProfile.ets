@@ -2,6 +2,7 @@ import { baseURLPlaceholder, buildRouteProfile, checkBaseURL, checkModels, check
   checkRoute, deriveKeyRef, emptyModelRow, emptyProviderView, invalidPiAiCapacity, modelsDiffer, PIAI_SETTINGS_NS, piAiReasoningProtocol,
   SessionHub, SettingsWriteOutcome, Sp } from 'appstate';
 import type { PiAiModelRow, PiAiProviderView } from 'appstate';
+import { getArray, getNumber, getString } from 'connection';
 import { deepSeekApiKeyProblem } from '../desktop/DesktopDeepSeekProviderModel';
 import { desktopDeepSeekCatalogProblem } from '../desktop/DesktopDeepSeekCatalog';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
@@ -9,6 +10,8 @@ import { desktopCatalogActivationOperations } from '../desktop/DesktopProviderAd
 import type { DesktopAddProviderDocument, DesktopCatalogCandidate } from '../desktop/DesktopProviderAddModel';
 import { desktopPiAiAdoptedKeys, desktopPiAiModelInsertionIndex } from '../desktop/DesktopPiAiModelOrder';
 import { desktopPiAiReasoningLabel } from '../desktop/DesktopPiAiReasoning';
+import { desktopPiAiEditOperations } from '../desktop/DesktopPiAiEditModel';
+import type { DesktopPiAiExistingProfile } from '../desktop/DesktopPiAiEditModel';
 import { readDesktopRetryDocument } from '../desktop/DesktopRetryPolicyModel';
 import type { DesktopRetryChange, DesktopRetryDocument } from '../desktop/DesktopRetryPolicyModel';
 import { PiAiProviderSheet, PiAiSheetMode } from './PiAiProviderSheet';
@@ -17,6 +20,10 @@ import { PiAiProviderSheet, PiAiSheetMode } from './PiAiProviderSheet';
 export struct DesktopPiAiAddProfile {
   @Prop document: DesktopAddProviderDocument;
   @Prop candidate: DesktopCatalogCandidate | undefined = undefined;
+  @Prop existing: DesktopPiAiExistingProfile | undefined = undefined;
+  @Prop existingWritable: boolean = false;
+  @Prop inlineViewport: Area | undefined = undefined;
+  inlineScroller?: Scroller;
   host?: DesktopHostActions;
   onCancel: () => void = (): void => {};
   onSaved: () => void = (): void => {};
@@ -25,6 +32,8 @@ export struct DesktopPiAiAddProfile {
   @State private draft: PiAiProviderView = emptyProviderView('');
   @State private modelKeys: number[] = [];
   @State private keyDraft: string = '';
+  @State private keyClearPending: boolean = false;
+  @State private keyClearApplied: boolean = false;
   @State private saving: boolean = false;
   @State private discovering: boolean = false;
   @State private committed: boolean = false;
@@ -40,6 +49,17 @@ export struct DesktopPiAiAddProfile {
   aboutToAppear(): void {
     this.mounted = true;
     const candidate = this.candidate;
+    if (this.existing !== undefined) {
+      const original = this.existing.original;
+      this.draft = { route: original.route, displayName: original.displayName, baseURL: original.baseURL,
+        api: original.api, apiKeyEnv: original.apiKeyEnv, defaultInput: original.defaultInput,
+        models: original.models.slice(), modelLayer: original.modelLayer };
+      this.modelKeys = this.draft.models.map((_model: PiAiModelRow): number => ++this.nextKey);
+      this.modelOverride = original.modelLayer?.userOverride === true;
+      this.revision = this.existing.row.revision;
+      this.retryDocument = readDesktopRetryDocument(this.document.describe, this.existing.row.namespace, this.retryPath());
+      return;
+    }
     const draft = emptyProviderView(candidate === undefined ? this.document.protocols[0] ?? '' : '');
     draft.route = candidate?.provider ?? '';
     draft.models = [];
@@ -53,22 +73,39 @@ export struct DesktopPiAiAddProfile {
   aboutToDisappear(): void {
     this.mounted = false;
     this.keyDraft = '';
+    if (this.saving || this.discovering) { this.onBusy(false); }
   }
 
-  private retryPath(): string[] { return [...(this.candidate?.path ?? []), 'retryPolicy']; }
+  private retryPath(): string[] { return [...(this.existing?.row.path ?? this.candidate?.path ?? []), 'retryPolicy']; }
 
-  private keyRef(): string { return this.draft.route.trim() ? deriveKeyRef(this.draft.route.trim()) : ''; }
+  private keyRef(): string {
+    return this.existing?.row.credentialRef || (this.draft.route.trim() ? deriveKeyRef(this.draft.route.trim()) : '');
+  }
+
+  private canWrite(): boolean { return this.existing === undefined ? this.document.writable : this.existingWritable; }
+
+  private canClearExistingKey(): boolean {
+    const record = this.existing?.row.credential;
+    return record?.configured === true && record.writable && record.source === 'file' && !this.keyClearApplied;
+  }
 
   private unavailableMessage(): Resource {
     return $r('app.string.desktop_catalog_provider_unavailable', this.candidate?.provider ?? '');
   }
 
   private keyHint(): ResourceStr {
+    if (this.existing !== undefined) {
+      const credential = this.existing.row.credential;
+      if (!this.keyClearPending && !this.keyClearApplied && credential?.configured && credential.source === 'file') {
+        return credential.masked || '••••••••';
+      }
+    }
     const env = this.candidate?.nativeEnv[0];
     return env === undefined ? '' : $r('app.string.desktop_catalog_provider_env', env);
   }
 
   private endpointHint(): string {
+    if (this.existing !== undefined) { return this.existing.endpointPlaceholder || baseURLPlaceholder(this.draft.api); }
     return this.candidate === undefined ? baseURLPlaceholder(this.draft.api) :
       this.candidate.endpoint || this.candidate.endpointEnv.join(' / ');
   }
@@ -78,7 +115,16 @@ export struct DesktopPiAiAddProfile {
     if (key) { return key === 'blank' ? $r('app.string.desktop_deepseek_key_blank') :
       $r('app.string.desktop_deepseek_key_format'); }
     if (this.committed) { return ''; }
-    if (this.candidate === undefined) {
+    const existing = this.existing;
+    if (existing !== undefined) {
+      if (this.draft.api !== existing.original.api && this.draft.api.length > 0) {
+        const api = checkProtocol(this.draft.api, this.document.protocols);
+        if (!api.ok) { return api.message; }
+      }
+      if (this.draft.api === 'google-generative-ai' && !existing.row.credentialRef && !this.keyDraft.trim()) {
+        return $r('app.string.desktop_catalog_provider_required_key');
+      }
+    } else if (this.candidate === undefined) {
       const route = checkRoute(this.draft.route, this.document.taken);
       if (!route.ok) { return route.message; }
       if (this.draft.api === 'google-generative-ai' && !this.keyDraft.trim()) {
@@ -89,7 +135,8 @@ export struct DesktopPiAiAddProfile {
       const models = checkModels(this.draft.models);
       if (!models.ok) { return models.message; }
     }
-    if (this.candidate === undefined || this.draft.baseURL.trim()) {
+    if ((existing === undefined && this.candidate === undefined) ||
+        (this.draft.baseURL.trim() && this.draft.baseURL !== existing?.original.baseURL)) {
       const endpoint = checkBaseURL(this.draft.baseURL);
       if (!endpoint.ok) { return endpoint.message; }
     }
@@ -134,6 +181,10 @@ export struct DesktopPiAiAddProfile {
   }
 
   private operations(key: string, ref: string): Record<string, Object>[] {
+    if (this.existing !== undefined) {
+      return desktopPiAiEditOperations(this.existing, this.draft, this.modelOverride, key.length > 0,
+        this.keyClearPending || this.keyClearApplied, this.retry.operations);
+    }
     if (this.candidate !== undefined) {
       return desktopCatalogActivationOperations(this.candidate, this.draft.baseURL.trim(), key, this.modelOverride,
         this.draft.models, this.retry.operations);
@@ -143,7 +194,7 @@ export struct DesktopPiAiAddProfile {
   }
 
   private async save(): Promise<void> {
-    if (this.saving || this.discovering || !this.document.writable || this.conflict || this.revision < 0 ||
+    if (this.saving || this.discovering || !this.canWrite() || this.conflict || this.revision < 0 ||
       this.validation() !== '' || this.retry.problem || this.candidate?.editable === false) { return; }
     const candidate = this.candidate;
     const ref = this.keyRef();
@@ -153,22 +204,43 @@ export struct DesktopPiAiAddProfile {
     this.saving = true;
     this.onBusy(true);
     try {
-      if (!this.committed) {
-        const reply = await hub.mutateSettingPaths(candidate?.namespace ?? PIAI_SETTINGS_NS,
-          this.operations(key, ref), this.revision);
+      const operations = this.committed ? [] : this.operations(key, ref);
+      if (this.existing !== undefined && ((this.keyClearPending && !this.keyClearApplied) || (key && operations.length === 0))) {
+        const description = await hub.readSettingsDescription();
         if (!this.mounted) { return; }
-        if (reply.outcome !== SettingsWriteOutcome.OK) {
-          this.conflict = reply.outcome === SettingsWriteOutcome.CONFLICT;
-          this.keyFailure = reply.message;
+        const namespace = getArray(description.value, 'namespaces')?.find((entry: Object): boolean =>
+          getString(entry, 'ns') === this.existing?.row.namespace);
+        if (!description.ok || getNumber(namespace, 'revision') !== this.revision) {
+          this.conflict = description.ok;
+          this.keyFailure = $r('app.string.desktop_model_provider_edit_conflict');
           return;
         }
-        this.committed = true;
+      }
+      if (this.keyClearPending && !this.keyClearApplied) {
+        const cleared = await hub.unsetCredential(ref);
+        if (!this.mounted) { return; }
+        if (!cleared.ok) { this.keyFailure = cleared.message; return; }
+        this.keyClearApplied = true;
+      }
+      if (!this.committed) {
+        if (operations.length > 0) {
+          const reply = await hub.mutateSettingPaths(this.existing?.row.namespace ?? candidate?.namespace ?? PIAI_SETTINGS_NS,
+            operations, this.revision);
+          if (!this.mounted) { return; }
+          if (reply.outcome !== SettingsWriteOutcome.OK) {
+            this.conflict = reply.outcome === SettingsWriteOutcome.CONFLICT;
+            this.keyFailure = reply.message;
+            return;
+          }
+          this.revision = reply.actualRevision;
+          this.committed = true;
+        }
       }
       if (key) {
         const reply = await hub.setCredential(ref, key);
         if (!this.mounted) { return; }
         if (!reply.ok) {
-          this.keyFailure = $r('app.string.desktop_deepseek_key_after_settings', reply.message);
+          this.keyFailure = this.committed ? $r('app.string.desktop_deepseek_key_after_settings', reply.message) : reply.message;
           return;
         }
       }
@@ -184,6 +256,13 @@ export struct DesktopPiAiAddProfile {
     }
   }
 
+  private restoreModels(): void {
+    const inherited = this.existing?.original.modelLayer?.inherited ?? [];
+    this.draft.models = inherited.slice();
+    this.modelKeys = inherited.map((_model: PiAiModelRow): number => ++this.nextKey);
+    this.modelOverride = false;
+  }
+
   build() {
     Column({ space: Sp.S }) {
       if (this.candidate?.editable === false) {
@@ -192,13 +271,23 @@ export struct DesktopPiAiAddProfile {
         Button($r('app.string.desktop_deepseek_cancel'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopPiAiProviderCancel').onClick(this.onCancel)
       } else {
-        PiAiProviderSheet({ inline: true, mode: this.candidate === undefined ? PiAiSheetMode.CREATE : PiAiSheetMode.CATALOG,
-          locked: !this.document.writable || this.conflict, profileCommitted: this.committed,
+        PiAiProviderSheet({ inline: true, mode: this.existing !== undefined ? PiAiSheetMode.EDIT :
+          this.candidate === undefined ? PiAiSheetMode.CREATE : PiAiSheetMode.CATALOG,
+          existingDeclared: this.existing?.row.declared === true, existingDisplayName: this.existing?.row.displayName ?? '',
+          existingDisplayNamePlaceholder: this.existing?.namePlaceholder ?? '', inlineScroller: this.inlineScroller,
+          inlineViewport: this.inlineViewport, existingKeyCanClear: this.canClearExistingKey(),
+          existingKeyClearPending: this.keyClearPending, existingKeyClearApplied: this.keyClearApplied,
+          onExistingKeyClear: (): void => {
+            if (this.canWrite() && this.canClearExistingKey() && !this.saving && !this.discovering && !this.committed) {
+              this.keyClearPending = !this.keyClearPending;
+            }
+          },
+          locked: !this.canWrite() || this.conflict, profileCommitted: this.committed,
           submitBlocked: this.validation() !== '', draft: this.draft, modelKeys: this.modelKeys,
-          catalogStandard: this.candidate !== undefined, catalogWritable: this.document.writable,
+          catalogStandard: this.candidate !== undefined || this.existing?.catalog === true, catalogWritable: this.canWrite(),
           modelsOverridden: this.modelOverride, protocols: this.document.protocols,
           reasoningLevels: this.document.reasoningLevels, baseURLPlaceholder: this.endpointHint(),
-          hideKey: this.candidate?.keyless === true, keyDraft: this.keyDraft, keyRef: this.keyRef(),
+          hideKey: this.candidate?.keyless === true || this.existing?.keyless === true, keyDraft: this.keyDraft, keyRef: this.keyRef(),
           keyPlaceholder: this.keyHint(), busy: this.saving, notice: this.keyFailure || this.validation(),
           retryPath: this.retryPath(), retryDocument: this.retryDocument, retryValid: !this.retry.problem,
           retryHost: this.host,
@@ -208,7 +297,7 @@ export struct DesktopPiAiAddProfile {
           onDisplayNameChange: (value: string): void => { this.draft.displayName = value; },
           onBaseURLChange: (value: string): void => { this.draft.baseURL = value; },
           onApiChange: (value: string): void => { this.draft.api = value; },
-          onKeyChange: (value: string): void => { this.keyDraft = value; },
+          onKeyChange: (value: string): void => { this.keyDraft = value; if (value) { this.keyClearPending = false; } },
           onModelChange: (at: number, row: PiAiModelRow): void => { this.modelChanged(at, row); },
           onAddModel: (): void => {
             this.draft.models = [...this.draft.models, emptyModelRow()];
@@ -220,7 +309,7 @@ export struct DesktopPiAiAddProfile {
             this.modelKeys = this.modelKeys.filter((_key: number, index: number): boolean => index !== at);
             this.modelOverride = true;
           },
-          onRestoreModels: (): void => { this.draft.models = []; this.modelKeys = []; this.modelOverride = false; },
+          onRestoreModels: (): void => { this.restoreModels(); },
           onAdoptModels: (value: PiAiModelRow[]): void => { this.adoptModels(value); },
           onMoveModel: (source: number, target: number, after: boolean): void => { this.moveModel(source, target, after); },
           onClose: this.onCancel, onSubmit: (): void => { this.save(); } })

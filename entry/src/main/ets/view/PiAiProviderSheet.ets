@@ -29,6 +29,7 @@
 
 import { checkPiAiModelReasoning, emptyModelRow, Fs, invalidPiAiCapacity, piAiReasoningProtocol, Radius, Sp, Sz } from 'appstate';
 import { image } from '@kit.ImageKit';
+import { KeyCode } from '@kit.InputKit';
 import { HarmonySpacing } from 'appstate';
 import { protocolLabel } from 'appstate';
 import type { PiAiModelRow, PiAiProviderView, PiAiReasoningProtocol } from 'appstate';
@@ -54,6 +55,15 @@ export struct PiAiProviderSheet {
   /** 编辑还是新建（`PiAiSheetMode` 的取值；决定 id 是否可改与按钮文案） */
   @Prop mode: string = PiAiSheetMode.CREATE;
   @Prop inline: boolean = false;
+  @Prop existingDeclared: boolean = false;
+  @Prop existingDisplayName: string = '';
+  @Prop existingDisplayNamePlaceholder: string = '';
+  inlineScroller?: Scroller;
+  @Prop inlineViewport: Area | undefined = undefined;
+  @Prop existingKeyCanClear: boolean = false;
+  @Prop existingKeyClearPending: boolean = false;
+  @Prop existingKeyClearApplied: boolean = false;
+  onExistingKeyClear: () => void = (): void => {};
   @Prop locked: boolean = false;
   @Prop profileCommitted: boolean = false;
   @Prop submitBlocked: boolean = false;
@@ -154,7 +164,8 @@ export struct PiAiProviderSheet {
             .hitTestBehavior(HitTestMode.None).accessibilityLevel('no')
         }
       }.width('100%').onAreaChange((_before: Area, area: Area): void => { this.sheetArea = area; })
-    }.width('100%').padding(HarmonySpacing.CONTAINER)
+    }.key(this.isInlineEdit() ? 'desktopPiAiProviderInlineEditor' : 'desktopPiAiProviderSheet-' + this.mode)
+      .width('100%').padding(this.isInlineEdit() ? 0 : HarmonySpacing.CONTAINER)
   }
 
   @Builder
@@ -172,7 +183,7 @@ export struct PiAiProviderSheet {
 
   @Builder
   private Fields() {
-    Column({ space: Sp.S }) {
+    Column({ space: this.isInlineEdit() ? 14 : Sp.S }) {
       if (!this.inline) {
           Text(this.isCreate() ? '添加自定义模型 API' : `编辑提供方「${this.draft.route}」`)
             .fontSize(Fs.BODY)
@@ -183,7 +194,9 @@ export struct PiAiProviderSheet {
             .fontColor($r('sys.color.font_tertiary'))
             .width('100%')
       }
-      if (this.mode === PiAiSheetMode.CATALOG) {
+      if (this.isInlineEdit()) {
+        this.ExistingFields()
+      } else if (this.mode === PiAiSheetMode.CATALOG) {
         if (!this.hideKey) { this.keyField() }
         Button($r('app.string.desktop_catalog_provider_advanced'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopCatalogProviderAdvanced').accessibilitySelected(this.advanced)
@@ -219,24 +232,88 @@ export struct PiAiProviderSheet {
         Text(this.note).fontSize(Fs.CAPTION).fontColor($r('sys.color.font_secondary')).width('100%')
       }
 
-      Row({ space: Sp.S }) {
-        Button('取消')
-          .key('desktopPiAiProviderCancel').layoutWeight(1).enabled(!this.inline || (!this.busy && !this.discovering))
-          .backgroundColor($r('sys.color.background_secondary')).fontColor($r('sys.color.font_primary'))
-          .onClick((): void => { this.onClose(); })
-        Button(this.isCreate() ? '添加' : '保存')
-          .key('desktopPiAiProviderSubmit').layoutWeight(1)
-          .enabled(!this.locked && !this.submitBlocked && !this.busy && !this.discovering && this.retryValid &&
-            this.capacitiesValid() && this.reasoningValid())
-          .onClick((): void => { this.onSubmit(); })
-      }.width('100%')
-      if (this.mode === PiAiSheetMode.EDIT) {
+      if (this.isInlineEdit()) {
+        this.ExistingFooter()
+      } else {
+        Row({ space: Sp.S }) {
+          Button('取消')
+            .key('desktopPiAiProviderCancel').layoutWeight(1).enabled(!this.inline || (!this.busy && !this.discovering))
+            .backgroundColor($r('sys.color.background_secondary')).fontColor($r('sys.color.font_primary'))
+            .onClick((): void => { this.onClose(); })
+          Button(this.isCreate() ? '添加' : '保存')
+            .key('desktopPiAiProviderSubmit').layoutWeight(1).enabled(this.canSubmit())
+            .onClick((): void => { this.onSubmit(); })
+        }.width('100%')
+      }
+      if (!this.inline && this.mode === PiAiSheetMode.EDIT) {
         Button('删除这个提供方').width('100%').enabled(!this.busy && !this.discovering)
           .backgroundColor($r('sys.color.background_secondary')).fontColor($r('sys.color.warning'))
           .onClick((): void => { this.onDelete(); })
       }
-    }.width('100%').padding(this.inline ? Sp.S : Sp.L).borderRadius(Radius.L)
+    }.width('100%').padding(this.fieldsPadding()).borderRadius(Radius.L)
       .backgroundColor($r('sys.color.background_secondary'))
+  }
+
+  @Builder
+  private ExistingFields() {
+    Flex({ alignItems: ItemAlign.Baseline }) {
+      Text(this.existingTitle()).fontSize(14).lineHeight(22).fontWeight(FontWeight.Medium)
+      if (this.existingTitle() !== this.draft.route) {
+        Text(this.draft.route).fontSize(12).lineHeight(18).fontColor($r('sys.color.font_tertiary')).margin({ left: 8 })
+      }
+    }.width('100%')
+    if (!this.hideKey) { this.ExistingKeyField() }
+    Column({ space: 10 }) {
+      Divider().strokeWidth(0.5).color($r('app.color.workspace_border'))
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 6 }) {
+          Image(this.advanced ? $r('app.media.dsh_queue_chevron_down_outline') :
+            $r('app.media.dsh_browser_chevron_right_outline')).width(12).height(12)
+            .supportSvg2(true).draggable(false).accessibilityLevel('no')
+          Text($r('app.string.desktop_model_provider_editor_advanced')).fontSize(13)
+        }
+      }.key('desktopPiAiProviderAdvanced').height(28).padding({ left: 4, right: 6 })
+        .accessibilitySelected(this.advanced).onClick((): void => {
+          if (this.advanced) { this.cancelModelDrag(); }
+          this.advanced = !this.advanced;
+        })
+      Column({ space: 12 }) {
+        if (this.existingDeclared) {
+          Column({ space: 6 }) {
+            Text($r('app.string.desktop_model_provider_editor_display_name')).fontSize(12).width('100%')
+              .fontColor($r('sys.color.font_secondary'))
+            TextInput({ text: this.draft.displayName, placeholder: this.existingDisplayNamePlaceholder || this.draft.route })
+              .key('desktopPiAiProviderDisplayName').width('100%').height(Sz.TOUCH_MIN).fontSize(Fs.SECONDARY)
+              .accessibilityText($r('app.string.desktop_model_provider_editor_display_name'))
+              .enabled(this.canChangeModelFields())
+              .onChange((value: string): void => {
+                if (this.canChangeModelFields() && value !== this.draft.displayName) { this.onDisplayNameChange(value); }
+              })
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }
+        this.baseURLField()
+        if (this.existingDeclared) { this.protocolField() }
+        this.RetryField()
+        this.modelsField()
+      }.width('100%').visibility(this.advanced ? Visibility.Visible : Visibility.None)
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  private ExistingFooter() {
+    Row({ space: 8 }) {
+      Blank().layoutWeight(1)
+      Button(this.existingKeyClearApplied ? $r('app.string.desktop_model_provider_editor_close') :
+        $r('app.string.desktop_model_provider_editor_cancel'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+        .key('desktopPiAiProviderCancel').height(36).borderRadius(8).fontSize(14).padding({ left: 14, right: 14 })
+        .border({ width: 0.5, color: $r('app.color.workspace_border') })
+        .enabled(!this.busy).onClick((): void => { if (!this.busy) { this.onClose(); } })
+      Button(this.busy ? $r('app.string.desktop_model_provider_editor_applying') :
+        $r('app.string.desktop_model_provider_editor_apply'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.EMPHASIZED })
+        .key('desktopPiAiProviderSubmit').height(36).borderRadius(8).fontSize(14).fontWeight(FontWeight.Medium)
+        .padding({ left: 16, right: 16 })
+        .enabled(this.canSubmit()).onClick((): void => { if (this.canSubmit()) { this.onSubmit(); } })
+    }.width('100%')
   }
 
   @Builder
@@ -261,7 +338,7 @@ export struct PiAiProviderSheet {
   private modelBody(key: number): string { return 'desktopPiAiModelReorderBody-' + key; }
 
   private stepModel(key: number, direction: number): void {
-    if (this.busy || this.draggedModel >= 0) { return; }
+    if (!this.canChangeModelFields() || this.draggedModel >= 0) { return; }
     const from = this.modelIndex(key);
     const target = this.modelKeys[from + direction];
     if (from < 0 || target === undefined) { return; }
@@ -282,12 +359,12 @@ export struct PiAiProviderSheet {
   }
 
   private holdModel(key: number, pressed: boolean): void {
-    if (pressed && !this.busy && this.modelKeys.length > 1) { this.heldModel = key; }
+    if (pressed && this.canChangeModelFields() && this.modelKeys.length > 1) { this.heldModel = key; }
     else if (!pressed && this.heldModel === key) { this.heldModel = -1; }
   }
 
   private beginModelDrag(key: number, event: GestureEvent, handle: Area): void {
-    if (this.busy || this.draggedModel >= 0 || this.modelKeys.length < 2) { return; }
+    if (!this.canChangeModelFields() || this.draggedModel >= 0 || this.modelKeys.length < 2) { return; }
     const band = this.modelBands.get(key);
     const point = this.modelDragPoint(event);
     if (band === undefined || point === undefined) { return; }
@@ -310,7 +387,10 @@ export struct PiAiProviderSheet {
   }
 
   private updateModelDrag(event: GestureEvent, canScroll: boolean = true): void {
-    const frame = this.formArea;
+    if (!this.canChangeModelFields()) { this.cancelModelDrag(); return; }
+    const inlineFrame = this.inline ? this.inlineViewport : undefined;
+    const frame = inlineFrame ?? this.formArea;
+    const scroller = this.inline ? (inlineFrame === undefined ? undefined : this.inlineScroller) : this.formScroller;
     const root = this.sheetArea;
     const point = this.modelDragPoint(event);
     if (this.draggedModel < 0 || point === undefined || frame === undefined || root === undefined) { return; }
@@ -322,10 +402,10 @@ export struct PiAiProviderSheet {
     const y = pointerY - Number(frame.globalPosition.y);
     const inside = x >= 0 && x < Number(frame.width) && y >= 0 && y < Number(frame.height);
     if (!inside) { this.insertion = undefined; return; }
-    if (canScroll && !this.inline) {
+    if (canScroll && scroller !== undefined) {
       const height = Number(frame.height);
-      if (y < 26) { this.formScroller.scrollBy(0, (y - 26) * 0.45); }
-      else if (y > height - 26) { this.formScroller.scrollBy(0, (y - height + 26) * 0.45); }
+      if (y < 26) { scroller.scrollBy(0, (y - 26) * 0.45); }
+      else if (y > height - 26) { scroller.scrollBy(0, (y - height + 26) * 0.45); }
     }
     const visible: DesktopPiAiModelBand[] = [];
     for (const key of this.modelKeys) {
@@ -340,7 +420,7 @@ export struct PiAiProviderSheet {
     const from = this.draggedModel;
     const target = this.insertion;
     this.cancelModelDrag();
-    if (!this.busy && target !== undefined &&
+    if (this.canChangeModelFields() && target !== undefined &&
       desktopPiAiModelInsertionIndex(this.modelKeys, from, target.key, target.after) >= 0) {
       this.onMoveModel(from, target.key, target.after);
     }
@@ -370,10 +450,14 @@ export struct PiAiProviderSheet {
       Column() {
         PiAiModelSettingsRow({ initialModel: this.modelFor(key), rowIndex: this.modelIndex(key),
           reorderHandleId: this.modelHandle(key), defaultInput: this.draft.defaultInput, reasoning: this.reasoningProtocol(),
-          removable: this.mode === PiAiSheetMode.CATALOG || this.modelKeys.length > 1,
-          editingEnabled: !this.busy && !this.locked && !this.profileCommitted,
-          onChange: (value: PiAiModelRow): void => { this.onModelChange(this.modelIndex(key), value); },
-          onRemove: (): void => { this.onRemoveModel(this.modelIndex(key)); },
+          removable: this.isInlineEdit() || this.mode === PiAiSheetMode.CATALOG || this.modelKeys.length > 1,
+          editingEnabled: this.canChangeModelFields(),
+          onChange: (value: PiAiModelRow): void => {
+            if (this.canChangeModelFields()) { this.onModelChange(this.modelIndex(key), value); }
+          },
+          onRemove: (): void => {
+            if (this.canChangeModelFields()) { this.onRemoveModel(this.modelIndex(key)); }
+          },
           onOrderStep: (step: number): void => { this.stepModel(key, step); },
           onOrderHold: (pressed: boolean): void => { this.holdModel(key, pressed); },
           onOrderBegin: (event: GestureEvent, handle: Area): void => { this.beginModelDrag(key, event, handle); },
@@ -395,6 +479,23 @@ export struct PiAiProviderSheet {
     return this.mode === PiAiSheetMode.CREATE;
   }
 
+  private isInlineEdit(): boolean { return this.inline && this.mode === PiAiSheetMode.EDIT; }
+
+  private existingTitle(): string { return this.existingDisplayName || this.draft.displayName || this.draft.route; }
+
+  private fieldsPadding(): Padding {
+    if (this.isInlineEdit()) { return { top: 14, bottom: 14, left: 16, right: 16 }; }
+    const space = this.inline ? Sp.S : Sp.L;
+    return { top: space, bottom: space, left: space, right: space };
+  }
+
+  private canChangeModelFields(): boolean { return !this.locked && !this.busy && !this.profileCommitted; }
+
+  private canSubmit(): boolean {
+    return !this.locked && !this.submitBlocked && !this.busy && !this.discovering && this.retryValid &&
+      this.capacitiesValid() && this.reasoningValid();
+  }
+
   private capacitiesValid(): boolean {
     return (this.catalogStandard && !this.modelsOverridden) || this.draft.models.every((row: PiAiModelRow): boolean =>
       !invalidPiAiCapacity(row.contextWindow) && !invalidPiAiCapacity(row.maxTokens));
@@ -411,7 +512,7 @@ export struct PiAiProviderSheet {
   private protocolMenu(): MenuElement[] {
     return this.protocols.map((id: string): MenuElement => ({ value: protocolLabel(id),
       icon: id === this.draft.api ? $r('app.media.dsh_dock_check') : undefined,
-      action: (): void => { this.onApiChange(id); } }));
+      action: (): void => { if (this.canChangeModelFields()) { this.onApiChange(id); } } }));
   }
 
   /** Provider ID / 显示名 */
@@ -464,7 +565,7 @@ export struct PiAiProviderSheet {
   /** 端点 */
   @Builder
   baseURLField() {
-    Text('API 地址（端点）')
+    Text(this.isInlineEdit() ? $r('app.string.desktop_model_provider_editor_endpoint') : 'API 地址（端点）')
       .fontSize(Fs.CAPTION)
       .fontColor($r('sys.color.font_secondary'))
       .width('100%')
@@ -475,14 +576,14 @@ export struct PiAiProviderSheet {
       .width('100%')
       .enabled(!this.locked && !this.busy && !this.profileCommitted)
       .onChange((v: string) => {
-        this.onBaseURLChange(v);
+        if (this.canChangeModelFields() && (!this.isInlineEdit() || v !== this.draft.baseURL)) { this.onBaseURLChange(v); }
       })
   }
 
   /** API 协议（官方 `customApi`，中文文案即「API 协议」） */
   @Builder
   protocolField() {
-    Text('API 协议')
+    Text(this.isInlineEdit() ? $r('app.string.desktop_model_provider_editor_protocol') : 'API 协议')
       .fontSize(Fs.CAPTION)
       .fontColor($r('sys.color.font_secondary'))
       .width('100%')
@@ -492,6 +593,17 @@ export struct PiAiProviderSheet {
         .fontSize(Fs.CAPTION)
         .fontColor($r('sys.color.warning'))
         .width('100%')
+    } else if (this.isInlineEdit()) {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 8 }) {
+          Text(this.draft.api ? protocolLabel(this.draft.api) : $r('app.string.desktop_model_provider_editor_protocol_unset'))
+            .fontSize(14).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Image($r('app.media.dsh_queue_chevron_down_outline')).width(14).height(14)
+            .supportSvg2(true).draggable(false).accessibilityLevel('no')
+        }.width('100%')
+      }.key('desktopPiAiProviderProtocol').width('100%').height(36).borderRadius(8)
+        .padding({ left: 10, right: 10 }).backgroundColor($r('sys.color.background_primary'))
+        .enabled(this.canChangeModelFields()).bindMenu(this.protocolMenu(), desktopMenuOptions(Placement.BottomLeft))
     } else if (this.inline) {
       Button(protocolLabel(this.draft.api), { buttonStyle: ButtonStyleMode.TEXTUAL })
         .key('desktopPiAiProviderProtocol').width('100%').enabled(!this.locked && !this.busy && !this.profileCommitted)
@@ -526,49 +638,121 @@ export struct PiAiProviderSheet {
   modelsField() {
     Row({ space: Sp.S }) {
       Column({ space: 4 }) {
-        Text(`模型目录（${this.draft.models.length} 个）`).fontSize(Fs.CAPTION)
+        Text(this.isInlineEdit() ? $r('app.string.desktop_model_provider_editor_models') :
+          `模型目录（${this.draft.models.length} 个）`).fontSize(Fs.CAPTION)
           .fontColor($r('sys.color.font_secondary'))
-        if (this.catalogStandard) {
+        if (this.catalogStandard || this.isInlineEdit()) {
           Text(this.modelsOverridden ? $r('app.string.desktop_model_catalog_customized') :
             $r('app.string.desktop_model_catalog_inherited')).key('desktopPiAiModelsLayer')
             .fontSize(Fs.CAPTION).fontColor($r('sys.color.font_tertiary'))
         }
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      if (this.catalogStandard && this.modelsOverridden) {
+      if ((this.catalogStandard || this.isInlineEdit()) && this.modelsOverridden) {
         Button($r('app.string.desktop_model_catalog_restore'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .key('desktopPiAiRestoreModels').fontSize(Fs.CAPTION).height(32)
-          .enabled(this.catalogWritable && !this.busy && !this.discovering).onClick(this.onRestoreModels)
+          .enabled(this.catalogWritable && this.canChangeModelFields() && !this.discovering)
+          .onClick((): void => {
+            if (this.catalogWritable && this.canChangeModelFields() && !this.discovering) { this.onRestoreModels(); }
+          })
       }
     }.width('100%')
-    if (this.catalogStandard && this.draft.models.length === 0) {
+    if ((this.catalogStandard || this.isInlineEdit()) && this.draft.models.length === 0) {
       Text($r('app.string.desktop_model_catalog_empty')).fontSize(Fs.CAPTION).width('100%')
         .fontColor($r('sys.color.font_tertiary'))
     }
     if (this.retryHost !== undefined) {
       DesktopPiAiModelDiscovery({ host: this.retryHost, provider: this.isCreate() ? '' : this.draft.route,
         endpoint: this.draft.baseURL, api: this.draft.api, keyReference: this.isCreate() ? '' : this.draft.apiKeyEnv,
-        keyDraft: this.keyDraft, models: this.draft.models, unavailable: this.busy || this.locked || this.profileCommitted,
-        onAdopt: this.onAdoptModels, onFetchingChange: (fetching: boolean): void => {
+        keyDraft: this.keyDraft, models: this.draft.models,
+        unavailable: !this.canChangeModelFields() || (this.isInlineEdit() && this.existingKeyClearPending),
+        onAdopt: (models: PiAiModelRow[]): void => {
+          if (this.canChangeModelFields() && (!this.isInlineEdit() || !this.existingKeyClearPending)) {
+            this.onAdoptModels(models);
+          }
+        }, onFetchingChange: (fetching: boolean): void => {
           this.discovering = fetching;
           this.onDiscoveryBusy(fetching);
         } })
     }
-    Text('模型 id 是"这个路由提供什么"的唯一依据；显示名可不填（不填就沿用适配器默认）。')
-      .fontSize(Fs.CAPTION)
-      .fontColor($r('sys.color.font_tertiary'))
-      .width('100%')
+    if (!this.isInlineEdit()) {
+      Text('模型 id 是"这个路由提供什么"的唯一依据；显示名可不填（不填就沿用适配器默认）。')
+        .fontSize(Fs.CAPTION).fontColor($r('sys.color.font_tertiary')).width('100%')
+    }
     Column({ space: 12 }) {
       ForEach(this.modelKeys, (key: number): void => { this.ModelRow(key); }, (key: number): string => String(key))
     }.width('100%')
-    Button('加一个模型')
-      .key('desktopPiAiProviderModelAdd')
-      .width('100%')
-      .enabled(!this.locked && !this.busy && !this.discovering && !this.profileCommitted)
-      .backgroundColor($r('sys.color.background_secondary'))
-      .fontColor($r('sys.color.font_primary'))
-      .onClick(() => {
-        this.onAddModel();
-      })
+    if (this.isInlineEdit()) {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+        Row({ space: 6 }) {
+          Image($r('app.media.dsh_reference_menu_plus')).width(14).height(14)
+            .supportSvg2(true).draggable(false).accessibilityLevel('no')
+          Text($r('app.string.desktop_model_provider_editor_add_model')).fontSize(12)
+        }
+      }.key('desktopPiAiProviderModelAdd').height(34).borderRadius(8)
+        .enabled(this.canChangeModelFields() && !this.discovering)
+        .onClick((): void => { if (this.canChangeModelFields() && !this.discovering) { this.onAddModel(); } })
+    } else {
+      Button('加一个模型')
+        .key('desktopPiAiProviderModelAdd').width('100%').enabled(this.canChangeModelFields() && !this.discovering)
+        .backgroundColor($r('sys.color.background_secondary')).fontColor($r('sys.color.font_primary'))
+        .onClick((): void => { this.onAddModel(); })
+    }
+  }
+
+  private canTypeExistingKey(): boolean { return !this.locked && !this.busy && !this.existingKeyClearApplied; }
+
+  private savedKeyCanClear(): boolean {
+    return this.existingKeyCanClear && !this.existingKeyClearPending && !this.existingKeyClearApplied && this.keyDraft === '';
+  }
+
+  private clearExistingKey(): boolean {
+    if (!this.canTypeExistingKey() || !this.savedKeyCanClear()) { return false; }
+    this.onExistingKeyClear();
+    return true;
+  }
+
+  private existingKeyPlaceholder(): ResourceStr {
+    if (this.keyPlaceholder !== '') { return this.keyPlaceholder; }
+    return this.keyRef ? $r('app.string.desktop_model_provider_editor_key_fallback', this.keyRef) :
+      $r('app.string.desktop_model_provider_editor_key_placeholder');
+  }
+
+  @Builder
+  private ExistingKeyField() {
+    Column({ space: 6 }) {
+      Text($r('app.string.desktop_model_provider_editor_key')).fontSize(12).width('100%')
+        .fontColor($r('sys.color.font_secondary'))
+      TextInput({ text: this.keyDraft, placeholder: this.existingKeyPlaceholder() })
+        .key('desktopPiAiProviderKey').width('100%').height(Sz.TOUCH_MIN).fontSize(Fs.SECONDARY)
+        .type(InputType.Password).showPasswordIcon(this.keyDraft.length > 0)
+        .accessibilityText($r('app.string.desktop_model_provider_editor_key')).enabled(this.canTypeExistingKey())
+        .onChange((value: string): void => {
+          if (this.canTypeExistingKey() && value !== this.keyDraft) { this.onKeyChange(value); }
+        })
+        .onKeyPreIme((event: KeyEvent): boolean => {
+          if (event.type === KeyType.Down &&
+            (event.keyCode === KeyCode.KEYCODE_DEL || event.keyCode === KeyCode.KEYCODE_FORWARD_DEL) &&
+            this.clearExistingKey()) {
+            event.stopPropagation();
+            return true;
+          }
+          return false;
+        })
+      if (this.savedKeyCanClear()) {
+        Button($r('app.string.desktop_model_provider_editor_key_clear'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+          .key('desktopPiAiProviderKeyClear').height(28).fontSize(12).enabled(this.canTypeExistingKey())
+          .onClick((): void => { this.clearExistingKey(); })
+      }
+      if (this.existingKeyClearPending || this.existingKeyClearApplied) {
+        Text(this.existingKeyClearApplied ? $r('app.string.desktop_model_provider_editor_key_clear_applied') :
+          this.keyRef ? $r('app.string.desktop_model_provider_editor_key_clear_env', this.keyRef) :
+          $r('app.string.desktop_model_provider_editor_key_clear_pending')).fontSize(12).width('100%')
+          .fontColor($r('sys.color.font_secondary'))
+      } else if (this.keyConfigured && this.keyDraft.length === 0) {
+        Text($r('app.string.desktop_model_provider_editor_key_saved')).fontSize(12).width('100%')
+          .fontColor($r('sys.color.font_secondary'))
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
   /** 密钥（官方 `keyInput`：只写不读） */

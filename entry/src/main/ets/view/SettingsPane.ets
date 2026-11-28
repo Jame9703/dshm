@@ -148,6 +148,8 @@ export struct SettingsPane {
   @Prop codingTools: DesktopCodingToolsSnapshot = emptyDesktopCodingToolsSnapshot();
   onCodingToolsChange: (enabled: boolean) => void = (_enabled: boolean): void => {};
   private desktopNavScroller: Scroller = new Scroller();
+  private settingsBodyScroller: Scroller = new Scroller();
+  @State private modelViewport: Area | undefined = undefined;
   onOpenShortcuts: () => void = () => {};
   onStartPresetCreator?: () => void;
   capturePresetDefaultSync?: () => DesktopPresetDefaultSync | undefined;
@@ -189,7 +191,7 @@ export struct SettingsPane {
           .backgroundColor($r('sys.color.background_secondary'))
       }
 
-      Scroll() {
+      Scroll(this.settingsBodyScroller) {
         Column({ space: Sp.L }) {
           if (this.section === 'settings.skills') {
             // 技能段归 SettingsSkills（P4-5 拆出的域组件）：它只吃清单 + 读取结论两个 prop，
@@ -292,6 +294,8 @@ export struct SettingsPane {
               nativeProviderAdd: this.desktopShortcuts,
               settingsHost: this.desktopAccountHost,
               modelProviderAccess: this.desktopModelProviders,
+              modelViewport: this.modelViewport,
+              modelScroller: this.settingsBodyScroller,
               onEditProvider: (route: string) => {
                 this.onEditProvider(route);
               },
@@ -354,6 +358,7 @@ export struct SettingsPane {
       .width('100%')
       .align(Alignment.TopStart)
       .scrollBar(BarState.Auto)
+      .onAreaChange((_old: Area, area: Area): void => { this.modelViewport = area; })
     }
     .width('100%')
     .layoutWeight(1)

@@ -1,0 +1,17 @@
+{
+  "string": [
+    { "name": "desktop_model_provider_removal_title", "value": "删除 %1$s？" },
+    { "name": "desktop_model_provider_removal_description", "value": "删除 %1$s 会移除其配置；其使用的凭证（如有）由其他位置管理，将会保留。" },
+    { "name": "desktop_model_provider_removal_description_with_key", "value": "删除 %1$s 会移除其配置和存储的 API 密钥。" },
+    { "name": "desktop_model_provider_removal_close", "value": "关闭" },
+    { "name": "desktop_model_provider_removal_cancel", "value": "取消" },
+    { "name": "desktop_model_provider_removal_confirm", "value": "删除 %1$s" },
+    { "name": "desktop_model_provider_removal_deleting", "value": "正在删除 %1$s…" },
+    { "name": "desktop_model_provider_removal_unavailable", "value": "当前无法删除此提供方。请检查 Host 连接和设置写入权限。" },
+    { "name": "desktop_model_provider_removal_stale", "value": "提供方配置已变化。请关闭此窗口并重新确认。" },
+    { "name": "desktop_model_provider_removal_credential_changed", "value": "无法确认凭据可删除。请关闭此窗口并重新确认。" },
+    { "name": "desktop_model_provider_removal_partial", "value": "密钥清除请求已完成，尚未确认提供方配置已删除。" },
+    { "name": "desktop_model_provider_removal_failed", "value": "删除失败，请重试。" },
+    { "name": "desktop_model_provider_removal_open_failed", "value": "无法打开删除确认窗口。" }
+  ]
+}

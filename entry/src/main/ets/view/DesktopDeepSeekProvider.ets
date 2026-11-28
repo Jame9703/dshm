@@ -11,6 +11,8 @@ import { DEEPSEEK_SETTINGS_NS, deepSeekApiKeyProblem, deepSeekCatalogEqual, deep
   readDesktopDeepSeekCredential, readDesktopDeepSeekProvider } from '../desktop/DesktopDeepSeekProviderModel';
 import type { DesktopDeepSeekCredential, DesktopDeepSeekProviderDocument } from '../desktop/DesktopDeepSeekProviderModel';
 import { DesktopDeepSeekModelsEditor } from './DesktopDeepSeekModelsEditor';
+import { desktopModelProviderBadge, DesktopModelProviderRowHead } from './DesktopModelProviderRowHead';
+import type { DesktopModelProviderReadinessRow } from '../desktop/DesktopModelProviderReadiness';
 
 const RETRY_PATH: string[] = ['retryPolicy'];
 
@@ -22,6 +24,10 @@ export struct DesktopDeepSeekProvider {
   @Prop @Watch('setupChanged') setupDescription: Object | undefined = undefined;
   @Prop @Watch('setupCredentialChanged') setupCredential: DesktopDeepSeekCredential | undefined = undefined;
   @Prop adapterError: string = '';
+  @Prop nativeRow: DesktopModelProviderReadinessRow | undefined = undefined;
+  @Prop @Watch('nativeEditChanged') nativeEditing: boolean = false;
+  onToggleEdit: () => void = (): void => {};
+  onBusy: (busy: boolean) => void = (): void => {};
   onFinished: (changed: boolean, wasSetup: boolean) => void = (): void => {};
   @State private isOpen: boolean = false;
   @State private automaticSetup: boolean = false;
@@ -46,7 +52,7 @@ export struct DesktopDeepSeekProvider {
   private generation: number = 0;
   private setupDismissed: boolean = false;
 
-  aboutToAppear(): void { this.setupChanged(); }
+  aboutToAppear(): void { this.setupChanged(); this.nativeEditChanged(); }
 
   aboutToDisappear(): void { this.closeEditor(); }
 
@@ -76,6 +82,12 @@ export struct DesktopDeepSeekProvider {
     if (this.automaticSetup && !this.busy) { this.credential = this.setupCredential; }
   }
 
+  private nativeEditChanged(): void {
+    if (!this.desktopPage || this.automaticSetup || this.busy) { return; }
+    if (this.nativeEditing && !this.isOpen) { this.openEditor(); }
+    if (!this.nativeEditing && this.isOpen) { this.closeEditor(); }
+  }
+
   private finishEditor(changed: boolean): void {
     const wasSetup = this.automaticSetup;
     if (wasSetup) { this.setupDismissed = true; }
@@ -94,7 +106,7 @@ export struct DesktopDeepSeekProvider {
     this.automaticSetup = false;
     this.setupWritable = false;
     this.loading = false;
-    this.busy = false;
+    if (this.busy) { this.busy = false; this.onBusy(false); }
     this.advanced = false;
     this.conflict = false;
     this.notice = '';
@@ -115,6 +127,14 @@ export struct DesktopDeepSeekProvider {
 
   private async openEditor(): Promise<void> {
     this.closeEditor();
+    if (this.desktopPage && this.setupDescription !== undefined) {
+      const document = readDesktopDeepSeekProvider(this.setupDescription);
+      this.isOpen = true;
+      if (document === undefined) { this.notice = $r('app.string.desktop_deepseek_unavailable'); return; }
+      this.credential = this.setupCredential;
+      this.initializeEditor(document, this.setupDescription);
+      return;
+    }
     const generation = this.generation;
     this.isOpen = true;
     this.loading = true;
@@ -141,7 +161,8 @@ export struct DesktopDeepSeekProvider {
   private canEdit(): boolean {
     const original = this.original;
     if (original === undefined) { return false; }
-    const writable = this.automaticSetup ? this.setupWritable : original.writable;
+    const writable = this.automaticSetup ? this.setupWritable : this.desktopPage && this.setupDescription !== undefined ?
+      getBoolean(this.setupDescription, 'writable') === true : original.writable;
     return writable && !this.loading && !this.busy && !this.conflict;
   }
 
@@ -198,6 +219,7 @@ export struct DesktopDeepSeekProvider {
     const generation = this.generation;
     const hub = SessionHub.shared();
     this.busy = true;
+    this.onBusy(true);
     try {
       if (this.keyClearPending && !this.keyClearApplied) {
         const cleared = await hub.unsetCredential(original.credentialRef);
@@ -242,6 +264,7 @@ export struct DesktopDeepSeekProvider {
     } finally {
       if (generation === this.generation) {
         this.busy = false;
+        this.onBusy(false);
         this.setupChanged();
       }
     }
@@ -365,7 +388,13 @@ export struct DesktopDeepSeekProvider {
 
   build() {
     Column({ space: this.automaticSetup ? 14 : Sp.S }) {
-      if (!this.automaticSetup) { this.ProviderRow() }
+      if (!this.automaticSetup) {
+        if (this.desktopPage && this.nativeRow !== undefined) {
+          DesktopModelProviderRowHead({ rowKey: this.nativeRow.provider, label: this.nativeRow.displayName,
+            credential: desktopModelProviderBadge(false, this.nativeRow.credentialRef, this.nativeRow.credential?.configured),
+            declared: this.nativeRow.declared, editable: true, editing: this.nativeEditing, onEdit: this.onToggleEdit })
+        } else { this.ProviderRow() }
+      }
       if (this.adapterError) {
         Text(this.adapterError).key('desktopDeepSeekProviderAdapterError').fontSize(12).width('100%')
           .fontColor($r('app.color.workspace_status_error'))

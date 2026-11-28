@@ -18,7 +18,7 @@
  */
 import { CredentialItem, Fs, ModelOption, Radius, SessionHub, SettingGroup, SettingItem, Sp, Sz } from 'appstate';
 import type { ModelSelection, PiAiProviderView } from 'appstate';
-import { protocolLabel } from 'appstate';
+import { deriveKeyRef, protocolLabel } from 'appstate';
 import { SettingRow } from './SettingRow';
 import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
 import type { DesktopHostActions } from '../desktop/DesktopHostActions';
@@ -30,6 +30,12 @@ import type { DesktopAddProviderDocument } from '../desktop/DesktopProviderAddMo
 import { desktopProviderNeedsSetup } from '../desktop/DesktopModelProviderReadiness';
 import type { DesktopModelProviderAccess, DesktopModelProviderReadiness,
   DesktopModelProviderReadinessRow } from '../desktop/DesktopModelProviderReadiness';
+import { desktopPiAiExistingProfile } from '../desktop/DesktopPiAiEditModel';
+import type { DesktopPiAiExistingProfile } from '../desktop/DesktopPiAiEditModel';
+import { DesktopPiAiAddProfile } from './DesktopPiAiAddProfile';
+import { desktopModelProviderBadge, DesktopModelProviderRowHead } from './DesktopModelProviderRowHead';
+import { DesktopModelProviderRemoval } from './DesktopModelProviderRemoval';
+import type { DesktopModelProviderRemovalTarget } from './DesktopModelProviderRemoval';
 
 
 /**
@@ -109,6 +115,8 @@ export struct SettingsModels {
   @Prop nativeProviderAdd: boolean = false;
   settingsHost?: DesktopHostActions;
   modelProviderAccess?: DesktopModelProviderAccess;
+  @Prop modelViewport: Area | undefined = undefined;
+  modelScroller?: Scroller;
 
   /** 点提供方卡片上的「编辑」 */
   onEditProvider: (route: string) => void = () => {
@@ -141,10 +149,18 @@ export struct SettingsModels {
   @State candidateQuery: string = '';
   @State private expandedPiAiRetry: string = '';
   @State private providerReadiness: DesktopModelProviderReadiness | undefined = undefined;
+  @State private providerRows: Map<string, DesktopModelProviderReadinessRow> = new Map<string, DesktopModelProviderReadinessRow>();
   @State private providerAddDocument: DesktopAddProviderDocument = desktopAddProviderDocument(undefined, []);
   @State private providerReadFailed: boolean = false;
   @State private deepSeekSetupDismissed: boolean = false;
   @State private savedProviderName: string = '';
+  @State private editingProvider: string = '';
+  @State private editingProfile: DesktopPiAiExistingProfile | undefined = undefined;
+  @State private editingDocument: DesktopAddProviderDocument = desktopAddProviderDocument(undefined, []);
+  @State private removalTarget: DesktopModelProviderRemovalTarget | undefined = undefined;
+  @State private dismissAdd: number = 0;
+  private readonly busyProviders: Set<string> = new Set<string>();
+  private addProviderBusy: boolean = false;
   private providerPageActive: boolean = false;
   private providerPageEpoch: number = 0;
   private providerReadInFlight: boolean = false;
@@ -152,6 +168,7 @@ export struct SettingsModels {
   private providerReadTimer: number = -1;
   private announceProviderSave: boolean = false;
   private savedTargetName: string = '';
+  private savedTargetId: string = '';
   private stopProviderWatch?: () => void;
 
   aboutToAppear(): void {
@@ -195,9 +212,17 @@ export struct SettingsModels {
       this.providerReadFailed = facts === undefined;
       if (facts === undefined) { return; }
       this.providerReadiness = facts;
+      const rows = new Map<string, DesktopModelProviderReadinessRow>();
+      for (const row of facts.rows) {
+        if (row.configured) { rows.set(row.provider, row); }
+      }
+      this.providerRows = rows;
       this.providerAddDocument = desktopAddProviderDocument(facts.describe, facts.directory, facts.registered);
+      if (this.editingProvider && !facts.rows.some((row: DesktopModelProviderReadinessRow): boolean =>
+          row.provider === this.editingProvider && row.configured)) { this.closeInlineEdit(); }
       if (announce) {
-        this.savedProviderName = this.deepSeekRow()?.displayName || this.savedTargetName;
+        const row = facts.rows.find((entry: DesktopModelProviderReadinessRow): boolean => entry.provider === this.savedTargetId);
+        this.savedProviderName = row?.displayName || this.savedTargetName;
         this.announceProviderSave = false;
       }
     } catch (_) {
@@ -216,9 +241,81 @@ export struct SettingsModels {
   }
 
   private showsDeepSeekProvider(): boolean {
-    if (this.nativeProviderAdd && this.providerReadiness !== undefined) { return this.deepSeekRow()?.configured === true; }
-    return (!this.nativeProviderAdd || this.providerReadFailed) && this.allGroups.some((group: SettingGroup): boolean =>
-      group.title === DEEPSEEK_SETTINGS_NS);
+    return this.allGroups.some((group: SettingGroup): boolean => group.title === DEEPSEEK_SETTINGS_NS);
+  }
+
+  private nativeRow(provider: string): DesktopModelProviderReadinessRow | undefined {
+    return this.providerRows.get(provider);
+  }
+
+  private closeInlineEdit(): void {
+    this.busyProviders.delete(this.editingProvider);
+    this.editingProvider = '';
+    this.editingProfile = undefined;
+  }
+
+  private setProviderBusy(provider: string, busy: boolean): void {
+    if (busy) { this.busyProviders.add(provider); }
+    else { this.busyProviders.delete(provider); }
+  }
+
+  private toggleNativeEditor(provider: string): void {
+    const facts = this.providerReadiness;
+    const row = this.nativeRow(provider);
+    if (facts === undefined || row === undefined || this.busyProviders.size > 0 || this.addProviderBusy ||
+      this.removalTarget !== undefined) { return; }
+    const wasOpen = this.editingProvider === provider;
+    this.closeInlineEdit();
+    this.savedProviderName = '';
+    this.announceProviderSave = false;
+    this.dismissAdd++;
+    if (!wasOpen) {
+      this.editingDocument = this.providerAddDocument;
+      this.editingProfile = desktopPiAiExistingProfile(facts, row);
+      this.editingProvider = provider;
+    }
+  }
+
+  private beforeAddProvider(): boolean {
+    if (this.busyProviders.size > 0 || this.removalTarget !== undefined) { return false; }
+    this.closeInlineEdit();
+    this.savedProviderName = '';
+    this.announceProviderSave = false;
+    return true;
+  }
+
+  private removeNativeProvider(provider: string): void {
+    const row = this.nativeRow(provider);
+    if (this.providerReadiness?.writable !== true || row === undefined || !row.removable || row.revision < 0 ||
+      this.busyProviders.size > 0 ||
+      this.addProviderBusy || this.removalTarget !== undefined) { return; }
+    const ref = row.credentialRef;
+    const shared = this.providerReadiness.rows.some((entry: DesktopModelProviderReadinessRow): boolean =>
+      entry.provider !== row.provider && entry.credentialRef === ref);
+    const managed = ref === deriveKeyRef(row.provider) && !shared && row.credential?.configured === true && row.credential.writable;
+    this.savedProviderName = '';
+    this.announceProviderSave = false;
+    this.removalTarget = { provider: row.provider, label: row.displayName, namespace: row.namespace,
+      path: row.path.slice(), managedRef: managed ? ref : '', revision: row.revision };
+  }
+
+  private removalFinished(changed: boolean): void {
+    const target = this.removalTarget;
+    this.removalTarget = undefined;
+    if (changed) {
+      if (this.editingProvider === target?.provider) { this.closeInlineEdit(); }
+      this.scheduleProviderRead();
+    }
+  }
+
+  private finishNativeEditor(provider: string, name: string, changed: boolean, wasSetup: boolean = false): void {
+    if (!wasSetup && this.editingProvider === provider) { this.closeInlineEdit(); }
+    if (changed) {
+      this.savedTargetId = provider;
+      this.savedTargetName = name || provider;
+      this.announceProviderSave = true;
+      this.scheduleProviderRead();
+    }
   }
 
   private showsDeepSeekSetup(): boolean {
@@ -230,11 +327,7 @@ export struct SettingsModels {
 
   private deepSeekFinished(changed: boolean, wasSetup: boolean): void {
     if (wasSetup) { this.deepSeekSetupDismissed = true; }
-    if (changed) {
-      this.savedTargetName = this.deepSeekRow()?.displayName || DEEPSEEK_API_ROUTE;
-      this.announceProviderSave = true;
-      this.scheduleProviderRead();
-    }
+    this.finishNativeEditor(DEEPSEEK_API_ROUTE, this.deepSeekRow()?.displayName ?? '', changed, wasSetup);
   }
 
   @Builder
@@ -257,6 +350,74 @@ export struct SettingsModels {
     }
   }
 
+  @Builder
+  private NativeProviderRow(provider: string) {
+    Column({ space: 10 }) {
+      if (provider === DEEPSEEK_API_ROUTE && this.nativeRow(provider)?.namespace === DEEPSEEK_SETTINGS_NS &&
+        this.nativeRow(provider)?.path.length === 0) {
+        DesktopDeepSeekProvider({ credentials: this.credentials, desktopPage: true, nativeRow: this.nativeRow(provider),
+          nativeEditing: this.editingProvider === provider, setupRequested: this.showsDeepSeekSetup(),
+          setupDescription: this.providerReadiness?.describe, setupCredential: this.nativeRow(provider)?.credential,
+          adapterError: this.nativeRow(provider)?.error ?? '',
+          onToggleEdit: (): void => { this.toggleNativeEditor(provider); },
+          onBusy: (busy: boolean): void => { this.setProviderBusy(provider, busy); },
+          onFinished: (changed: boolean, wasSetup: boolean): void => { this.deepSeekFinished(changed, wasSetup); } })
+      } else {
+        Column({ space: 10 }) {
+          DesktopModelProviderRowHead({ rowKey: provider,
+            label: provider === DEEPSEEK_ACCOUNT_ROUTE ? $r('app.string.desktop_deepseek_account') :
+              this.nativeRow(provider)?.displayName ?? provider,
+            credential: desktopModelProviderBadge(provider === DEEPSEEK_ACCOUNT_ROUTE,
+              this.nativeRow(provider)?.credentialRef ?? '', this.nativeRow(provider)?.credential?.configured),
+            declared: this.nativeRow(provider)?.declared === true,
+            editable: provider !== DEEPSEEK_ACCOUNT_ROUTE, removable: this.nativeRow(provider)?.removable === true,
+            editing: this.editingProvider === provider, writable: this.providerReadiness?.writable === true,
+            onEdit: (): void => { this.toggleNativeEditor(provider); },
+            onRemove: (): void => { this.removeNativeProvider(provider); } })
+          if (this.nativeRow(provider)?.error) {
+            Text(this.nativeRow(provider)?.error ?? '').key('desktopModelProviderError-' + provider).width('100%').fontSize(12)
+              .fontColor($r('app.color.workspace_status_error'))
+          }
+          if (this.editingProvider === provider) {
+            Column() {
+              if (this.editingProfile !== undefined) {
+                DesktopPiAiAddProfile({ document: this.editingDocument, existing: this.editingProfile,
+                  existingWritable: this.providerReadiness?.writable === true, host: this.settingsHost,
+                  inlineViewport: this.modelViewport, inlineScroller: this.modelScroller,
+                  onBusy: (busy: boolean): void => { this.setProviderBusy(provider, busy); },
+                  onCancel: (): void => { this.closeInlineEdit(); },
+                  onSaved: (): void => { this.finishNativeEditor(provider, this.nativeRow(provider)?.displayName ?? '', true); } })
+              } else {
+                Text($r('app.string.desktop_model_provider_advanced_file', this.nativeRow(provider)?.namespace ?? '')).width('100%')
+                  .fontSize(13).fontColor($r('sys.color.font_secondary'))
+                Button($r('app.string.desktop_deepseek_cancel'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+                  .onClick((): void => { this.closeInlineEdit(); })
+              }
+            }.key('desktopModelProviderInlineEditor-' + provider).width('100%')
+          }
+        }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 12 }).borderRadius(16)
+          .backgroundColor($r('sys.color.background_secondary'))
+      }
+    }.key('desktopModelProviderRow-' + provider).width('100%')
+  }
+
+  @Builder
+  private NativeProviderCards() {
+    Column({ space: 8 }) {
+      ForEach(Array.from(this.providerRows.keys()), (provider: string) => {
+        this.NativeProviderRow(provider)
+      }, (provider: string): string => provider)
+      DesktopModelProviderAddFlow({ host: this.settingsHost, availableDocument: this.providerAddDocument,
+        dismissRequest: this.dismissAdd, onBeforeOpen: (): boolean => this.beforeAddProvider(),
+        onBusy: (busy: boolean): void => { this.addProviderBusy = busy; },
+        onSaved: (): void => { this.scheduleProviderRead(); } })
+      if (this.removalTarget !== undefined) {
+        DesktopModelProviderRemoval({ target: this.removalTarget, host: this.settingsHost,
+          onClose: (changed: boolean): void => { this.removalFinished(changed); } })
+      }
+    }.width('100%')
+  }
+
   // 【ArkUI 约束】组件的 build() 只能有一个根节点 ⇒ 多段内容包进 Column
   build() {
     Column({ space: Sp.L }) {
@@ -264,8 +425,12 @@ export struct SettingsModels {
            * E128：先按官方形态列出**提供方卡片**（状态点 + 首要的密钥动作 + 可展开的自定义设置），
            * 下面的「模型凭据」「新会话默认」「全部模型」是我们已有的补充信息，保持向后兼容。
            */
-          if (this.nativeProviderAdd) { this.ProviderFeedback() }
-          this.providerCards()
+          if (this.nativeProviderAdd) {
+            Text($r('app.string.desktop_model_provider_intro')).width('100%').fontSize(Fs.CAPTION)
+              .fontColor($r('sys.color.font_secondary'))
+            this.ProviderFeedback()
+            this.NativeProviderCards()
+          } else { this.providerCards() }
 
           /*
            * 【为什么模型页要带"凭据"区（E96）】官方 Models 页把 **API 密钥**放在编辑卡片的
@@ -667,7 +832,7 @@ export struct SettingsModels {
      * 路由，官方给的是**逐字段编辑器**（显示名 / 端点 / API 协议 / 模型目录）。
      * 这里按同一粒度呈现，字段完全来自 Host 的设置文档。
      */
-    if (!this.nativeProviderAdd) { this.piAiCards() }
+    this.piAiCards()
     if (this.models.some((row: ModelOption): boolean => row.provider === DEEPSEEK_ACCOUNT_ROUTE)) {
       Row({ space: Sp.S }) {
         Text($r('app.string.desktop_deepseek_account')).layoutWeight(1).fontSize(Fs.BODY)
@@ -677,16 +842,11 @@ export struct SettingsModels {
         .backgroundColor($r('sys.color.background_secondary'))
     }
     if (this.showsDeepSeekProvider()) {
-      DesktopDeepSeekProvider({ credentials: this.credentials, desktopPage: this.nativeProviderAdd,
-        setupRequested: this.nativeProviderAdd && this.showsDeepSeekSetup(), setupDescription: this.providerReadiness?.describe,
-        setupCredential: this.deepSeekRow()?.credential, adapterError: this.deepSeekRow()?.error ?? '',
-        onFinished: (changed: boolean, wasSetup: boolean): void => { this.deepSeekFinished(changed, wasSetup); } })
+      DesktopDeepSeekProvider({ credentials: this.credentials })
     }
-    if (this.nativeProviderAdd) { this.piAiCards() }
 
     ForEach(this.providerGroups().filter((g: ModelProviderGroup): boolean => g.provider !== DEEPSEEK_ACCOUNT_ROUTE &&
-      (g.provider !== DEEPSEEK_API_ROUTE || (!this.showsDeepSeekProvider() &&
-        (!this.nativeProviderAdd || this.providerReadFailed && this.providerReadiness === undefined)))), (g: ModelProviderGroup) => {
+      (g.provider !== DEEPSEEK_API_ROUTE || !this.showsDeepSeekProvider())), (g: ModelProviderGroup) => {
       Column({ space: Sp.XS }) {
         Row({ space: Sp.S }) {
           Row()
@@ -826,10 +986,6 @@ export struct SettingsModels {
       .borderRadius(Radius.M)
       .backgroundColor($r('sys.color.background_secondary'))
     }, (g: ModelProviderGroup) => g.provider)
-    if (this.nativeProviderAdd) {
-      DesktopModelProviderAddFlow({ host: this.settingsHost, availableDocument: this.providerAddDocument,
-        onSaved: (): void => { this.scheduleProviderRead(); } })
-    }
   }
 
   private providerGroups(): ModelProviderGroup[] {
