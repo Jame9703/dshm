@@ -1971,6 +1971,16 @@ console.log('\n## P0 页面框架：面板注册表 + 导航状态（页面 ≠ 
   t.eq('schema：读到三个协议候选',
     PA.piAiProtocolChoices(REFS, 1).join(','),
     'openai-completions,openai-responses,anthropic-messages');
+  const referenced = {
+    ...REFS,
+    '4': { type: 'union', list: [5, 99, 6, 5, 7] },
+    '5': { type: 'const', value: 'openai-completions' },
+    '6': { type: 'const', value: 'openai-responses' },
+    '7': { type: 'const', value: 'google-generative-ai' },
+  };
+  t.eq('schema：按宿主引用表读取协议，跳过缺失引用和重复值',
+    PA.piAiProtocolChoices(referenced, 1).join(','),
+    'openai-completions,openai-responses,google-generative-ai');
   // 结构不认识 ⇒ 空数组（界面据此禁用协议选择，而不是编候选）
   t.eq('schema：rootUid 错 ⇒ 空（不炸）', PA.piAiProtocolChoices(REFS, 99).length, 0);
   t.eq('schema：refs 非对象 ⇒ 空（不炸）', PA.piAiProtocolChoices(undefined, 1).length, 0);

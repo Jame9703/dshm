@@ -122,16 +122,13 @@ const DOCK_MIN_WIDTH: number = 220;
 const DOCK_SPLIT_MIN_WIDTH: number = 540;
 const DOCK_TAB_TITLE_HEIGHT: number = 28;
 
-interface DesktopDockDrag {
+interface DesktopDockTabTarget {
   session: string;
   pane: number;
   tab: string;
 }
 
-interface DesktopDockTabContext {
-  session: string;
-  pane: number;
-  tab: string;
+interface DesktopDockTabContext extends DesktopDockTabTarget {
   serial: number;
   offset: Position;
 }
@@ -155,12 +152,14 @@ interface DesktopQuotaBrowserVisit {
   launched: boolean;
 }
 
-interface DesktopCreatorNavigation {
+interface DesktopNewSessionNavigation {
   id: string;
   workspace: string;
   sourceSession: string;
   sourceWorkspace: string;
   sourcePanel: string;
+  sourceVersion: number;
+  prompt: string;
 }
 
 interface DesktopSessionDrag {
@@ -249,7 +248,8 @@ struct DesktopWorkspace {
   private workspaceDropBands: DesktopWorkspaceDropBand[] = [];
   private readonly workspaceHeaderBounds: Map<string, Area> = new Map<string, Area>();
   private readonly sessionRowBounds: Map<string, Area> = new Map<string, Area>();
-  private dockDrag?: DesktopDockDrag;
+  private dockDrag?: DesktopDockTabTarget;
+  private dockMiddlePress?: DesktopDockTabTarget;
   private dockDrop?: DesktopDockDrop;
   private dockPanActive: boolean = false;
   private readonly dockTabBounds = new Map<string, Area>();
@@ -287,7 +287,7 @@ struct DesktopWorkspace {
   @State private forking: boolean = false;
   private pendingForkId: string = '';
   private pendingForkSource: string = '';
-  private pendingCreator?: DesktopCreatorNavigation;
+  private pendingNewSession?: DesktopNewSessionNavigation;
   @State private archivedIds: string[] = [];
   @State private archiveFilter: DesktopArchiveFilter = DesktopArchiveFilter.HIDE;
   @State private archiveRequest: DesktopArchiveRequest | undefined = undefined;
@@ -638,7 +638,7 @@ struct DesktopWorkspace {
     this.terminalCreateRequest = undefined;
     this.chatError = '';
     this.creating = false;
-    this.pendingCreator = undefined;
+    this.pendingNewSession = undefined;
     this.workspaceBusy = false;
     this.busySessions = [];
     this.stoppingSessions = [];
@@ -795,7 +795,7 @@ struct DesktopWorkspace {
       this.pendingForkId = '';
       this.pendingForkSource = '';
     }
-    this.openPendingCreator();
+    this.openPendingNewSession();
     if (destination?.plugin !== undefined) { this.openPlugins('', '', '', destination.plugin); }
   }
 
@@ -1637,82 +1637,70 @@ struct DesktopWorkspace {
     this.syncAgentTerminalWatch();
   }
 
-  private async newSession(targetWorkspaceId?: string, creatorPrompt: string = ''): Promise<void> {
+  private async newSession(targetWorkspaceId?: string, prompt: string = '', preset: string = ''): Promise<void> {
     const data = this.data;
     if (data === undefined || !this.ready || this.creating) {
       return;
     }
-    const preferred = creatorPrompt ? data.creatorWorkspace(this.sessionId) : targetWorkspaceId ?? this.workspaceId;
-    const workspace = this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id && group.id === preferred) ??
-      (!creatorPrompt && targetWorkspaceId === undefined ?
-        this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id) : undefined);
+    const current = this.sessionId ? this.groups.find((group: DesktopWorkspaceGroup): boolean =>
+      !!group.id && group.id === this.workspaceId) : undefined;
+    const preferred = targetWorkspaceId ?? current?.id ?? data.creatorWorkspace(this.sessionId);
+    const workspace = this.groups.find((group: DesktopWorkspaceGroup): boolean => !!group.id && group.id === preferred);
     if (workspace === undefined) {
-      if (creatorPrompt) {
+      if (prompt) {
         this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_plugin_entry_workspace_required') });
       } else if (targetWorkspaceId === undefined) { this.addWorkspace(); }
       return;
     }
     this.creating = true;
-    this.pendingCreator = undefined;
+    this.pendingNewSession = undefined;
     this.chatError = '';
     const previousWorkspace = this.workspaceId;
     const previousSession = this.sessionId;
     const previousPanel = this.panel;
-    const created = await data.createSession(workspace.id, creatorPrompt ? 'cordis' : '');
+    const version = ++this.nativeSelectionVersion;
+    const created = await data.createSession(workspace.id, preset)
+      .catch((): DesktopSessionCreation => ({ id: '', problem: '' }));
     if (!this.pageActive || this.data !== data) {
       return;
     }
     this.creating = false;
+    if (this.nativeSelectionVersion !== version || this.workspaceId !== previousWorkspace ||
+      this.sessionId !== previousSession || this.panel !== previousPanel) { return; }
     const id = created.id;
-    if (id.length === 0) {
-      if (creatorPrompt) {
-        this.getUIContext().getPromptAction().showToast({
-          message: created.problem || $r('app.string.desktop_chat_create_failed')
-        });
-      } else {
-        this.chatError = this.accessibilityLabel($r('app.string.desktop_chat_create_failed'));
-      }
+    if (!id || (prompt && this.busySessions.includes(id))) {
+      this.getUIContext().getPromptAction().showToast({
+        message: created.problem || $r('app.string.desktop_chat_create_failed')
+      });
       return;
     }
-    if (creatorPrompt) {
-      if (this.workspaceId !== previousWorkspace || this.sessionId !== previousSession || this.panel !== previousPanel) { return; }
-      if (this.busySessions.includes(id)) {
-        this.getUIContext().getPromptAction().showToast({ message: $r('app.string.desktop_chat_create_failed') });
-        return;
-      }
-      const draft = this.drafts.get(id) ?? EMPTY_DESKTOP_DRAFT;
-      this.storeDraft(id, { text: draft.text ? draft.text + '\n' + creatorPrompt : creatorPrompt, references: draft.references });
-      this.pendingCreator = { id: id, workspace: workspace.id, sourceSession: previousSession,
-        sourceWorkspace: previousWorkspace, sourcePanel: previousPanel };
-      this.openPendingCreator();
-      return;
-    }
-    const group = this.groups.find((item: DesktopWorkspaceGroup): boolean => item.id === workspace.id);
-    const session = group?.sessions.find((item: SessionListItem): boolean => item.id === id);
-    if (group !== undefined && session !== undefined && previousWorkspace === this.workspaceId &&
-      previousSession === this.sessionId) {
-      this.pickWorkspace(group);
-      this.selectSession(group, session);
-      this.panel = 'session';
-    }
+    this.pendingNewSession = { id: id, workspace: workspace.id, sourceSession: previousSession,
+      sourceWorkspace: previousWorkspace, sourcePanel: previousPanel, sourceVersion: version, prompt: prompt };
+    this.openPendingNewSession();
   }
 
-  private openPendingCreator(): void {
-    const pending = this.pendingCreator;
+  private openPendingNewSession(): void {
+    const pending = this.pendingNewSession;
     if (pending === undefined) { return; }
     if (this.workspaceId !== pending.sourceWorkspace || this.sessionId !== pending.sourceSession ||
-      this.panel !== pending.sourcePanel) { this.pendingCreator = undefined; return; }
+      this.panel !== pending.sourcePanel || this.nativeSelectionVersion !== pending.sourceVersion ||
+      this.archivedIds.includes(pending.id)) { this.pendingNewSession = undefined; return; }
     const group = this.groups.find((item: DesktopWorkspaceGroup): boolean => item.id === pending.workspace);
     const session = group?.sessions.find((item: SessionListItem): boolean => item.id === pending.id);
     if (group === undefined || session === undefined) { return; }
-    this.pendingCreator = undefined;
+    this.pendingNewSession = undefined;
+    if (pending.prompt) {
+      const draft = this.drafts.get(pending.id) ?? EMPTY_DESKTOP_DRAFT;
+      this.storeDraft(pending.id, { text: draft.text ? draft.text + '\n' + pending.prompt : pending.prompt,
+        references: draft.references });
+    }
     this.pickWorkspace(group);
     this.selectSession(group, session);
     this.panel = 'session';
   }
 
   private createPluginDraft(prompt: Resource): void {
-    this.newSession(undefined, this.accessibilityLabel(prompt));
+    this.newSession(undefined, this.accessibilityLabel(prompt), 'cordis');
   }
 
   private async chatAction(run: (id: string) => Promise<string>, sentDraft?: string,
@@ -2134,6 +2122,7 @@ struct DesktopWorkspace {
 
   private setDock(layout: DesktopDockLayout): void {
     if (!this.sessionId || layout === this.rightDock) { return; }
+    this.dockMiddlePress = undefined;
     const edit = this.terminalRename;
     if (edit !== undefined && this.findTerminalRenameTab(layout, edit) === undefined) { this.terminalRename = undefined; }
     const menu = this.dockTabContext;
@@ -2231,6 +2220,7 @@ struct DesktopWorkspace {
   }
 
   private clearDockGesture(): void {
+    this.dockMiddlePress = undefined;
     this.clearSessionDrag();
     this.endDockDrag(false);
     this.dockTabBounds.clear();
@@ -2514,9 +2504,12 @@ struct DesktopWorkspace {
   }
 
   private workspaceMenu(): Array<MenuElement> {
-    return this.groups.map((group: DesktopWorkspaceGroup): MenuElement => {
-      return { value: group.title, action: (): void => this.pickWorkspace(group) };
+    const items = this.groups.filter((group: DesktopWorkspaceGroup): boolean => !!group.id)
+      .map((group: DesktopWorkspaceGroup): MenuElement => {
+        return { value: group.title, action: (): void => { this.newSession(group.id); } };
     });
+    items.push({ value: $r('app.string.desktop_experiment_add_workspace'), action: (): void => { this.addWorkspace(); } });
+    return items;
   }
 
   private pickWorkspace(group: DesktopWorkspaceGroup): void {
@@ -2538,6 +2531,8 @@ struct DesktopWorkspace {
     if (data === undefined || !this.ready || context === undefined || this.workspaceBusy) {
       return;
     }
+    const selection = this.nativeSelectionVersion;
+    const panel = this.panel;
     this.workspaceBusy = true;
     try {
       const picked = await pickFolder(context);
@@ -2556,13 +2551,12 @@ struct DesktopWorkspace {
         ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
         return;
       }
-      this.clearSession(true);
-      this.workspaceId = id;
-      this.panel = 'session';
-      this.expandedIds = [...this.expandedIds.filter((value: string): boolean => value !== id), id];
-      this.selectedWorkspaceTitle = picked.name || picked.path;
       if (picked.reason.length > 0) {
         ui.getPromptAction().showToast({ message: picked.reason });
+      }
+      if (this.pageActive && this.nativeSelectionVersion === selection && this.panel === panel) {
+        this.revealWorkspace(id);
+        await this.newSession(id);
       }
     } catch (_) {
       ui.getPromptAction().showToast({ message: $r('app.string.desktop_experiment_action_failed') });
@@ -4257,8 +4251,26 @@ struct DesktopWorkspace {
     items.push({ value: '浮动面板', action: guarded((): void => {
       this.floatDockTab(index, tab.id, this.defaultFloatRect());
     }) });
-    items.push({ value: '关闭标签', action: guarded((): void => this.closeDockTab(index, tab.id)) });
+    const tabs = this.rightDock.panes[index]?.tabs ?? [];
+    const position = tabs.findIndex((item: DesktopDockTab): boolean => item.id === tab.id);
+    const others = tabs.filter((item: DesktopDockTab): boolean => item.id !== tab.id);
+    const right = position < 0 ? [] : tabs.slice(position + 1);
+    items.push({ value: $r('app.string.desktop_dock_close_tab'), icon: $r('app.media.dsh_dock_close'),
+      action: guarded((): void => this.closeDockTab(index, tab.id)) });
+    items.push({ value: $r('app.string.desktop_dock_close_others'), enabled: others.length > 0,
+      action: guarded((): void => this.closeDockTabs(index, others)) });
+    if (right.length > 0) {
+      items.push({ value: $r('app.string.desktop_dock_close_right'),
+        action: guarded((): void => this.closeDockTabs(index, right)) });
+    }
     return items;
+  }
+
+  private closeDockTabs(pane: number, targets: DesktopDockTab[]): void {
+    for (const target of targets) {
+      const tab = this.dockStoredTab(pane, target.id);
+      if (tab !== undefined && tab.terminalId === target.terminalId) { this.closeDockTab(pane, target.id); }
+    }
   }
 
   private isDockTabContext(pane: number, tab: string): boolean {
@@ -4277,6 +4289,22 @@ struct DesktopWorkspace {
   }
 
   private dockTabMouse(event: MouseEvent, pane: number, tab: string): void {
+    if (event.button === MouseButton.Middle) {
+      if (event.action === MouseAction.Press) {
+        this.dockMiddlePress = { session: this.sessionId, pane: pane, tab: tab };
+      } else if (event.action === MouseAction.Release) {
+        const pressed = this.dockMiddlePress;
+        this.dockMiddlePress = undefined;
+        if (pressed?.session === this.sessionId && pressed.pane === pane && pressed.tab === tab &&
+          (event.pressedButtons?.length ?? 0) === 0 && this.pageActive && this.panel === 'session' &&
+          this.rightDock.expanded &&
+          this.dockStoredTab(pane, tab) !== undefined) {
+          this.closeDockTab(pane, tab);
+        }
+      } else { return; }
+      event.stopPropagation();
+      return;
+    }
     if (event.button !== MouseButton.Right) { return; }
     if (event.action === MouseAction.Press) {
       event.stopPropagation();
@@ -4716,6 +4744,21 @@ struct DesktopWorkspace {
   }
 
   @Builder
+  private DockTitleIcon(kind: DesktopDockKind, key: string) {
+    if (kind === DesktopDockKind.FILES) {
+      Image($r('app.media.dsh_file_folder')).key(key).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+    } else if (kind === DesktopDockKind.BROWSER) {
+      Image($r('app.media.dsh_browser_globe_outline')).key(key).width(14).height(14).accessibilityLevel('no')
+    } else if (kind === DesktopDockKind.COMPACTION) {
+      Image($r('app.media.dsh_file_markdown')).key(key).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
+    }
+  }
+
+  private dockTabTitle(tab: DesktopDockTab): ResourceStr {
+    return tab.kind === DesktopDockKind.FILES ? $r('app.string.desktop_dock_file_tab') : tab.title;
+  }
+
+  @Builder
   private DockTab(index: number, tab: DesktopDockTab) {
     Row({ space: 2 }) {
       if (this.terminalRename?.tabId === tab.id) {
@@ -4727,12 +4770,8 @@ struct DesktopWorkspace {
             this.DockTerminalHeading(index, tab, true)
           } else {
             Row({ space: 4 }) {
-              if (tab.kind === DesktopDockKind.BROWSER) {
-                Image($r('app.media.dsh_browser_globe_outline')).width(14).height(14).accessibilityLevel('no')
-              } else if (tab.kind === DesktopDockKind.COMPACTION) {
-                Image($r('app.media.dsh_file_markdown')).width(16).height(16).supportSvg2(true).accessibilityLevel('no')
-              }
-              Text(tab.title).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              this.DockTitleIcon(tab.kind, 'desktopDockTabIcon-' + index + '-' + tab.id)
+              Text(this.dockTabTitle(tab)).fontSize(12).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 .fontColor($r('sys.color.font_primary'))
             }
           }
@@ -4740,6 +4779,11 @@ struct DesktopWorkspace {
           .constraintSize({ maxWidth: 126 }).accessibilitySelected(this.rightDock.panes[index]?.active === tab.id)
           .onClick((): void => { this.setDock(desktopDockSelect(this.rightDock, index, tab.id)); })
           .onMouse((event: MouseEvent): void => { this.dockTabMouse(event, index, tab.id); })
+          .onHover((hovered: boolean): void => {
+            if (!hovered && this.dockMiddlePress?.pane === index && this.dockMiddlePress?.tab === tab.id) {
+              this.dockMiddlePress = undefined;
+            }
+          })
           .onKeyEvent((event: KeyEvent): boolean => this.dockTabKey(event, index, tab.id))
           .bindMenu(this.isDockTabContext(index, tab.id), this.dockTabMenu(index, tab),
             this.dockTabContextOptions(index, tab.id))
@@ -4887,8 +4931,11 @@ struct DesktopWorkspace {
               if (panel.tab.kind === DesktopDockKind.TERMINAL) {
                 this.DockTerminalHeading(-1, panel.tab, false)
               } else {
-                Text(panel.tab.title).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
+                Row({ space: 4 }) {
+                  this.DockTitleIcon(panel.tab.kind, 'desktopDockFloatIcon-' + panel.tab.id)
+                  Text(this.dockTabTitle(panel.tab)).fontSize(13).fontWeight(FontWeight.Medium).maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('sys.color.font_primary'))
+                }
               }
             }
               .layoutWeight(1).height(36).padding({ left: 11 }).justifyContent(FlexAlign.Start)
@@ -4965,8 +5012,9 @@ struct DesktopWorkspace {
             }
           }
           .constraintSize({ maxWidth: '80%' }).height(30).padding({ left: 8, right: 8 })
+          .key('desktopWorkspaceLandingPicker')
           .borderRadius(7).backgroundColor(Color.Transparent).focusOnTouch(false)
-          .enabled(this.ready && this.groups.length > 0)
+          .enabled(this.ready && !this.creating && !this.workspaceBusy)
           .bindMenu(this.workspaceMenu(), desktopMenuOptions(Placement.BottomLeft))
         }
         .width('100%').padding({ left: 4 })
@@ -4980,6 +5028,7 @@ struct DesktopWorkspace {
           .width('100%')
         }
         .width('100%').constraintSize({ minHeight: 76 }).padding({ left: 16, right: 16 }).borderRadius(21)
+        .key('desktopWorkspaceLandingNewSession')
         .backgroundColor($r('app.color.workspace_panel')).focusOnTouch(false).enabled(this.ready && !this.creating)
         .onClick((): void => { this.newSession(); })
       }
@@ -5011,7 +5060,9 @@ struct DesktopWorkspace {
                 host: this.data.actions, catalog: this.data.scheduleCatalog,
                 sessionId: this.sessionId,
                 workspacePath: this.data.workspacePath(this.workspaceId),
+                draftBusy: this.creating,
                 onOpenSession: (id: string): void => { this.openSessionById(id); },
+                onDraft: (prompt: Resource): void => { this.newSession(undefined, this.accessibilityLabel(prompt)); },
                 onWeb: (): void => { this.openWeb(false, 'schedule'); }
               })
             } else if (this.panel !== 'session') {

@@ -31,6 +31,9 @@ import { Fs, Radius, Sp, Sz } from 'appstate';
 import { HarmonySpacing } from 'appstate';
 import { protocolLabel } from 'appstate';
 import type { PiAiModelRow, PiAiProviderView } from 'appstate';
+import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
+import type { DesktopHostActions } from '../desktop/DesktopHostActions';
+import type { DesktopNewRetryPolicy } from '../desktop/DesktopRetryPolicyModel';
 
 /** 表单模式：编辑已有路由 / 新建路由 */
 export enum PiAiSheetMode {
@@ -63,6 +66,9 @@ export struct PiAiProviderSheet {
   @Prop noteOwned: boolean = false;
   /** 写入进行中（按钮防重复提交） */
   @Prop busy: boolean = false;
+  retryHost?: DesktopHostActions;
+  @Prop retryValid: boolean = true;
+  onRetryDraft: (value: DesktopNewRetryPolicy) => void = (_value: DesktopNewRetryPolicy): void => {};
 
   onRouteChange: (value: string) => void = () => {
   };
@@ -105,6 +111,11 @@ export struct PiAiProviderSheet {
           this.protocolField()
           this.modelsField()
           this.keyField()
+          if (this.mode === PiAiSheetMode.CREATE && this.retryHost !== undefined) {
+            DesktopRetryPolicy({ host: this.retryHost, namespace: 'llm-pi-ai',
+              path: ['providers', '', 'retryPolicy'], draftOnly: true, parentBusy: this.busy,
+              onDraft: this.onRetryDraft })
+          }
 
           if (this.fieldError.length > 0) {
             Text(this.fieldError)
@@ -128,8 +139,9 @@ export struct PiAiProviderSheet {
                 this.onClose();
               })
             Button(this.isCreate() ? '添加' : '保存')
+              .key('desktopPiAiProviderSubmit')
               .layoutWeight(1)
-              .enabled(!this.busy)
+              .enabled(!this.busy && this.retryValid)
               .onClick(() => {
                 this.onSubmit();
               })
@@ -178,6 +190,7 @@ export struct PiAiProviderSheet {
         .fontColor($r('sys.color.font_secondary'))
         .width('100%')
       TextInput({ text: this.draft.route, placeholder: 'my-gateway' })
+        .key('desktopPiAiProviderRoute')
         .fontSize(Fs.SECONDARY)
         .height(Sz.TOUCH_MIN)
         .width('100%')
@@ -221,6 +234,7 @@ export struct PiAiProviderSheet {
       .fontColor($r('sys.color.font_secondary'))
       .width('100%')
     TextInput({ text: this.draft.baseURL, placeholder: this.baseURLPlaceholder })
+      .key('desktopPiAiProviderBaseURL')
       .fontSize(Fs.SECONDARY)
       .height(Sz.TOUCH_MIN)
       .width('100%')
@@ -300,6 +314,7 @@ export struct PiAiProviderSheet {
         }
         .width('100%')
         TextInput({ text: row.id, placeholder: '模型 id（必填）' })
+          .key('desktopPiAiProviderModel-' + index)
           .fontSize(Fs.SECONDARY)
           .height(Sz.TOUCH_MIN)
           .width('100%')

@@ -148,7 +148,7 @@ function numOf(source: Object | undefined, key: string): number {
  *   refs[rootUid].dict.providers  →  providers 节点（type=dict）
  *   refs[providersUid].inner      →  该 dict 的**值类型**（一个 provider profile，type=object）
  *   refs[innerUid].dict.api       →  api 字段（type=union）
- *   refs[apiUid].list[]           →  每个候选（type=const, value=<协议标识符>）
+ *   refs[apiUid].list[]           →  const 节点或指向该节点的数字引用
  *
  * @param refs schema 的 `refs`（uid 字符串 → 节点）
  * @param rootUid schema 的根 uid
@@ -180,7 +180,8 @@ export function piAiProtocolChoices(refs: Object | undefined, rootUid: number): 
   }
   for (let i = 0; i < list.length; i++) {
     const entry: Object = list[i] as Object;
-    const value: Object | undefined = recOf(entry, 'value');
+    const node: Object | undefined = typeof entry === 'number' ? recOf(refs, `${entry}`) : entry;
+    const value: Object | undefined = recOf(node, 'value');
     if (typeof value === 'string' && value.length > 0 && out.indexOf(value) < 0) {
       out.push(value);
     }

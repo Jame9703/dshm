@@ -20,6 +20,8 @@ import { CredentialItem, Fs, ModelOption, Radius, SessionHub, SettingGroup, Sett
 import type { ModelSelection, PiAiProviderView } from 'appstate';
 import { protocolLabel } from 'appstate';
 import { SettingRow } from './SettingRow';
+import { DesktopRetryPolicy } from '../desktop/DesktopRetryPolicy';
+import type { DesktopHostActions } from '../desktop/DesktopHostActions';
 
 
 /**
@@ -96,6 +98,7 @@ export struct SettingsModels {
    * 中枢已按逐字段投影好（`HubSnapshot.piAiProviders`），这里直接用。
    */
   @Prop piAiProviders: PiAiProviderView[] = [];
+  settingsHost?: DesktopHostActions;
 
   /** 点提供方卡片上的「编辑」 */
   onEditProvider: (route: string) => void = () => {
@@ -126,6 +129,7 @@ export struct SettingsModels {
   @State expandedProvider: string = '';
   /** 候选模型过滤词 */
   @State candidateQuery: string = '';
+  @State private expandedPiAiRetry: string = '';
 
   // 【ArkUI 约束】组件的 build() 只能有一个根节点 ⇒ 多段内容包进 Column
   build() {
@@ -417,6 +421,21 @@ export struct SettingsModels {
             })
         }
         .width('100%')
+        if (this.settingsHost !== undefined) {
+          Button({ buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Row({ space: 6 }) {
+              Text($r('app.string.desktop_model_retry_title')).fontSize(13)
+              Image(this.expandedPiAiRetry === p.route ? $r('app.media.dsh_queue_chevron_up_outline') :
+                $r('app.media.dsh_queue_chevron_down_outline')).width(12).height(12)
+            }
+          }.key('desktopPiAiRetryPolicy-' + p.route)
+            .onClick((): void => { this.expandedPiAiRetry = this.expandedPiAiRetry === p.route ? '' : p.route; })
+          if (this.expandedPiAiRetry === p.route) {
+            DesktopRetryPolicy({ host: this.settingsHost, namespace: 'llm-pi-ai',
+              path: ['providers', p.route, 'retryPolicy'],
+              onSaved: (): void => { SessionHub.shared().refreshSettings(); } })
+          }
+        }
       }
       .width('100%')
       .padding(Sp.M)
@@ -566,6 +585,7 @@ export struct SettingsModels {
             .fontSize(Fs.CAPTION)
             .fontColor($r('sys.color.brand'))
         }
+        .key('desktopModelProviderSettings-' + g.provider)
         .width('100%')
         .onClick(() => {
           this.expandedProvider = this.expandedProvider === g.provider ? '' : g.provider;
@@ -579,7 +599,12 @@ export struct SettingsModels {
               .width('100%')
           } else {
             ForEach((this.providerSettingGroup(g.provider) as SettingGroup).items, (item: SettingItem) => {
-              SettingRow({
+              if (this.settingsHost !== undefined && item.key.endsWith('.retryPolicy')) {
+                DesktopRetryPolicy({ host: this.settingsHost, namespace: item.key.slice(0, -'.retryPolicy'.length),
+                  path: ['retryPolicy'], onSaved: (): void => { SessionHub.shared().refreshSettings(); },
+                  onFallback: (): void => { if (!item.readOnly) { this.onEditStruct(item); } } })
+              } else {
+                SettingRow({
               item: item,
               onToggleSetting: (key: string, value: boolean) => {
                 this.onToggleSetting(key, value);
@@ -596,7 +621,8 @@ export struct SettingsModels {
               onResetSetting: (key: string) => {
                 this.onResetSetting(key);
               }
-            })
+                })
+              }
             }, (item: SettingItem) => item.key)
           }
           /*

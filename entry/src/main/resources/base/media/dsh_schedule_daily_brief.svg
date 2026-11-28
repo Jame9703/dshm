@@ -1,0 +1,9 @@
+<!-- DeepSeek WebUI artwork, Copyright (c) 2026 DeepSeek, MIT. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="#4176e6" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+  <path fill="#4176e6" fill-opacity="0.16" d="M5 14A5 5 0 0 1 15 14Z" />
+  <path d="M2.5 14H17.5" />
+  <path d="M6.5 17H13.5" />
+  <path d="M10 4.75V6.75" />
+  <path d="M3.92 7.92L5.19 9.19" />
+  <path d="M16.08 7.92L14.81 9.19" />
+</svg>

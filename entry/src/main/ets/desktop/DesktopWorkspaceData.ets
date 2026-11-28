@@ -433,8 +433,14 @@ export class DesktopWorkspaceData {
     if (!this.active || !result.ok) {
       return '';
     }
-    const workspace = getRecord(result.value, 'workspace');
-    return getString(workspace, 'workspaceId') ?? '';
+    const record = getRecord(result.value, 'workspace');
+    const workspace = record === undefined ? undefined : workspaceFromHost(record);
+    if (workspace === undefined) { return ''; }
+    if (!this.workspaces.some((row: DesktopWorkspaceRow): boolean => row.id === workspace.id)) {
+      this.workspaces = [...this.workspaces, workspace];
+      this.publish();
+    }
+    return workspace.id;
   }
 
   creatorWorkspace(sessionId: string): string {
@@ -464,13 +470,13 @@ export class DesktopWorkspaceData {
         this.archivedIds.has(session.id)) { return false; }
       const values = getRecord(getRecord(session.raw, 'projections'), 'values');
       const current = getString(values, PROJECTION_AGENT_PRESET);
-      return current === undefined || current === preset;
+      return !preset || current === undefined || current === preset;
     });
     return blank?.id ?? '';
   }
 
   async createSession(workspaceId: string, preset: string = ''): Promise<DesktopSessionCreation> {
-    return this.createInWorkspace(workspaceId, preset ? this.reusableBlank(workspaceId, preset) : '', preset);
+    return this.createInWorkspace(workspaceId, this.reusableBlank(workspaceId, preset), preset);
   }
 
   private canRestoreBlank(workspaceId: string, sessionId: string): boolean {
@@ -513,6 +519,10 @@ export class DesktopWorkspaceData {
     const created = projectSessionCreate(result.value);
     const id = created?.sessionId ?? '';
     if (id.length > 0) {
+      if (sessionId && sessionId !== id) {
+        // The named candidate may have received a message since the last session list.
+        this.actions.call('session/projections', { 'sessionId': sessionId }).catch((): void => {});
+      }
       await this.refreshSessions();
     }
     if (preset && created?.agentPreset !== undefined && created.agentPreset !== preset) {

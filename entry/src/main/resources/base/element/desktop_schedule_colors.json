@@ -1,0 +1,12 @@
+{
+  "color": [
+    {
+      "name": "desktop_schedule_tile",
+      "value": "#f5f7fa"
+    },
+    {
+      "name": "desktop_schedule_glyph",
+      "value": "#4176e6"
+    }
+  ]
+}

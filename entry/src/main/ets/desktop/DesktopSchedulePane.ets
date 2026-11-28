@@ -3,8 +3,10 @@ import { getArray, getNumber, getRecord, getString } from 'connection';
 import type { RpcResult } from 'connection';
 import { DesktopHostActions, desktopHostProblem } from './DesktopHostActions';
 import { desktopMenuOptions } from './DesktopMenuOptions';
-import { DesktopScheduleCatalog, desktopScheduleNextTime, desktopScheduleRows } from './DesktopScheduleCatalog';
+import { DesktopScheduleCatalog, desktopScheduleNextTime, desktopScheduleRows,
+  desktopScheduleShowsRecommendations } from './DesktopScheduleCatalog';
 import type { DesktopScheduleCatalogSnapshot } from './DesktopScheduleCatalog';
+import { DesktopScheduleRecommendations } from './DesktopScheduleRecommendations';
 
 interface ScheduleRuleChoice {
   id: string;
@@ -39,12 +41,15 @@ export struct DesktopSchedulePane {
   catalog?: DesktopScheduleCatalog;
   @Prop sessionId: string = '';
   @Prop workspacePath: string = '';
+  @Prop draftBusy: boolean = false;
   onOpenSession: (id: string) => void = (_: string): void => {};
+  onDraft: (prompt: Resource) => void = (_: Resource): void => {};
   onWeb: () => void = (): void => {};
   @State private tasks: Object[] = [];
   @State private rows: Object[] = [];
   @State private catalogError: string = '';
   @State private catalogLoading: boolean = false;
+  @State private catalogReady: boolean = false;
   @State private filter: string = 'active';
   @State private search: string = '';
   @State private paneWidth: number = 0;
@@ -94,6 +99,7 @@ export struct DesktopSchedulePane {
       this.refilter();
       this.catalogError = snapshot.error;
       this.catalogLoading = snapshot.loading;
+      this.catalogReady = snapshot.ready;
       if (!snapshot.loading && !snapshot.error && this.detailId() && !this.taskById(this.detailId()) &&
           !this.hasDraftChanges()) { this.closeDetail(); }
     });
@@ -145,6 +151,27 @@ export struct DesktopSchedulePane {
   private catalogActions(): MenuElement[] {
     return [{ value: $r('app.string.desktop_schedule_clear'), enabled: !this.catalogLoading,
       action: (): void => { this.confirmDelete(); } }];
+  }
+
+  private openDraft(prompt: Resource): void {
+    if (this.active && !this.busy && !this.draftBusy) { this.onDraft(prompt); }
+  }
+
+  private creationActions(): MenuElement[] {
+    return [
+      { value: $r('app.string.desktop_schedule_creation_create_chat'), icon: $r('app.media.dsh_reference_session'),
+        action: (): void => { this.openDraft($r('app.string.desktop_schedule_creation_create_prompt')); } },
+      { value: $r('app.string.desktop_schedule_creation_manual'), icon: $r('app.media.dsh_dock_edit'),
+        action: (): void => { this.chooseEditor(); } }
+    ];
+  }
+
+  private emptyTitle(): Resource {
+    if (this.search.trim()) { return $r('app.string.desktop_schedule_creation_search_empty'); }
+    if (this.filter === 'active') { return $r('app.string.desktop_schedule_creation_empty_active'); }
+    if (this.filter === 'paused') { return $r('app.string.desktop_schedule_creation_empty_paused'); }
+    if (this.filter === 'ended') { return $r('app.string.desktop_schedule_creation_empty_ended'); }
+    return $r('app.string.desktop_schedule_creation_empty_all');
   }
 
   private endedCount(): number {
@@ -640,6 +667,19 @@ export struct DesktopSchedulePane {
   }
 
   @Builder
+  private EmptyCatalog() {
+    Column({ space: 12 }) {
+      Image($r('app.media.dsh_schedule_empty')).width(110).height(110).supportSvg2(true).accessibilityLevel('no')
+      Text(this.emptyTitle()).fontSize(14).textAlign(TextAlign.Center).fontColor($r('sys.color.font_tertiary'))
+      Button($r('app.string.desktop_schedule_creation_empty_action'), {
+        type: ButtonType.Normal, buttonStyle: ButtonStyleMode.NORMAL
+      }).key('desktopScheduleEmptyCreate').height(34).borderRadius(8).margin({ top: 4 })
+        .enabled(!this.busy && !this.draftBusy).onClick((): void => { this.chooseEditor(); })
+    }.width('100%').padding({ left: 20, right: 20, top: 42, bottom: 28 })
+      .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
   private List() {
     Column({ space: 10 }) {
       Row({ space: 4 }) {
@@ -675,9 +715,15 @@ export struct DesktopSchedulePane {
             this.Task(row)
           }, (row: Object): string => (getString(row, 'id') ?? '') + ':' + (getString(row, 'updatedAt') ?? '') +
             ':' + (getString(row, 'status') ?? '') + ':' + desktopScheduleNextTime(row))
-          if (!this.catalogLoading && !this.catalogError && this.rows.length === 0) {
-            Text(this.search.trim() ? $r('app.string.desktop_schedule_no_matches') : $r('app.string.desktop_schedule_empty'))
-              .width('100%').fontColor($r('sys.color.font_secondary')).padding(16)
+          if (this.catalogReady && this.rows.length === 0) {
+            this.EmptyCatalog()
+          }
+          if (desktopScheduleShowsRecommendations(this.catalogReady, this.rows.length, this.search, this.filter)) {
+            DesktopScheduleRecommendations({
+              twoColumns: (this.paneWidth >= 840 && this.hasDetail() ? this.paneWidth * 0.39 : this.paneWidth) > 600,
+              disabled: this.busy || this.draftBusy,
+              onChoose: (prompt: Resource): void => { this.openDraft(prompt); }
+            })
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.TopStart).key('desktopScheduleCatalog')
@@ -713,12 +759,36 @@ export struct DesktopSchedulePane {
     }.layoutWeight(1).height('100%').key('desktopScheduleDetail')
   }
 
+  @Builder
+  private CreateButtons() {
+    Row() {
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.EMPHASIZED }) {
+        Row({ space: 6 }) {
+          Image($r('app.media.dsh_reference_menu_plus')).width(13).height(13).supportSvg2(true)
+            .fillColor(Color.White).accessibilityLevel('no')
+          Text($r('app.string.desktop_schedule_creation_new')).fontSize(13).fontColor(Color.White)
+        }
+      }.key('desktopScheduleNew').height(34).padding({ left: 10, right: 10 })
+        .borderRadius({ topLeft: 8, bottomLeft: 8, topRight: 0, bottomRight: 0 })
+        .enabled(!this.busy && !this.draftBusy)
+        .onClick((): void => { this.openDraft($r('app.string.desktop_schedule_creation_create_prompt')); })
+      Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.EMPHASIZED }) {
+        Image($r('app.media.dsh_queue_chevron_down_outline')).width(12).height(12).supportSvg2(true)
+          .fillColor(Color.White).accessibilityLevel('no')
+      }.key('desktopScheduleCreateOptions').height(34).width(30).padding(0)
+        .borderRadius({ topLeft: 0, bottomLeft: 0, topRight: 8, bottomRight: 8 })
+        .borderWidth({ left: 1 }).borderColor('#40FFFFFF')
+        .accessibilityText($r('app.string.desktop_schedule_creation_create_method'))
+        .enabled(!this.busy && !this.draftBusy)
+        .bindMenu(this.creationActions(), desktopMenuOptions(Placement.BottomRight))
+    }
+  }
+
   build() {
     Column({ space: 14 }) {
       Row({ space: 8 }) {
         Text($r('app.string.desktop_experiment_schedule')).fontSize(26).fontWeight(FontWeight.Medium).layoutWeight(1)
-        Button($r('app.string.desktop_schedule_new')).key('desktopScheduleNew').enabled(!this.busy)
-          .onClick((): void => { this.chooseEditor(); })
+        this.CreateButtons()
         Button($r('app.string.desktop_schedule_web'), { buttonStyle: ButtonStyleMode.TEXTUAL })
           .enabled(!this.busy).onClick(this.onWeb)
       }.width('100%')

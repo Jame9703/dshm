@@ -197,6 +197,7 @@ import { CredentialSheet } from '../view/CredentialSheet';
 import { SettingStructSheet } from '../view/SettingStructSheet';
 import { SettingTextSheet } from '../view/SettingTextSheet';
 import { PiAiProviderSheet, PiAiSheetMode } from '../view/PiAiProviderSheet';
+import type { DesktopNewRetryPolicy } from '../desktop/DesktopRetryPolicyModel';
 import { MainShell } from '../view/shell/MainShell';
 import { AppShell } from '../view/shell/AppShell';
 import type { AppShellFacade } from '../view/shell/AppShell';
@@ -664,6 +665,8 @@ export struct IndexContent {
   @State piAiKeyConfigured: boolean = false;
   /** 字段级校验文案（端点/协议/模型/密钥） */
   @State piAiFieldError: string = '';
+  @State private piAiRetryValid: boolean = true;
+  private piAiRetryPolicy?: Record<string, Object>;
   /** 本浮层自己的忙标志（不借别的浮层的，见 E353） */
   @State piAiBusy: boolean = false;
   @State credentials: CredentialItem[] = [];
@@ -2422,6 +2425,12 @@ export struct IndexContent {
         note: this.credentialNote,
         noteOwned: sheetNoteVisible(this.sheetNoteOwner, 'piai'),
         busy: this.piAiBusy,
+        retryHost: this.desktopAccountHost,
+        retryValid: this.piAiRetryValid,
+        onRetryDraft: (value: DesktopNewRetryPolicy): void => {
+          this.piAiRetryValid = value.valid;
+          this.piAiRetryPolicy = value.policy;
+        },
         onRouteChange: (v: string) => {
           this.piAiDraft.route = v.trim();
           this.clearPiAiFieldError();
@@ -3107,6 +3116,8 @@ export struct IndexContent {
     this.piAiFieldError = '';
     this.piAiBusy = false;
     this.piAiKeyDraft = '';
+    this.piAiRetryValid = true;
+    this.piAiRetryPolicy = undefined;
     this.piAiMode = mode;
     if (mode === PiAiSheetMode.EDIT) {
       let found: PiAiProviderView | undefined = undefined;
@@ -3157,6 +3168,8 @@ export struct IndexContent {
     this.piAiFieldError = '';
     this.piAiBusy = false;
     this.piAiOriginal = undefined;
+    this.piAiRetryValid = true;
+    this.piAiRetryPolicy = undefined;
     this.credentialNote = '';
     this.sheetNoteOwner = '';
   }
@@ -3170,6 +3183,7 @@ export struct IndexContent {
    */
   private async submitPiAiSheet(): Promise<void> {
     const creating: boolean = this.piAiMode === PiAiSheetMode.CREATE;
+    if (this.piAiBusy || (creating && !this.piAiRetryValid)) { return; }
     const hub: SessionHub = SessionHub.shared();
 
     // ① 路由 id（新建才校验占用；编辑时 id 不可改）
@@ -3221,6 +3235,8 @@ export struct IndexContent {
     let writeOk = false;
     if (creating) {
       const profile: Record<string, Object> = buildRouteProfile(this.piAiDraft, storesKey, keyRef);
+      const policy = this.piAiRetryPolicy;
+      if (policy !== undefined) { profile['retryPolicy'] = policy; }
       const res: SettingsWriteResult = await hub.writeSettingPath(
         PIAI_SETTINGS_NS, piAiRoutePath(route), profile as Object);
       if (res.outcome === SettingsWriteOutcome.OK) {

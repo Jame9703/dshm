@@ -3,6 +3,7 @@ import { DesktopHostActions, desktopHostItems, desktopHostProblem } from './Desk
 
 export interface DesktopScheduleCatalogSnapshot {
   tasks: Object[];
+  ready: boolean;
   loading: boolean;
   error: string;
 }
@@ -14,7 +15,7 @@ export class DesktopScheduleCatalog {
   private generation: number = 0;
   private queued: boolean = false;
   private reader?: Promise<boolean>;
-  private snapshot: DesktopScheduleCatalogSnapshot = { tasks: [], loading: false, error: '' };
+  private snapshot: DesktopScheduleCatalogSnapshot = { tasks: [], ready: false, loading: false, error: '' };
 
   private readonly host: DesktopHostActions;
 
@@ -48,7 +49,7 @@ export class DesktopScheduleCatalog {
   }
 
   private async read(generation: number): Promise<boolean> {
-    this.publish({ tasks: this.snapshot.tasks, loading: true, error: '' });
+    this.publish({ tasks: this.snapshot.tasks, ready: false, loading: true, error: '' });
     let confirmed = false;
     try {
       while (generation === this.generation && this.queued) {
@@ -58,11 +59,12 @@ export class DesktopScheduleCatalog {
         if (this.queued) { continue; }
         const error = desktopHostProblem(result);
         confirmed = error.length === 0;
-        this.publish({ tasks: confirmed ? desktopHostItems(result) : this.snapshot.tasks, loading: false, error: error });
+        this.publish({ tasks: confirmed ? desktopHostItems(result) : this.snapshot.tasks, ready: confirmed,
+          loading: false, error: error });
       }
     } catch (_) {
       if (generation === this.generation) {
-        this.publish({ tasks: this.snapshot.tasks, loading: false, error: '读取自动化任务失败' });
+        this.publish({ tasks: this.snapshot.tasks, ready: false, loading: false, error: '读取自动化任务失败' });
       }
       return false;
     } finally {
@@ -76,6 +78,10 @@ export function desktopScheduleNextTime(row: Object): string {
   const scheduled = getString(row, 'scheduledAt') ?? '';
   const floor = getString(row, 'deliveryFloorEndsAt') ?? '';
   return Date.parse(floor) > Date.parse(scheduled) ? floor : scheduled;
+}
+
+export function desktopScheduleShowsRecommendations(ready: boolean, rows: number, search: string, filter: string): boolean {
+  return ready && rows === 0 && !search.trim() && (filter === 'active' || filter === 'all');
 }
 
 function linkedSession(row: Object): string {
